@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v2.1.4 | 28.05.2026 | System Info refactor, downgrade support
+-- Podkop Tweaker | v2.1.5 | 28.05.2026 | Actions Node.js 24 update
 
-local APP_VERSION = "2.1.4"
+local APP_VERSION = "2.1.5"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
