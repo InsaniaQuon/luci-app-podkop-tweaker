@@ -9,7 +9,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build archive
         run: |
@@ -20,6 +20,6 @@ jobs:
             usr/share/rpcd/acl.d/luci-app-podkop-tweaker.json
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: luci-app-podkop-tweaker-*.tar.gz
