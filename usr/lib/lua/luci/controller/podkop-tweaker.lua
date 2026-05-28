@@ -1,12 +1,23 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v2.1.6 | 28.05.2026 | Fix json_parse scope in api_system_info
+-- Podkop Tweaker | v2.3.5 | 29.05.2026 | GitHub icon, shared subs module, standalone auto-update
 
-local APP_VERSION = "2.1.6"
+local APP_VERSION = "2.3.5"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
-local CHECK_CACHE_FILE = "/tmp/tweaker_check_cache.json"
+local CHECK_CACHE_FILE = "/etc/config/tweaker_check_cache.json"
 local CHECK_CACHE_TTL = 900
+local SUBS_FILE = "/etc/config/podkop-tweaker-subs.json"
+local UPDATE_LOG_FILE = "/etc/config/pt-update.log"
+local UPDATE_LOG_MAX = 25
+
+local S = require("pt-subs-lib")
+
+local function sanitize_section_name(name)
+    if not name or name == "" then return nil end
+    if not name:match("^[a-zA-Z0-9_%-]+$") then return nil end
+    return name
+end
 
 module("luci.controller.podkop-tweaker", package.seeall)
 
@@ -140,7 +151,12 @@ local function verify_csrf()
     local expected = disp.context and disp.context.token
     if not expected or expected == "" then
         local cookie = http.getenv("HTTP_COOKIE") or ""
-        if cookie ~= "" then return true end
+        local referer = http.getenv("HTTP_REFERER") or ""
+        local server_name = http.getenv("SERVER_NAME") or ""
+        if cookie ~= "" and server_name ~= "" and referer ~= ""
+            and referer:match("^https?://" .. server_name:gsub("%-", "%%-") .. "[:/]") then
+            return true
+        end
         http.prepare_content("application/json")
         http.status(403, "Forbidden")
         http.write_json({ error = "CSRF token not available" })
@@ -173,17 +189,7 @@ local function validate_config(content)
 end
 
 local function backup_config()
-    local nixio = require("nixio")
-    local config_path = "/etc/config/podkop"
-    local backup_path = "/etc/config/podkop.auto-backup"
-    local data = nixio.fs.readfile(config_path)
-    if not data then return false end
-    nixio.fs.unlink(backup_path)
-    local fd = io.open(backup_path, "w")
-    if not fd then return false end
-    fd:write(data)
-    fd:close()
-    return true
+    return S.backup_config()
 end
 
 local function save_and_restart(content)
@@ -316,7 +322,7 @@ function api_update_start()
 
     sys.exec("pkill -f 'ttyd.*podkop-update' 2>/dev/null")
 
-    local host = http.getenv("HTTP_HOST") or "127.0.0.1"
+    local host = http.getenv("SERVER_NAME") or "127.0.0.1"
     if not host:match("^[%w%.%-]+:%d+$") and not host:match("^[%w%.%-]+$") then
         host = http.getenv("SERVER_NAME") or "127.0.0.1"
     end
@@ -329,240 +335,14 @@ end
 
 -- === Subscription helpers ===
 
-local SUBS_FILE = "/etc/config/podkop-tweaker-subs.json"
-
-local function url_decode(s)
-    if not s then return "" end
-    s = s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
-    s = s:gsub("%+", " ")
-    return s
-end
-
-local function parse_proxy_link(link)
-    if not link or link == "" then return nil end
-    local name = ""
-    local hash_pos = link:find("#", 1, true)
-    local base_link = link
-    if hash_pos then
-        name = url_decode(link:sub(hash_pos + 1))
-        base_link = link:sub(1, hash_pos - 1)
-    end
-    local proto = base_link:match("^(%w+)://") or "unknown"
-    local after_at = base_link:match("@([^%?]+)")
-    local server, port
-    if after_at then
-        port = after_at:match(":(%d+)$")
-        if port then
-            server = after_at:sub(1, #after_at - #port - 1)
-        else
-            server = after_at
-        end
-        if server and server:match("^%[.+%]$") then
-            server = server:sub(2, #server - 1)
-        end
-    end
-    local security = ""
-    local query = base_link:match("%?(.+)$")
-    if query then
-        security = query:match("security=([^&]+)") or ""
-    end
-    return {
-        name = name ~= "" and name or (server or "unknown"),
-        protocol = proto:upper(),
-        server = server or "unknown",
-        port = port or "",
-        security = security ~= "" and security or "none",
-        link = link
-    }
-end
-
-local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local b64lut = {}
-for i = 1, #B64 do b64lut[B64:sub(i, i)] = i - 1 end
-b64lut["="] = 0
-
-local function b64decode(s)
-    s = s:gsub("%s+", "")
-    local out = {}
-    for i = 1, #s, 4 do
-        local a, b, c, d = b64lut[s:sub(i, i)], b64lut[s:sub(i+1, i+1)], b64lut[s:sub(i+2, i+2)], b64lut[s:sub(i+3, i+3)]
-        if not a or not b then break end
-        local v = a * 262144 + b * 4096 + (c or 0) * 64 + (d or 0)
-        table.insert(out, string.char(math.floor(v / 65536) % 256))
-        if s:sub(i+2, i+2) ~= "=" then
-            table.insert(out, string.char(math.floor(v / 256) % 256))
-        end
-        if s:sub(i+3, i+3) ~= "=" then
-            table.insert(out, string.char(v % 256))
-        end
-    end
-    return table.concat(out)
-end
-
-local function shell_escape(s)
-    return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
-end
-
-local function parse_subscription_raw(raw)
-    local content = raw
-    if not raw:match("vless://") and not raw:match("vmess://")
-        and not raw:match("ss://") and not raw:match("trojan://") then
-        local decoded = b64decode(raw)
-        if decoded and type(decoded) == "string"
-            and (decoded:match("vless://") or decoded:match("vmess://")
-                or decoded:match("ss://") or decoded:match("trojan://")) then
-            content = decoded
-        end
-    end
-    local proxies = {}
-    for line in content:gmatch("[^\r\n]+") do
-        line = line:match("^%s*(.-)%s*$")
-        if line:match("^vless://") or line:match("^vmess://")
-            or line:match("^ss://") or line:match("^trojan://") then
-            local p = parse_proxy_link(line)
-            if p then table.insert(proxies, p) end
-        end
-    end
-    return proxies
-end
-
-local function json_parse(str)
-    if not str or str == "" then return nil end
-    local ok, result = pcall(function()
-        local json = require("luci.jsonc")
-        return json.parse(str)
-    end)
-    if ok and result then return result end
-    return nil
-end
-
-local function json_stringify(data)
-    local ok, result = pcall(function()
-        local json = require("luci.jsonc")
-        return json.stringify(data)
-    end)
-    if ok then return result end
-    return nil
-end
-
-local function read_subs()
-    local fd = io.open(SUBS_FILE, "r")
-    if not fd then return {} end
-    local data = fd:read("*a")
-    fd:close()
-    local subs = json_parse(data)
-    if type(subs) ~= "table" then subs = {} end
-    return subs
-end
-
-local function write_subs(subs)
-    local str = json_stringify(subs)
-    if not str then return false end
-    local fd = io.open(SUBS_FILE, "w")
-    if not fd then return false end
-    fd:write(str)
-    fd:close()
-    return true
-end
-
-local function get_proxy_sections()
-    local uci = require("luci.model.uci").cursor()
-    local result = {}
-    uci:foreach("podkop", "section", function(s)
-        if s[".name"] and s.connection_type == "proxy" and s.proxy_config_type then
-            local pct = s.proxy_config_type
-            local links = {}
-            if pct == "url" then
-                local url = uci:get("podkop", s[".name"], "url")
-                if url and url ~= "" then links = {url} end
-            elseif pct == "urltest" then
-                local l = uci:get("podkop", s[".name"], "urltest_proxy_links")
-                if type(l) == "table" then links = l
-                elseif type(l) == "string" and l ~= "" then links = {l} end
-            elseif pct == "selector" then
-                local l = uci:get("podkop", s[".name"], "selector_proxy_links")
-                if type(l) == "table" then links = l
-                elseif type(l) == "string" and l ~= "" then links = {l} end
-            end
-            if #links > 0 then
-                table.insert(result, {
-                    name = s[".name"],
-                    proxy_config_type = pct,
-                    proxy_links = links
-                })
-            end
-        end
-    end)
-    return result
-end
-
-local function replace_proxy_link(section_name, proxy_type, slot_index, new_link)
-    local config_path = "/etc/config/podkop"
-    local fd = io.open(config_path, "r")
-    if not fd then return false, "Cannot read config" end
-    local lines = {}
-    for line in fd:lines() do
-        table.insert(lines, line)
-    end
-    fd:close()
-
-    local list_name
-    if proxy_type == "url" then list_name = "url"
-    elseif proxy_type == "urltest" then list_name = "urltest_proxy_links"
-    elseif proxy_type == "selector" then list_name = "selector_proxy_links"
-    else return false, "Unknown proxy type" end
-
-    local in_section = false
-    local is_option = (proxy_type == "url")
-    local count = 0
-    local found = false
-
-    for i, line in ipairs(lines) do
-        local sn = line:match("^%s*config%s+section%s+'([^']+)'")
-        if not sn then sn = line:match("^%s*config%s+section%s+\"([^\"]+)\"") end
-        if not sn then sn = line:match("^%s*config%s+section%s+(%S+)") end
-        if sn then
-            in_section = (sn == section_name)
-        end
-        if in_section and not found then
-            if is_option then
-                if line:match("^%s*option%s+url%s+") then
-                    lines[i] = "\toption url '" .. new_link .. "'"
-                    found = true
-                end
-            else
-                if line:match("^%s*list%s+" .. list_name .. "%s+") then
-                    if count == slot_index then
-                        lines[i] = "\tlist " .. list_name .. " '" .. new_link .. "'"
-                        found = true
-                    end
-                    count = count + 1
-                end
-            end
-        end
-    end
-
-    if not found then
-        return false, "Proxy link not found in config"
-    end
-
-    local wfd = io.open(config_path, "w")
-    if not wfd then return false, "Cannot write config" end
-    for _, line in ipairs(lines) do
-        wfd:write(line .. "\n")
-    end
-    wfd:close()
-    return true
-end
-
 -- === Subscription API ===
 
 function api_subscription_state()
     local http = require("luci.http")
     http.prepare_content("application/json")
 
-    local sections = get_proxy_sections()
-    local subs = read_subs()
+    local sections = S.get_proxy_sections()
+    local subs = S.read_subs(SUBS_FILE)
 
     local result = {}
     for _, sec in ipairs(sections) do
@@ -573,7 +353,7 @@ function api_subscription_state()
         }
         local sec_subs = subs[sec.name] or {}
         for i, link in ipairs(sec.proxy_links) do
-            local proxy = parse_proxy_link(link)
+            local proxy = S.parse_proxy_link(link)
             table.insert(sec_data.slots, {
                 index = i - 1,
                 proxy = proxy,
@@ -598,9 +378,13 @@ function api_subscription_fetch()
             http.write_json({ error = "URL is required" })
             return
         end
+        if not sub_url:match("^https?://") then
+            http.write_json({ error = "Only HTTP(S) URLs allowed" })
+            return
+        end
 
-        local safe_url = shell_escape(sub_url)
-        local tmp = "/tmp/pt-sub-" .. os.time()
+        local safe_url = S.shell_escape(sub_url)
+        local tmp = sys.exec("mktemp /tmp/pt-sub-XXXXXX 2>/dev/null"):match("%S+") or "/tmp/pt-sub-" .. os.time()
         sys.exec("curl -sL -m 15 -A 'sing-box' -o " .. tmp .. " " .. safe_url .. " 2>/dev/null")
 
         local fd = io.open(tmp, "r")
@@ -612,7 +396,7 @@ function api_subscription_fetch()
         fd:close()
         os.remove(tmp)
 
-        local proxies = parse_subscription_raw(raw)
+        local proxies = S.parse_subscription_raw(raw)
 
         if #proxies == 0 then
             http.write_json({ error = "No proxy links found in subscription" })
@@ -651,12 +435,16 @@ function api_subscription_attach()
             http.write_json({ error = "Missing required parameters" })
             return
         end
+        if not sanitize_section_name(section_name) then
+            http.write_json({ error = "Invalid section name" })
+            return
+        end
         if not new_link:match("^%w+://") then
             http.write_json({ error = "Invalid proxy link format" })
             return
         end
 
-        local sections = get_proxy_sections()
+        local sections = S.get_proxy_sections()
         local proxy_type = nil
         local current_links = nil
         for _, sec in ipairs(sections) do
@@ -673,7 +461,7 @@ function api_subscription_attach()
 
         local current_link = current_links and current_links[slot_index + 1] or ""
         if current_link == new_link then
-            local subs = read_subs()
+            local subs = S.read_subs(SUBS_FILE)
             if not subs[section_name] then subs[section_name] = {} end
             while #subs[section_name] < slot_index + 1 do
                 table.insert(subs[section_name], false)
@@ -681,9 +469,9 @@ function api_subscription_attach()
             subs[section_name][slot_index + 1] = {
                 subscription_url = subscription_url,
                 proxy_name = proxy_name,
-                last_updated = os.date("%H:%M  %d.%m.%Y")
+                last_updated = os.date("%H:%M %d.%m.%Y") .. " (manual)"
             }
-            if not write_subs(subs) then
+            if not S.write_subs(subs, SUBS_FILE) then
                 http.write_json({ error = "Failed to save data" })
                 return
             end
@@ -702,13 +490,13 @@ function api_subscription_attach()
             return
         end
 
-        local ok2, err2 = replace_proxy_link(section_name, proxy_type, slot_index, new_link)
+        local ok2, err2 = S.replace_proxy_link(section_name, proxy_type, slot_index, new_link)
         if not ok2 then
             http.write_json({ error = err2 })
             return
         end
 
-        local subs = read_subs()
+        local subs = S.read_subs(SUBS_FILE)
         if not subs[section_name] then subs[section_name] = {} end
         while #subs[section_name] < slot_index + 1 do
             table.insert(subs[section_name], false)
@@ -716,9 +504,9 @@ function api_subscription_attach()
         subs[section_name][slot_index + 1] = {
             subscription_url = subscription_url,
             proxy_name = proxy_name,
-            last_updated = os.date("%H:%M  %d.%m.%Y")
+            last_updated = os.date("%H:%M %d.%m.%Y") .. " (manual)"
         }
-        if not write_subs(subs) then
+        if not S.write_subs(subs, SUBS_FILE) then
             http.write_json({ error = "Failed to save data" })
             return
         end
@@ -746,11 +534,15 @@ function api_subscription_detach()
             http.write_json({ error = "Missing required parameters" })
             return
         end
+        if not sanitize_section_name(section_name) then
+            http.write_json({ error = "Invalid section name" })
+            return
+        end
 
-        local subs = read_subs()
+        local subs = S.read_subs(SUBS_FILE)
         if subs[section_name] and subs[section_name][slot_index + 1] then
             subs[section_name][slot_index + 1] = nil
-            if not write_subs(subs) then
+            if not S.write_subs(subs, SUBS_FILE) then
                 http.write_json({ error = "Failed to save data" })
                 return
             end
@@ -868,9 +660,9 @@ function api_service_status()
     local http = require("luci.http")
     http.prepare_content("application/json")
     local pid = sys.exec("pgrep -f 'sing-box' 2>/dev/null"):match("(%d+)")
+
     http.write_json({
-        running = (pid ~= nil),
-        pid = pid
+        running = (pid ~= nil)
     })
 end
 
@@ -903,19 +695,6 @@ function api_rollback()
 end
 
 -- === Settings & Auto-Update ===
-
-local function ensure_msk_timezone()
-    local uci = require("luci.model.uci").cursor()
-    local tz = uci:get("system", "@system[0]", "timezone") or ""
-    if tz ~= "MSK-3" then
-        pcall(function()
-            uci:set("system", "@system[0]", "timezone", "MSK-3")
-            uci:set("system", "@system[0]", "zonename", "Europe/Moscow")
-            uci:commit("system")
-        end)
-        os.execute("echo 'MSK-3' > /etc/TZ 2>/dev/null")
-    end
-end
 
 -- interval: hours between updates (1-24)
 -- start_time: "HH:MM" in MSK, the first run time
@@ -968,44 +747,17 @@ local function create_auto_update_script()
     local fd = io.open(script_path, "w")
     if not fd then return false end
     fd:write("#!/bin/sh\n")
-    fd:write("curl -s -X POST http://127.0.0.1/cgi-bin/luci/admin/services/podkop-tweaker/api/update_all_subs -H 'Content-Type: application/x-www-form-urlencoded' -d 'token=local' >/dev/null 2>&1\n")
+    fd:write("lua /usr/lib/lua/pt-auto-update.lua\n")
     fd:close()
     os.execute("chmod +x " .. script_path .. " 2>/dev/null")
     return true
-end
-
-local function do_update_subscription(section_name, slot_index, sub_url, proxy_name)
-    local sys = require("luci.sys")
-    local safe_url = shell_escape(sub_url)
-    local tmp = "/tmp/pt-sub-" .. os.time() .. "-" .. section_name .. "-" .. slot_index
-    sys.exec("curl -sL -m 15 -A 'sing-box' -o " .. tmp .. " " .. safe_url .. " 2>/dev/null")
-
-    local fd = io.open(tmp, "r")
-    if not fd then return nil, "download failed" end
-    local raw = fd:read("*a")
-    fd:close()
-    os.remove(tmp)
-
-    local proxies = parse_subscription_raw(raw)
-    if #proxies == 0 then return nil, "no proxies found" end
-
-    local found = nil
-    if proxy_name and proxy_name ~= "" then
-        for _, p in ipairs(proxies) do
-            if p.name == proxy_name then found = p; break end
-        end
-    end
-    if not found and #proxies == 1 then found = proxies[1] end
-    if not found then return nil, "proxy not found" end
-
-    return found
 end
 
 function api_settings_read()
     local http = require("luci.http")
     http.prepare_content("application/json")
 
-    local subs = read_subs()
+    local subs = S.read_subs(SUBS_FILE)
     local settings = subs.settings or {}
 
     http.write_json({
@@ -1045,22 +797,19 @@ function api_settings_save()
             start_time = ""
         end
 
-        local subs = read_subs()
+        local subs = S.read_subs(SUBS_FILE)
         subs.settings = {
             auto_update_interval = interval,
             auto_update_start = start_time,
             auto_update_on_restart = on_restart
         }
-        if not write_subs(subs) then
+        if not S.write_subs(subs, SUBS_FILE) then
             http.write_json({ error = "Failed to save settings" })
             return
         end
 
         create_auto_update_script()
 
-        if interval > 0 then
-            ensure_msk_timezone()
-        end
         setup_cron(interval, start_time)
         setup_hotplug(on_restart)
 
@@ -1086,8 +835,8 @@ function api_update_all_subs()
 
     local ok, err = pcall(function()
         local sys = require("luci.sys")
-        local sections = get_proxy_sections()
-        local subs = read_subs()
+        local sections = S.get_proxy_sections()
+        local subs = S.read_subs(SUBS_FILE)
         local nixio = require("nixio")
         local updated = 0
         local unchanged = 0
@@ -1099,7 +848,7 @@ function api_update_all_subs()
             for i, link in ipairs(sec.proxy_links) do
                 local sub_entry = sec_subs[i]
                 if sub_entry and sub_entry.subscription_url and sub_entry.subscription_url ~= "" then
-                    local proxy, ferr = do_update_subscription(
+                    local proxy, ferr = S.do_update_subscription(
                         sec.name, i - 1, sub_entry.subscription_url, sub_entry.proxy_name)
                     if proxy and proxy.link then
                         local current_link = link or ""
@@ -1112,7 +861,7 @@ function api_update_all_subs()
                                 end
                                 backup_config()
                             end
-                            local rok, _ = replace_proxy_link(sec.name, sec.proxy_config_type, i - 1, proxy.link)
+                            local rok, _ = S.replace_proxy_link(sec.name, sec.proxy_config_type, i - 1, proxy.link)
                             if rok then
                                 updated = updated + 1
                                 need_restart = true
@@ -1122,6 +871,7 @@ function api_update_all_subs()
                         else
                             unchanged = unchanged + 1
                         end
+                        S.update_subs_timestamp(SUBS_FILE, sec.name, i - 1, "manual")
                     else
                         failed = failed + 1
                     end
@@ -1132,6 +882,10 @@ function api_update_all_subs()
         if need_restart then
             sys.exec("nohup /etc/init.d/podkop restart >/dev/null 2>&1 &")
         end
+
+        local log_line = os.date("%Y-%m-%d %H:%M") .. "|manual|updated=" .. updated
+            .. "|unchanged=" .. unchanged .. "|failed=" .. failed
+        S.append_log(UPDATE_LOG_FILE, UPDATE_LOG_MAX, log_line)
 
         http.write_json({
             success = true,
@@ -1171,15 +925,18 @@ end
 
 -- === Update Tweaker ===
 
-local UPDATE_WHITELIST = {
-    ["usr/lib/lua/luci/controller/podkop-tweaker.lua"] = true,
-    ["usr/share/luci/menu.d/luci-app-podkop-tweaker.json"] = true,
-    ["usr/share/rpcd/acl.d/luci-app-podkop-tweaker.json"] = true,
-}
-
-local function is_whitelisted_path(rel_path)
-    if UPDATE_WHITELIST[rel_path] then return true end
+local function is_valid_update_path(rel_path, relaxed)
+    if rel_path:find("..", 1, true) then return false end
+    if relaxed then
+        if rel_path:match("^usr/lib/lua/") then return true end
+        if rel_path:match("^usr/share/luci/") then return true end
+        if rel_path:match("^usr/share/rpcd/") then return true end
+        return false
+    end
+    if rel_path:match("^usr/lib/lua/.*%.lua$") then return true end
     if rel_path:match("^usr/lib/lua/luci/view/podkop%-tweaker/[%w_%-]+%.htm$") then return true end
+    if rel_path:match("^usr/share/luci/menu%.d/[%w_%-]+%.json$") then return true end
+    if rel_path:match("^usr/share/rpcd/acl%.d/[%w_%-]+%.json$") then return true end
     return false
 end
 
@@ -1196,7 +953,7 @@ local function extract_version_from_file(dir_prefix)
     return ver
 end
 
-local function validate_archive_structure(dir_prefix)
+local function validate_archive_structure(dir_prefix, relaxed)
     local sys = require("luci.sys")
     local find_cmd = "find '" .. dir_prefix .. "' -type f \\! -type l 2>/dev/null"
     local raw = sys.exec(find_cmd)
@@ -1210,11 +967,8 @@ local function validate_archive_structure(dir_prefix)
             local rel = line:sub(prefix_len):match("^/?(.*)")
             if rel ~= "" then
                 count = count + 1
-                if rel:find("..", 1, true) then
-                    return false, "Path traversal detected: " .. rel
-                end
-                if not is_whitelisted_path(rel) then
-                    return false, "Unauthorized file: " .. rel
+                if not is_valid_update_path(rel, relaxed) then
+                    return false, "file not allowed"
                 end
             end
         end
@@ -1246,7 +1000,7 @@ function api_upload_update()
             return
         end
 
-        local file_data = b64decode(file_data_b64)
+        local file_data = S.b64decode(file_data_b64)
         if not file_data or file_data == "" then
             http.write_json({ error = "Invalid archive" })
             return
@@ -1287,7 +1041,7 @@ function api_upload_update()
         end
         stat:close()
 
-        local valid, verr = validate_archive_structure(extract_dir)
+        local valid, verr = validate_archive_structure(extract_dir, false)
         if not valid then
             http.write_json({ error = "Invalid archive" })
             sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
@@ -1357,7 +1111,7 @@ function api_apply_update()
             line = line:match("^%s*(.-)%s*$")
             if line ~= "" then
                 local rel = line:sub(prefix_len):match("^/?(.*)")
-                if rel ~= "" and is_whitelisted_path(rel) then
+                if rel ~= "" and is_valid_update_path(rel, false) then
                     local dest = "/" .. rel
                     local dest_dir = dest:match("^(.+)/[^/]+$")
                     if dest_dir then
@@ -1379,7 +1133,7 @@ function api_apply_update()
         end
 
         sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
-        sys.exec("rm -rf /tmp/luci-* 2>/dev/null")
+        sys.exec("rm -rf /tmp/luci-modulecache 2>/dev/null")
         sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
 
          http.write_json({
@@ -1406,7 +1160,7 @@ function api_tweaker_check_update()
     if cache_fd then
         local cache_data = cache_fd:read("*a")
         cache_fd:close()
-        local cache = json_parse(cache_data)
+        local cache = S.json_parse(cache_data)
         if cache and cache.cached_at then
             local elapsed = os.time() - cache.cached_at
             if elapsed < CHECK_CACHE_TTL then
@@ -1425,7 +1179,7 @@ function api_tweaker_check_update()
         return
     end
 
-    local release = json_parse(raw)
+    local release = S.json_parse(raw)
     if not release then
         http.write_json({ error = "Failed to parse GitHub response" })
         return
@@ -1458,7 +1212,7 @@ function api_tweaker_check_update()
         download_url = download_url,
         cached_at = os.time()
     }
-    local cache_str = json_stringify(cache_entry)
+    local cache_str = S.json_stringify(cache_entry)
     if cache_str then
         local cfd = io.open(CHECK_CACHE_FILE, "w")
         if cfd then
@@ -1499,7 +1253,7 @@ function api_tweaker_git_update()
         sys.exec("mkdir -p " .. tmp_dir .. " 2>/dev/null")
 
         local archive_path = tmp_dir .. "/download.tar.gz"
-        sys.exec("curl -sL -m 60 -o " .. archive_path .. " " .. shell_escape(download_url) .. " 2>/dev/null")
+        sys.exec("curl -sL -m 60 -o " .. archive_path .. " " .. S.shell_escape(download_url) .. " 2>/dev/null")
 
         local st = io.open(archive_path, "r")
         if not st then
@@ -1521,7 +1275,7 @@ function api_tweaker_git_update()
         end
         ctrl:close()
 
-        local valid, verr = validate_archive_structure(extract_dir)
+        local valid, verr = validate_archive_structure(extract_dir, true)
         if not valid then
             http.write_json({ error = "Invalid archive" })
             sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
@@ -1550,7 +1304,7 @@ function api_tweaker_git_update()
             line = line:match("^%s*(.-)%s*$")
             if line ~= "" then
                 local rel = line:sub(prefix_len):match("^/?(.*)")
-                if rel ~= "" and is_whitelisted_path(rel) then
+                if rel ~= "" and is_valid_update_path(rel, true) then
                     local dest = "/" .. rel
                     local dest_dir = dest:match("^(.+)/[^/]+$")
                     if dest_dir then
@@ -1572,7 +1326,7 @@ function api_tweaker_git_update()
         end
 
         sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
-        sys.exec("rm -rf /tmp/luci-* 2>/dev/null")
+        sys.exec("rm -rf /tmp/luci-modulecache 2>/dev/null")
         os.remove(CHECK_CACHE_FILE)
 
         sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")

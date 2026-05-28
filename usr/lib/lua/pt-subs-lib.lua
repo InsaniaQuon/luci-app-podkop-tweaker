@@ -1,0 +1,323 @@
+local M = {}
+
+local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local b64lut = {}
+for i = 1, #B64 do b64lut[B64:sub(i, i)] = i - 1 end
+b64lut["="] = 0
+
+function M.b64decode(s)
+    s = s:gsub("%s+", "")
+    local out = {}
+    for i = 1, #s, 4 do
+        local a, b, c, d = b64lut[s:sub(i, i)], b64lut[s:sub(i+1, i+1)], b64lut[s:sub(i+2, i+2)], b64lut[s:sub(i+3, i+3)]
+        if not a or not b then break end
+        local v = a * 262144 + b * 4096 + (c or 0) * 64 + (d or 0)
+        table.insert(out, string.char(math.floor(v / 65536) % 256))
+        if s:sub(i+2, i+2) ~= "=" then
+            table.insert(out, string.char(math.floor(v / 256) % 256))
+        end
+        if s:sub(i+3, i+3) ~= "=" then
+            table.insert(out, string.char(v % 256))
+        end
+    end
+    return table.concat(out)
+end
+
+function M.url_decode(s)
+    if not s then return "" end
+    s = s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+    s = s:gsub("%+", " ")
+    return s
+end
+
+function M.parse_proxy_link(link)
+    if not link or link == "" then return nil end
+    local name = ""
+    local hash_pos = link:find("#", 1, true)
+    local base_link = link
+    if hash_pos then
+        name = M.url_decode(link:sub(hash_pos + 1))
+        base_link = link:sub(1, hash_pos - 1)
+    end
+    local proto = base_link:match("^(%w+)://") or "unknown"
+    local after_at = base_link:match("@([^%?]+)")
+    local server, port
+    if after_at then
+        port = after_at:match(":(%d+)$")
+        if port then
+            server = after_at:sub(1, #after_at - #port - 1)
+        else
+            server = after_at
+        end
+        if server and server:match("^%[.+%]$") then
+            server = server:sub(2, #server - 1)
+        end
+    end
+    local security = ""
+    local query = base_link:match("%?(.+)$")
+    if query then
+        security = query:match("security=([^&]+)") or ""
+    end
+    return {
+        name = name ~= "" and name or (server or "unknown"),
+        protocol = proto:upper(),
+        server = server or "unknown",
+        port = port or "",
+        security = security ~= "" and security or "none",
+        link = link
+    }
+end
+
+function M.shell_escape(s)
+    return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+function M.parse_subscription_raw(raw)
+    local content = raw
+    if not raw:match("vless://") and not raw:match("vmess://")
+        and not raw:match("ss://") and not raw:match("trojan://") then
+        local decoded = M.b64decode(raw)
+        if decoded and type(decoded) == "string"
+            and (decoded:match("vless://") or decoded:match("vmess://")
+                or decoded:match("ss://") or decoded:match("trojan://")) then
+            content = decoded
+        end
+    end
+    local proxies = {}
+    for line in content:gmatch("[^\r\n]+") do
+        line = line:match("^%s*(.-)%s*$")
+        if line:match("^vless://") or line:match("^vmess://")
+            or line:match("^ss://") or line:match("^trojan://") then
+            local p = M.parse_proxy_link(line)
+            if p then table.insert(proxies, p) end
+        end
+    end
+    return proxies
+end
+
+function M.json_parse(str)
+    if not str or str == "" then return nil end
+    local ok, result = pcall(function()
+        local json = require("luci.jsonc")
+        return json.parse(str)
+    end)
+    if ok and result then return result end
+    return nil
+end
+
+function M.json_stringify(data)
+    local ok, result = pcall(function()
+        local json = require("luci.jsonc")
+        return json.stringify(data)
+    end)
+    if ok then return result end
+    return nil
+end
+
+function M.read_subs(subs_file)
+    local fd = io.open(subs_file, "r")
+    if not fd then return {} end
+    local data = fd:read("*a")
+    fd:close()
+    local subs = M.json_parse(data)
+    if type(subs) ~= "table" then subs = {} end
+    return subs
+end
+
+function M.write_subs(subs, subs_file)
+    local str = M.json_stringify(subs)
+    if not str then return false end
+    local fd = io.open(subs_file, "w")
+    if not fd then return false end
+    fd:write(str)
+    fd:close()
+    return true
+end
+
+function M.get_proxy_sections()
+    local uci = require("luci.model.uci").cursor()
+    local result = {}
+    uci:foreach("podkop", "section", function(s)
+        if s[".name"] and s.connection_type == "proxy" and s.proxy_config_type then
+            local pct = s.proxy_config_type
+            local links = {}
+            if pct == "url" then
+                local url = uci:get("podkop", s[".name"], "url")
+                if url and url ~= "" then links = {url} end
+            elseif pct == "urltest" then
+                local l = uci:get("podkop", s[".name"], "urltest_proxy_links")
+                if type(l) == "table" then links = l
+                elseif type(l) == "string" and l ~= "" then links = {l} end
+            elseif pct == "selector" then
+                local l = uci:get("podkop", s[".name"], "selector_proxy_links")
+                if type(l) == "table" then links = l
+                elseif type(l) == "string" and l ~= "" then links = {l} end
+            end
+            if #links > 0 then
+                table.insert(result, {
+                    name = s[".name"],
+                    proxy_config_type = pct,
+                    proxy_links = links
+                })
+            end
+        end
+    end)
+    return result
+end
+
+function M.replace_proxy_link(section_name, proxy_type, slot_index, new_link)
+    local config_path = "/etc/config/podkop"
+    local fd = io.open(config_path, "r")
+    if not fd then return false, "Cannot read config" end
+    local lines = {}
+    for line in fd:lines() do
+        table.insert(lines, line)
+    end
+    fd:close()
+
+    local safe_link = new_link:gsub("'", "'\\''")
+
+    local list_name
+    if proxy_type == "url" then list_name = "url"
+    elseif proxy_type == "urltest" then list_name = "urltest_proxy_links"
+    elseif proxy_type == "selector" then list_name = "selector_proxy_links"
+    else return false, "Unknown proxy type" end
+
+    local in_section = false
+    local is_option = (proxy_type == "url")
+    local count = 0
+    local found = false
+
+    for i, line in ipairs(lines) do
+        local sn = line:match("^%s*config%s+section%s+'([^']+)'")
+        if not sn then sn = line:match("^%s*config%s+section%s+\"([^\"]+)\"") end
+        if not sn then sn = line:match("^%s*config%s+section%s+(%S+)") end
+        if sn then
+            in_section = (sn == section_name)
+        end
+        if in_section and not found then
+            if is_option then
+                if line:match("^%s*option%s+url%s+") then
+                    lines[i] = "\toption url '" .. safe_link .. "'"
+                    found = true
+                end
+            else
+                if line:match("^%s*list%s+" .. list_name .. "%s+") then
+                    if count == slot_index then
+                        lines[i] = "\tlist " .. list_name .. " '" .. safe_link .. "'"
+                        found = true
+                    end
+                    count = count + 1
+                end
+            end
+        end
+    end
+
+    if not found then
+        return false, "Proxy link not found in config"
+    end
+
+    local tmp_path = config_path .. ".tmp"
+    local wfd = io.open(tmp_path, "w")
+    if not wfd then return false, "Cannot write config" end
+    for _, line in ipairs(lines) do
+        wfd:write(line .. "\n")
+    end
+    wfd:close()
+    os.rename(tmp_path, config_path)
+    return true
+end
+
+function M.backup_config()
+    local config_path = "/etc/config/podkop"
+    local backup_path = "/etc/config/podkop.auto-backup"
+    local rfd = io.open(config_path, "r")
+    if not rfd then return false end
+    local data = rfd:read("*a")
+    rfd:close()
+    if not data then return false end
+    os.remove(backup_path)
+    local fd = io.open(backup_path, "w")
+    if not fd then return false end
+    fd:write(data)
+    fd:close()
+    return true
+end
+
+function M.do_update_subscription(section_name, slot_index, sub_url, proxy_name)
+    if not section_name or not section_name:match("^[a-zA-Z0-9_%-]+$") then
+        return nil, "invalid section name"
+    end
+    if not sub_url or not sub_url:match("^https?://") then
+        return nil, "invalid url"
+    end
+    local safe_url = M.shell_escape(sub_url)
+    local tmp = (io.popen("mktemp /tmp/pt-sub-XXXXXX 2>/dev/null"):read("*l"))
+        or "/tmp/pt-sub-" .. os.time() .. "-" .. section_name
+    os.execute("curl -sL -m 15 -A 'sing-box' -o " .. tmp .. " " .. safe_url .. " 2>/dev/null")
+
+    local fd = io.open(tmp, "r")
+    if not fd then return nil, "download failed" end
+    local raw = fd:read("*a")
+    fd:close()
+    os.remove(tmp)
+
+    local proxies = M.parse_subscription_raw(raw)
+    if #proxies == 0 then return nil, "no proxies found" end
+
+    local found = nil
+    if proxy_name and proxy_name ~= "" then
+        for _, p in ipairs(proxies) do
+            if p.name == proxy_name then found = p; break end
+        end
+    end
+    if not found and #proxies == 1 then found = proxies[1] end
+    if not found then return nil, "proxy not found" end
+
+    return found
+end
+
+function M.update_subs_timestamp(subs_file, section_name, slot_index, mode)
+    local subs = M.read_subs(subs_file)
+    if not subs[section_name] then subs[section_name] = {} end
+    while #subs[section_name] < slot_index + 1 do
+        table.insert(subs[section_name], false)
+    end
+    local existing = subs[section_name][slot_index + 1]
+    subs[section_name][slot_index + 1] = {
+        subscription_url = (type(existing) == "table") and existing.subscription_url or "",
+        proxy_name = (type(existing) == "table") and existing.proxy_name or "",
+        last_updated = os.date("%H:%M %d.%m.%Y") .. " (" .. mode .. ")"
+    }
+    M.write_subs(subs, subs_file)
+end
+
+function M.rotate_log(log_file, max_lines)
+    local fd = io.open(log_file, "r")
+    if not fd then return end
+    local lines = {}
+    for line in fd:lines() do
+        table.insert(lines, line)
+    end
+    fd:close()
+
+    if #lines <= max_lines then return end
+
+    local start = #lines - max_lines + 1
+    local wfd = io.open(log_file, "w")
+    if not wfd then return end
+    for i = start, #lines do
+        wfd:write(lines[i] .. "\n")
+    end
+    wfd:close()
+end
+
+function M.append_log(log_file, max_lines, line)
+    M.rotate_log(log_file, max_lines - 1)
+    local fd = io.open(log_file, "a")
+    if not fd then return end
+    fd:write(line .. "\n")
+    fd:close()
+end
+
+return M

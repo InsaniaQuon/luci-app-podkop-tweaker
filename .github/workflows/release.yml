@@ -16,6 +16,8 @@ jobs:
           tar -czf luci-app-podkop-tweaker-${{ github.ref_name }}.tar.gz \
             usr/lib/lua/luci/controller/podkop-tweaker.lua \
             usr/lib/lua/luci/view/podkop-tweaker/ \
+            usr/lib/lua/pt-subs-lib.lua \
+            usr/lib/lua/pt-auto-update.lua \
             usr/share/luci/menu.d/luci-app-podkop-tweaker.json \
             usr/share/rpcd/acl.d/luci-app-podkop-tweaker.json
 

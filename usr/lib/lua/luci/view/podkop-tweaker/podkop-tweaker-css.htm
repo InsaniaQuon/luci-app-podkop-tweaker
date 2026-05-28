@@ -20,7 +20,10 @@ Author: InsaniaQuon
 .ps-modal-content{background:var(--ps-bg);border-radius:10px;padding:24px;min-width:400px;max-width:600px;box-shadow:0 8px 32px rgba(0,0,0,.15)}
 .ps-modal-content h3{margin:0 0 16px}
 .ps-modal-footer{display:flex;gap:10px;justify-content:flex-end}
-.ps-version{text-align:right;font-size:22px;color:var(--ps-text-dim);padding:16px 4px 4px;margin-top:20px}
+.ps-version{display:flex;align-items:center;justify-content:flex-end;gap:6px;font-size:22px;color:var(--ps-text-dim);padding:16px 4px 4px;margin-top:20px}
+.ps-version a{color:var(--ps-text-dim);text-decoration:none;display:inline-flex;align-items:center;transition:opacity .2s}
+.ps-version a:hover{opacity:.6}
+.ps-version svg{width:22px;height:22px;fill:currentColor}
 .ps-config-header{display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:12px 0;flex-wrap:wrap}
 .ps-config-path{font-family:monospace;font-size:13px;color:var(--ps-text-dim);background:var(--ps-bg-alt);padding:3px 8px;border-radius:4px}
 .ps-config-status{font-size:13px;font-weight:600;margin-left:14px;white-space:nowrap}
