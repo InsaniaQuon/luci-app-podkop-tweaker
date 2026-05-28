@@ -1,0 +1,20 @@
+{
+	"luci-app-podkop-tweaker": {
+		"description": "Grant access to Podkop Tweaker config editor",
+		"read": {
+			"file": {
+				"/etc/config/podkop": [ "read" ]
+			},
+			"ubus": {
+				"service": [ "list" ]
+			},
+			"uci": [ "podkop" ]
+		},
+		"write": {
+			"file": {
+				"/etc/config/podkop": [ "write" ]
+			},
+			"uci": [ "podkop" ]
+		}
+	}
+}

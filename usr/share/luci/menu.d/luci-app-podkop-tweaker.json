@@ -1,0 +1,13 @@
+{
+	"admin/services/podkop-tweaker": {
+		"title": "Podkop Tweaker",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "podkop-tweaker/config"
+		},
+		"depends": {
+			"acl": [ "luci-app-podkop-tweaker" ]
+		}
+	}
+}

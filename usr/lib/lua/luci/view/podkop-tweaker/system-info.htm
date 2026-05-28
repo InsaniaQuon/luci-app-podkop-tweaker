@@ -1,0 +1,214 @@
+<%#
+LuCI Podkop Tweaker — System Information Tab
+Author: InsaniaQuon
+-%>
+<%+header%>
+
+<div class="cbi-map" id="cbi-podkop-tweaker">
+    <h2 name="content">Podkop Tweaker</h2>
+
+    <ul class="cbi-tabmenu">
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
+        <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Update Tweaker</a></li>
+    </ul>
+
+    <div class="cbi-section">
+        <div class="ps-sysinfo-header">
+            <h3>System Information</h3>
+            <button class="btn cbi-button" id="ps-refresh-info">Refresh</button>
+        </div>
+
+        <div class="ps-sysinfo-loading" id="ps-sysinfo-loading">Loading system information...</div>
+
+        <table class="ps-sysinfo-table" id="ps-sysinfo-table" style="display:none;">
+            <tbody>
+                <tr>
+                    <td class="ps-sysinfo-label">Podkop</td>
+                    <td class="ps-sysinfo-value" id="ps-info-podkop">—</td>
+                </tr>
+                <tr>
+                    <td class="ps-sysinfo-label">Luci App</td>
+                    <td class="ps-sysinfo-value" id="ps-info-luci">—</td>
+                </tr>
+                <tr>
+                    <td class="ps-sysinfo-label">Sing-box</td>
+                    <td class="ps-sysinfo-value" id="ps-info-singbox">—</td>
+                </tr>
+                <tr>
+                    <td class="ps-sysinfo-label">OS</td>
+                    <td class="ps-sysinfo-value" id="ps-info-os">—</td>
+                </tr>
+                <tr>
+                    <td class="ps-sysinfo-label">Device</td>
+                    <td class="ps-sysinfo-value" id="ps-info-device">—</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="ps-sysinfo-error" id="ps-sysinfo-error" style="display:none;"></div>
+
+        <div class="ps-sysinfo-actions" id="ps-sysinfo-actions" style="display:none;">
+            <button class="btn cbi-button cbi-button-apply ps-update-btn" id="ps-update-btn" style="display:none;">
+                Update Podkop
+            </button>
+            <span class="ps-latest-info" id="ps-latest-info" style="display:none;"></span>
+            <span class="ps-sysinfo-status" id="ps-update-status"></span>
+        </div>
+
+        <div class="ps-warning-box">
+            <strong>&#9888; Update info:</strong> The update opens a terminal window (ttyd) where you can follow the process and answer any questions. An automatic backup of your config will be created before updating. After the update completes, click Refresh to see the new version.
+        </div>
+    </div>
+
+    <div class="ps-version">Podkop Tweaker v<%= app_version %> by InsaniaQuon</div>
+</div>
+
+<style>
+<% include("podkop-tweaker/podkop-tweaker-css") %>
+</style>
+
+<script>
+(function() {
+    var CSRF = '<%= token or csrf_token or "" %>';
+    var URLS = {
+        systemInfo: '<%=url("admin/services/podkop-tweaker/api/system_info")%>',
+        updateStart: '<%=url("admin/services/podkop-tweaker/api/update_start")%>'
+    };
+
+    var loadingEl = document.getElementById('ps-sysinfo-loading');
+    var tableEl = document.getElementById('ps-sysinfo-table');
+    var errorEl = document.getElementById('ps-sysinfo-error');
+    var actionsEl = document.getElementById('ps-sysinfo-actions');
+    var updateBtn = document.getElementById('ps-update-btn');
+    var latestInfo = document.getElementById('ps-latest-info');
+    var updateStatus = document.getElementById('ps-update-status');
+    var refreshBtn = document.getElementById('ps-refresh-info');
+
+    function escapeHtml(s) {
+        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function setUpdateStatus(text, color) {
+        updateStatus.textContent = text;
+        updateStatus.style.color = color || '#888';
+    }
+
+    function renderInfo(data) {
+        loadingEl.style.display = 'none';
+        errorEl.style.display = 'none';
+        tableEl.style.display = '';
+        actionsEl.style.display = '';
+
+        var podkopCell = document.getElementById('ps-info-podkop');
+        var currentVer = escapeHtml(data.podkop_version);
+        var latestVer = escapeHtml(data.podkop_latest_version);
+
+        if (data.update_available) {
+            podkopCell.innerHTML = currentVer + ' <span class="ps-ver-outdated">(Outdated)</span>';
+            updateBtn.style.display = 'inline-block';
+            latestInfo.textContent = 'Latest: ' + latestVer;
+            latestInfo.style.display = 'inline';
+        } else if (data.podkop_latest_version && data.podkop_latest_version !== 'unknown') {
+            podkopCell.innerHTML = currentVer + ' <span class="ps-ver-latest">(Latest)</span>';
+            updateBtn.style.display = 'none';
+            latestInfo.style.display = 'none';
+        } else {
+            podkopCell.textContent = currentVer;
+            updateBtn.style.display = 'none';
+            latestInfo.style.display = 'none';
+        }
+
+        document.getElementById('ps-info-luci').textContent = data.luci_app_version || 'unknown';
+        document.getElementById('ps-info-singbox').textContent = data.sing_box_version || 'unknown';
+        document.getElementById('ps-info-os').textContent = data.openwrt_version || 'unknown';
+        document.getElementById('ps-info-device').textContent = data.device_model || 'unknown';
+
+        if (data.error) {
+            errorEl.textContent = data.error;
+            errorEl.style.display = 'block';
+        }
+    }
+
+    function renderError(msg) {
+        loadingEl.style.display = 'none';
+        tableEl.style.display = 'none';
+        actionsEl.style.display = 'none';
+        errorEl.textContent = msg;
+        errorEl.style.display = 'block';
+    }
+
+    function loadInfo() {
+        loadingEl.style.display = 'block';
+        tableEl.style.display = 'none';
+        errorEl.style.display = 'none';
+        actionsEl.style.display = 'none';
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.systemInfo);
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var data = JSON.parse(xhr.responseText);
+                    renderInfo(data);
+                } catch (e) {
+                    renderError('Invalid response from server');
+                }
+            } else {
+                renderError('HTTP error: ' + xhr.status);
+            }
+        };
+        xhr.onerror = function() {
+            renderError('Network error: failed to connect to server');
+        };
+        xhr.send();
+    }
+
+    function doUpdate() {
+        if (!confirm('Update Podkop to the latest version?\n\nAn automatic backup of your config will be created.\nA terminal window will open for the interactive update.')) return;
+
+        updateBtn.disabled = true;
+        setUpdateStatus('Starting terminal...', '#2196f3');
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', URLS.updateStart);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            updateBtn.disabled = false;
+            if (xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success && resp.url) {
+                        setUpdateStatus('Terminal opened. Complete the update there.', '#4caf50');
+                        window.open(resp.url, '_blank');
+                    } else {
+                        setUpdateStatus('Error: ' + (resp.error || 'Unknown error'), '#f44336');
+                    }
+                } catch (e) {
+                    setUpdateStatus('Invalid response from server', '#f44336');
+                }
+            } else {
+                setUpdateStatus('HTTP error: ' + xhr.status, '#f44336');
+            }
+        };
+        xhr.onerror = function() {
+            updateBtn.disabled = false;
+            setUpdateStatus('Network error', '#f44336');
+        };
+        xhr.send('token=' + encodeURIComponent(CSRF));
+    }
+
+    updateBtn.addEventListener('click', doUpdate);
+
+    refreshBtn.addEventListener('click', function() {
+        setUpdateStatus('', '');
+        loadInfo();
+    });
+
+    loadInfo();
+})();
+</script>
+
+<%+footer%>

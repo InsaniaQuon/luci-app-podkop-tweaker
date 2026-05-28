@@ -1,0 +1,771 @@
+ <%#
+LuCI Podkop Tweaker — Subscriptions Tab
+Author: InsaniaQuon
+-%>
+<%+header%>
+
+<div class="cbi-map" id="cbi-podkop-tweaker">
+    <h2 name="content">Podkop Tweaker</h2>
+
+    <ul class="cbi-tabmenu">
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
+        <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Update Tweaker</a></li>
+    </ul>
+
+    <div class="cbi-section">
+        <div class="ps-sysinfo-header">
+            <h3>Subscriptions</h3>
+            <div class="ps-header-btns">
+                <button class="btn cbi-button" id="ps-subs-refresh">Refresh Sections</button>
+                <button class="btn cbi-button cbi-button-apply" id="ps-subs-update-all">Update All Subs</button>
+                <span class="ps-global-status" id="ps-global-status"></span>
+            </div>
+        </div>
+
+        <div class="ps-sysinfo-loading" id="ps-subs-loading">Loading proxy sections...</div>
+
+        <div id="ps-subs-content" style="display:none;"></div>
+
+        <div class="ps-sysinfo-error" id="ps-subs-error" style="display:none;"></div>
+
+        <div id="ps-options-container" style="display:none;"></div>
+
+        <div class="ps-warning-box">
+            <strong>&#9888; Info:</strong> Attach a subscription URL to each proxy slot. When you update a subscription, the proxy link will be replaced with the selected server from the subscription response. A backup is created automatically before each change.
+        </div>
+    </div>
+
+    <div class="ps-version">Podkop Tweaker v<%= app_version %> by InsaniaQuon</div>
+</div>
+
+<div class="ps-modal" id="ps-sub-modal" style="display:none;">
+    <div class="ps-modal-content ps-modal-wide">
+        <h3 id="ps-sub-modal-title">Attach Subscription</h3>
+        <div class="ps-sub-url-row">
+            <input type="text" id="ps-sub-url" class="ps-sub-url-input" placeholder="Subscription URL..." />
+            <button class="btn cbi-button cbi-button-apply" id="ps-sub-fetch-btn">Fetch</button>
+        </div>
+        <div class="ps-sub-fetch-status" id="ps-sub-fetch-status"></div>
+        <div id="ps-sub-proxies" style="display:none;">
+            <p class="ps-sub-proxies-hint">Select a proxy from the subscription:</p>
+            <div class="ps-sub-proxy-list" id="ps-sub-proxy-list"></div>
+        </div>
+        <div class="ps-modal-footer">
+            <button class="btn cbi-button" id="ps-sub-cancel">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<style>
+<% include("podkop-tweaker/podkop-tweaker-css") %>
+</style>
+
+<script>
+(function() {
+    var CSRF = '<%= token or csrf_token or "" %>';
+    var URLS = {
+        state: '<%=url("admin/services/podkop-tweaker/api/subscription_state")%>',
+        fetch: '<%=url("admin/services/podkop-tweaker/api/subscription_fetch")%>',
+        attach: '<%=url("admin/services/podkop-tweaker/api/subscription_attach")%>',
+        detach: '<%=url("admin/services/podkop-tweaker/api/subscription_detach")%>',
+        service_status: '<%=url("admin/services/podkop-tweaker/api/service_status")%>',
+        settings_read: '<%=url("admin/services/podkop-tweaker/api/settings_read")%>',
+        settings_save: '<%=url("admin/services/podkop-tweaker/api/settings_save")%>',
+        update_all: '<%=url("admin/services/podkop-tweaker/api/update_all_subs")%>'
+    };
+
+    var loadingEl = document.getElementById('ps-subs-loading');
+    var contentEl = document.getElementById('ps-subs-content');
+    var errorEl = document.getElementById('ps-subs-error');
+    var refreshBtn = document.getElementById('ps-subs-refresh');
+    var updateAllBtn = document.getElementById('ps-subs-update-all');
+    var optionsContainer = document.getElementById('ps-options-container');
+    var globalStatus = document.getElementById('ps-global-status');
+
+    var subModal = document.getElementById('ps-sub-modal');
+    var subUrlInput = document.getElementById('ps-sub-url');
+    var subFetchBtn = document.getElementById('ps-sub-fetch-btn');
+    var subFetchStatus = document.getElementById('ps-sub-fetch-status');
+    var subProxiesEl = document.getElementById('ps-sub-proxies');
+    var subProxyList = document.getElementById('ps-sub-proxy-list');
+    var subCancelBtn = document.getElementById('ps-sub-cancel');
+    var subModalTitle = document.getElementById('ps-sub-modal-title');
+
+    var currentSection = null;
+    var currentIndex = -1;
+    var fetchedProxies = [];
+
+    function escapeHtml(s) {
+        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function escapeAttr(s) {
+        return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function setFetchStatus(text, color) {
+        subFetchStatus.textContent = text;
+        subFetchStatus.style.color = color || '#888';
+    }
+
+    function setGlobalStatus(text, color) {
+        globalStatus.textContent = text;
+        globalStatus.style.color = color || '#888';
+    }
+
+    function renderSections(data) {
+        loadingEl.style.display = 'none';
+        errorEl.style.display = 'none';
+        contentEl.style.display = '';
+
+        if (!data.sections || data.sections.length === 0) {
+            contentEl.innerHTML = '<p>No proxy sections found in Podkop config.</p>';
+            return;
+        }
+
+        var html = '';
+        for (var s = 0; s < data.sections.length; s++) {
+            html += buildSectionHTML(data.sections[s]);
+        }
+
+        contentEl.innerHTML = html;
+        bindSlotButtons();
+    }
+
+    function renderError(msg) {
+        loadingEl.style.display = 'none';
+        contentEl.style.display = 'none';
+        errorEl.textContent = msg;
+        errorEl.style.display = 'block';
+    }
+
+    function loadState() {
+        loadingEl.style.display = 'block';
+        contentEl.style.display = 'none';
+        errorEl.style.display = 'none';
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.state);
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try { renderSections(JSON.parse(xhr.responseText)); }
+                catch (e) { renderError('Invalid response'); }
+            } else { renderError('HTTP error: ' + xhr.status); }
+        };
+        xhr.onerror = function() { renderError('Network error'); };
+        xhr.send();
+    }
+
+    function loadStateSilent() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.state);
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try { renderSections(JSON.parse(xhr.responseText)); }
+                catch (e) {}
+            }
+        };
+        xhr.send();
+    }
+
+    function loadSectionState(sectionName) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.state);
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            try {
+                var data = JSON.parse(xhr.responseText);
+                if (!data.sections) return;
+                for (var s = 0; s < data.sections.length; s++) {
+                    if (data.sections[s].name === sectionName) {
+                        renderSingleSection(data.sections[s], s);
+                        break;
+                    }
+                }
+            } catch (e) {}
+        };
+        xhr.send();
+    }
+
+    function buildSectionHTML(sec) {
+        var typeLabel = sec.proxy_config_type === 'url' ? 'Single URL'
+            : sec.proxy_config_type === 'urltest' ? 'URLTest'
+            : sec.proxy_config_type === 'selector' ? 'Selector' : sec.proxy_config_type;
+
+        var html = '<div class="ps-sub-section">';
+        html += '<div class="ps-sub-section-header">';
+        html += '<span class="ps-sub-section-name">' + escapeHtml(sec.name) + '</span>';
+        html += '<span class="ps-sub-section-meta">&mdash; ' + typeLabel + ' &middot; ' + sec.slots.length + ' proxy(ies)</span>';
+        html += '</div>';
+
+        for (var i = 0; i < sec.slots.length; i++) {
+            var slot = sec.slots[i];
+            var p = slot.proxy || {};
+            var sub = slot.subscription;
+
+            html += '<div class="ps-sub-slot">';
+            html += '<div class="ps-sub-slot-info">';
+            html += '<span class="ps-sub-slot-num">' + (i + 1) + '.</span> ';
+            html += '<span class="ps-sub-slot-name">' + escapeHtml(p.name || 'unknown') + '</span>';
+            html += '<span class="ps-sub-slot-detail">' + escapeHtml(p.server) + (p.port ? ':' + p.port : '') + ' &middot; ' + escapeHtml(p.protocol) + ' &middot; ' + escapeHtml(p.security) + '</span>';
+            if (sub && sub.last_updated) {
+                html += '<span class="ps-sub-slot-updated">Updated: ' + escapeHtml(sub.last_updated) + '</span>';
+            }
+            html += '</div>';
+
+            html += '<div class="ps-sub-slot-sub">';
+            if (sub && sub.subscription_url) {
+                var shortUrl = sub.subscription_url.length > 50
+                    ? sub.subscription_url.substring(0, 47) + '...' : sub.subscription_url;
+                html += '<span class="ps-sub-linked">Sub: ' + escapeHtml(shortUrl) + '</span>';
+                html += '<button class="btn cbi-button ps-sub-btn-update" data-section="' + escapeAttr(sec.name) + '" data-index="' + slot.index + '" data-url="' + escapeAttr(sub.subscription_url) + '" data-pname="' + escapeAttr(sub.proxy_name || '') + '">Update</button>';
+                html += '<button class="btn cbi-button ps-sub-btn-change" data-section="' + escapeAttr(sec.name) + '" data-index="' + slot.index + '" data-url="' + escapeAttr(sub.subscription_url) + '">Change</button>';
+                html += '<button class="btn cbi-button ps-sub-btn-detach" data-section="' + escapeAttr(sec.name) + '" data-index="' + slot.index + '">Detach</button>';
+            } else {
+                html += '<span class="ps-sub-unlinked">Subscription: not set</span>';
+                html += '<button class="btn cbi-button cbi-button-apply ps-sub-btn-attach" data-section="' + escapeAttr(sec.name) + '" data-index="' + slot.index + '">Attach subscription</button>';
+            }
+            html += '<span class="ps-sub-slot-status" id="ps-slot-status-' + sec.name + '-' + slot.index + '"></span>';
+            html += '</div>';
+            html += '</div>';
+        }
+        html += '</div>';
+        return html;
+    }
+
+    function renderSingleSection(sec) {
+        var sections = contentEl.querySelectorAll('.ps-sub-section');
+        for (var i = 0; i < sections.length; i++) {
+            var nameEl = sections[i].querySelector('.ps-sub-section-name');
+            if (nameEl && nameEl.textContent === sec.name) {
+                var temp = document.createElement('div');
+                temp.innerHTML = buildSectionHTML(sec);
+                sections[i].parentNode.replaceChild(temp.firstChild, sections[i]);
+                bindSlotButtons();
+                return;
+            }
+        }
+    }
+
+    function setSlotStatus(section, index, text, color) {
+        var el = document.getElementById('ps-slot-status-' + section + '-' + index);
+        if (el) { el.textContent = text; el.style.color = color || '#888'; }
+    }
+
+    function bindSlotButtons() {
+        var btns = contentEl.querySelectorAll('[data-section]');
+        for (var i = 0; i < btns.length; i++) {
+            (function(btn) {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    var section = btn.getAttribute('data-section');
+                    var index = parseInt(btn.getAttribute('data-index'), 10);
+                    var url = btn.getAttribute('data-url') || '';
+                    var pname = btn.getAttribute('data-pname') || '';
+
+                    if (btn.classList.contains('ps-sub-btn-attach') || btn.classList.contains('ps-sub-btn-change')) {
+                        openModal(section, index, url);
+                    } else if (btn.classList.contains('ps-sub-btn-update')) {
+                        doUpdate(section, index, url, pname);
+                    } else if (btn.classList.contains('ps-sub-btn-detach')) {
+                        doDetach(section, index);
+                    }
+                });
+            })(btns[i]);
+        }
+    }
+
+    function openModal(section, index, prefillUrl) {
+        currentSection = section;
+        currentIndex = index;
+        fetchedProxies = [];
+        subModalTitle.textContent = prefillUrl ? 'Change Proxy' : 'Attach Subscription';
+        subUrlInput.value = prefillUrl || '';
+        subProxiesEl.style.display = 'none';
+        subProxyList.innerHTML = '';
+        setFetchStatus('', '');
+        subModal.style.display = 'flex';
+    }
+
+    function closeModal() {
+        subModal.style.display = 'none';
+        currentSection = null;
+        currentIndex = -1;
+    }
+
+    subCancelBtn.addEventListener('click', closeModal);
+    subModal.addEventListener('click', function(e) {
+        if (e.target === subModal) closeModal();
+    });
+
+    function doFetch() {
+        var url = subUrlInput.value.trim();
+        if (!url) { setFetchStatus('Enter a URL', '#f44336'); return; }
+
+        subFetchBtn.disabled = true;
+        subFetchBtn.textContent = 'Fetching...';
+        setFetchStatus('Downloading...', '#2196f3');
+        subProxiesEl.style.display = 'none';
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', URLS.fetch);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            subFetchBtn.disabled = false;
+            subFetchBtn.textContent = 'Fetch';
+            if (xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success && resp.proxies) {
+                        fetchedProxies = resp.proxies;
+                        renderProxyList();
+                        setFetchStatus(resp.proxies.length + ' proxy(ies) found', '#4caf50');
+                    } else {
+                        setFetchStatus(resp.error || 'Unknown error', '#f44336');
+                    }
+                } catch (e) { setFetchStatus('Invalid response', '#f44336'); }
+            } else { setFetchStatus('HTTP error: ' + xhr.status, '#f44336'); }
+        };
+        xhr.onerror = function() {
+            subFetchBtn.disabled = false;
+            subFetchBtn.textContent = 'Fetch';
+            setFetchStatus('Network error', '#f44336');
+        };
+        xhr.send('token=' + encodeURIComponent(CSRF) + '&url=' + encodeURIComponent(url));
+    }
+
+    subFetchBtn.addEventListener('click', doFetch);
+
+    subUrlInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); doFetch(); }
+    });
+
+    function renderProxyList() {
+        if (fetchedProxies.length === 0) { subProxiesEl.style.display = 'none'; return; }
+        var html = '';
+        for (var i = 0; i < fetchedProxies.length; i++) {
+            var p = fetchedProxies[i];
+            html += '<div class="ps-sub-proxy-item" data-idx="' + i + '">';
+            html += '<div class="ps-sub-proxy-name">' + escapeHtml(p.name) + '</div>';
+            html += '<div class="ps-sub-proxy-detail">' + escapeHtml(p.server) + (p.port ? ':' + p.port : '') + ' &middot; ' + escapeHtml(p.protocol) + ' &middot; ' + escapeHtml(p.security) + '</div>';
+            html += '</div>';
+        }
+        subProxyList.innerHTML = html;
+        subProxiesEl.style.display = '';
+
+        var items = subProxyList.querySelectorAll('.ps-sub-proxy-item');
+        for (var j = 0; j < items.length; j++) {
+            (function(item) {
+                item.addEventListener('click', function() {
+                    var idx = parseInt(item.getAttribute('data-idx'), 10);
+                    doAttach(currentSection, currentIndex, subUrlInput.value.trim(), fetchedProxies[idx]);
+                });
+            })(items[j]);
+        }
+    }
+
+    function waitForRestart(callback) {
+        var attempts = 0, max = 8;
+        var iv = setInterval(function() {
+            var xhr = new XMLHttpRequest();
+            xhr.open('GET', URLS.service_status);
+            xhr.onload = function() {
+                attempts++;
+                if (xhr.status === 200) {
+                    try {
+                        var r = JSON.parse(xhr.responseText);
+                        if (r.running) {
+                            clearInterval(iv);
+                            if (callback) callback();
+                        }
+                    } catch(e) {}
+                }
+                if (attempts >= max) {
+                    clearInterval(iv);
+                    if (callback) callback();
+                }
+            };
+            xhr.onerror = function() {
+                attempts++;
+                if (attempts >= max) { clearInterval(iv); if (callback) callback(); }
+            };
+            xhr.send();
+        }, 2000);
+    }
+
+    function doAttach(section, index, subUrl, proxy) {
+        if (!confirm('Apply proxy "' + (proxy.name || 'unknown') + '" to section "' + section + '" slot ' + (index + 1) + '?')) return;
+
+        setFetchStatus('Applying...', '#2196f3');
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', URLS.attach);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success) {
+                        closeModal();
+                        setGlobalStatus('Restarting service...', '#2196f3');
+                        waitForRestart(function() {
+                            setGlobalStatus('Updated successfully', '#4caf50');
+                            loadSectionState(section);
+                        });
+                    } else {
+                        setFetchStatus(resp.error || 'Unknown error', '#f44336');
+                    }
+                } catch (e) { setFetchStatus('Invalid response', '#f44336'); }
+            } else { setFetchStatus('HTTP error: ' + xhr.status, '#f44336'); }
+        };
+        xhr.onerror = function() { setFetchStatus('Network error', '#f44336'); };
+        xhr.send('token=' + encodeURIComponent(CSRF)
+            + '&section=' + encodeURIComponent(section)
+            + '&index=' + index
+            + '&subscription_url=' + encodeURIComponent(subUrl)
+            + '&proxy_name=' + encodeURIComponent(proxy.name || '')
+            + '&link=' + encodeURIComponent(proxy.link || ''));
+    }
+
+    function doUpdate(section, index, subUrl, proxyName) {
+        setSlotStatus(section, index, 'Updating...', '#2196f3');
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', URLS.fetch);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success && resp.proxies) {
+                        var found = null;
+                        if (proxyName) {
+                            for (var i = 0; i < resp.proxies.length; i++) {
+                                if (resp.proxies[i].name === proxyName) { found = resp.proxies[i]; break; }
+                            }
+                        }
+                        if (!found && resp.proxies.length === 1) found = resp.proxies[0];
+                        if (found) {
+                            doAttachDirect(section, index, subUrl, found);
+                        } else {
+                            openModal(section, index, subUrl);
+                            fetchedProxies = resp.proxies;
+                            renderProxyList();
+                            setFetchStatus('Previous proxy not found. Select a new one.', '#ff9800');
+                            setSlotStatus(section, index, '', '');
+                        }
+                    } else {
+                        setSlotStatus(section, index, resp.error || 'Fetch failed', '#f44336');
+                    }
+                } catch (e) { setSlotStatus(section, index, 'Invalid response', '#f44336'); }
+            } else { setSlotStatus(section, index, 'HTTP error: ' + xhr.status, '#f44336'); }
+        };
+        xhr.onerror = function() { setSlotStatus(section, index, 'Network error', '#f44336'); };
+        xhr.send('token=' + encodeURIComponent(CSRF) + '&url=' + encodeURIComponent(subUrl));
+    }
+
+    function doAttachDirect(section, index, subUrl, proxy) {
+        setSlotStatus(section, index, 'Applying...', '#2196f3');
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', URLS.attach);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success) {
+                        setSlotStatus(section, index, 'Restarting...', '#2196f3');
+                        waitForRestart(function() {
+                            if (resp.unchanged) {
+                                setSlotStatus(section, index, 'Up to date', '#4caf50');
+                            } else {
+                                setSlotStatus(section, index, 'Updated', '#4caf50');
+                            }
+                            loadSectionState(section);
+                        });
+                    } else {
+                        setSlotStatus(section, index, resp.error || 'Unknown error', '#f44336');
+                    }
+                } catch (e) { setSlotStatus(section, index, 'Invalid response', '#f44336'); }
+            } else { setSlotStatus(section, index, 'HTTP error: ' + xhr.status, '#f44336'); }
+        };
+        xhr.onerror = function() { setSlotStatus(section, index, 'Network error', '#f44336'); };
+        xhr.send('token=' + encodeURIComponent(CSRF)
+            + '&section=' + encodeURIComponent(section)
+            + '&index=' + index
+            + '&subscription_url=' + encodeURIComponent(subUrl)
+            + '&proxy_name=' + encodeURIComponent(proxy.name || '')
+            + '&link=' + encodeURIComponent(proxy.link || ''));
+    }
+
+    function doDetach(section, index) {
+        if (!confirm('Remove subscription association from slot ' + (index + 1) + '?\nThe proxy link will remain in the config.')) return;
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', URLS.detach);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            if (xhr.status === 200) { loadSectionState(section); }
+        };
+        xhr.send('token=' + encodeURIComponent(CSRF)
+            + '&section=' + encodeURIComponent(section)
+            + '&index=' + index);
+    }
+
+    // === Options ===
+    function loadOptions() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.settings_read);
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try { renderOptions(JSON.parse(xhr.responseText)); }
+                catch (e) {}
+            }
+        };
+        xhr.send();
+    }
+
+    function renderOptions(settings) {
+        var interval = settings.auto_update_interval || 0;
+        var startVal = settings.auto_update_start || '02:00';
+        var restartVal = !!settings.auto_update_on_restart;
+        var cronEnabled = interval > 0;
+        var showStyle = cronEnabled ? '' : 'display:none';
+
+        var html = '<div class="ps-options-block">';
+        html += '<h4>Auto-Update</h4>';
+        html += '<div class="ps-options-row">';
+        html += '<input type="checkbox" id="ps-opt-cron"' + (cronEnabled ? ' checked' : '') + ' />';
+        html += '<label for="ps-opt-cron">Every</label>';
+        html += '<input type="text" id="ps-opt-interval" value="' + (cronEnabled ? interval : 6) + '" placeholder="6" style="' + showStyle + '" />';
+        html += '<span id="ps-opt-cron-fields" style="' + showStyle + '">hours starting at</span>';
+        html += '<input type="text" id="ps-opt-start" value="' + escapeAttr(startVal) + '" placeholder="02:00" style="' + showStyle + '" />';
+        html += '<span id="ps-opt-cron-msk" style="' + showStyle + '">(MSK, daily)</span>';
+        html += '</div>';
+        html += '<div class="ps-options-row" style="font-size:12px;color:var(--ps-text-dim);margin-bottom:0">';
+        html += '<span style="margin-left:22px">Example: every 4 hours from 02:00 &rarr; 02:00, 06:00, 10:00, 14:00, 18:00, 22:00</span>';
+        html += '</div>';
+        html += '<div class="ps-options-row">';
+        html += '<input type="checkbox" id="ps-opt-restart"' + (restartVal ? ' checked' : '') + ' />';
+        html += '<label for="ps-opt-restart">Auto-update on WAN connect</label>';
+        html += '</div>';
+        html += '<div class="ps-options-spacer"></div>';
+        html += '<div class="ps-options-row">';
+        html += '<button class="btn cbi-button cbi-button-apply" id="ps-opt-save">Save Options</button>';
+        html += '<span class="ps-sub-slot-status" id="ps-opt-status"></span>';
+        html += '</div>';
+        html += '</div>';
+
+        optionsContainer.innerHTML = html;
+        optionsContainer.style.display = '';
+
+        function toggleCronFields(show) {
+            var els = ['ps-opt-interval', 'ps-opt-cron-fields', 'ps-opt-start', 'ps-opt-cron-msk'];
+            for (var i = 0; i < els.length; i++) {
+                var el = document.getElementById(els[i]);
+                if (el) el.style.display = show ? '' : 'none';
+            }
+        }
+
+        document.getElementById('ps-opt-cron').addEventListener('change', function() {
+            toggleCronFields(this.checked);
+        });
+
+        document.getElementById('ps-opt-start').addEventListener('input', function() {
+            this.value = this.value.replace(/[^\d:]/g, '');
+        });
+
+        document.getElementById('ps-opt-save').addEventListener('click', function() {
+            var cronChecked = document.getElementById('ps-opt-cron').checked;
+            var intervalVal = parseInt(document.getElementById('ps-opt-interval').value, 10);
+            var startInput = document.getElementById('ps-opt-start').value.trim();
+            var restartChecked = document.getElementById('ps-opt-restart').checked;
+            var statusEl = document.getElementById('ps-opt-status');
+
+            if (cronChecked) {
+                if (isNaN(intervalVal) || intervalVal < 1 || intervalVal > 24) {
+                    statusEl.textContent = 'Interval must be 1-24 hours';
+                    statusEl.style.color = '#f44336';
+                    return;
+                }
+                if (!/^\d{2}:\d{2}$/.test(startInput)) {
+                    statusEl.textContent = 'Invalid time format (HH:MM)';
+                    statusEl.style.color = '#f44336';
+                    return;
+                }
+                var hh = parseInt(startInput.split(':')[0], 10);
+                var mm = parseInt(startInput.split(':')[1], 10);
+                if (hh < 0 || hh > 23 || mm < 0 || mm > 59) {
+                    statusEl.textContent = 'Invalid time (HH: 00-23, MM: 00-59)';
+                    statusEl.style.color = '#f44336';
+                    return;
+                }
+            }
+
+            statusEl.textContent = 'Saving...';
+            statusEl.style.color = '#2196f3';
+
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', URLS.settings_save);
+            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    try {
+                        var resp = JSON.parse(xhr.responseText);
+                        if (resp.success) {
+                            statusEl.textContent = 'Saved';
+                            statusEl.style.color = '#4caf50';
+                        } else {
+                            statusEl.textContent = resp.error || 'Save failed';
+                            statusEl.style.color = '#f44336';
+                        }
+                    } catch (e) { statusEl.textContent = 'Invalid response'; statusEl.style.color = '#f44336'; }
+                } else { statusEl.textContent = 'HTTP error: ' + xhr.status; statusEl.style.color = '#f44336'; }
+            };
+            xhr.onerror = function() { statusEl.textContent = 'Network error'; statusEl.style.color = '#f44336'; };
+            xhr.send('token=' + encodeURIComponent(CSRF)
+                + '&auto_update_interval=' + (cronChecked ? intervalVal : '0')
+                + '&auto_update_start=' + encodeURIComponent(cronChecked ? startInput : '')
+                + '&auto_update_on_restart=' + (restartChecked ? '1' : '0'));
+        });
+    }
+
+    // === Update All Subs ===
+    updateAllBtn.addEventListener('click', function() {
+        if (!confirm('Update all subscribed proxy slots from their subscription URLs?')) return;
+
+        updateAllBtn.disabled = true;
+        setGlobalStatus('Loading subscription state...', '#2196f3');
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.state);
+        xhr.onload = function() {
+            if (xhr.status !== 200) {
+                setGlobalStatus('Failed to load state', '#f44336');
+                updateAllBtn.disabled = false;
+                return;
+            }
+            var data;
+            try { data = JSON.parse(xhr.responseText); } catch (e) {
+                setGlobalStatus('Invalid response', '#f44336');
+                updateAllBtn.disabled = false;
+                return;
+            }
+
+            var tasks = [];
+            for (var s = 0; s < data.sections.length; s++) {
+                var sec = data.sections[s];
+                for (var i = 0; i < sec.slots.length; i++) {
+                    var slot = sec.slots[i];
+                    if (slot.subscription && slot.subscription.subscription_url) {
+                        tasks.push({
+                            section: sec.name,
+                            index: slot.index,
+                            url: slot.subscription.subscription_url,
+                            proxy_name: slot.subscription.proxy_name || ''
+                        });
+                    }
+                }
+            }
+
+            if (tasks.length === 0) {
+                setGlobalStatus('No subscriptions to update', '#ff9800');
+                updateAllBtn.disabled = false;
+                return;
+            }
+
+            var updated = 0, skipped = 0, failed = 0;
+            var current = 0;
+
+            function processNext() {
+                if (current >= tasks.length) {
+                    if (updated > 0) {
+                        setGlobalStatus('Restarting service...', '#2196f3');
+                        waitForRestart(function() {
+                            setGlobalStatus('Done: ' + updated + ' updated, ' + skipped + ' up to date' + (failed > 0 ? ', ' + failed + ' failed' : ''), updated > 0 ? '#4caf50' : '#ff9800');
+                            updateAllBtn.disabled = false;
+                            loadStateSilent();
+                        });
+                    } else {
+                        setGlobalStatus('Done: ' + skipped + ' up to date' + (failed > 0 ? ', ' + failed + ' failed' : ''), failed > 0 ? '#f44336' : '#4caf50');
+                        updateAllBtn.disabled = false;
+                        loadStateSilent();
+                    }
+                    return;
+                }
+
+                var task = tasks[current];
+                current++;
+                setGlobalStatus('Updating ' + current + '/' + tasks.length + '...', '#2196f3');
+
+                var fetchXhr = new XMLHttpRequest();
+                fetchXhr.open('POST', URLS.fetch);
+                fetchXhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                fetchXhr.onload = function() {
+                    if (fetchXhr.status !== 200) {
+                        failed++;
+                        processNext();
+                        return;
+                    }
+                    var resp;
+                    try { resp = JSON.parse(fetchXhr.responseText); } catch (e) { failed++; processNext(); return; }
+
+                    if (!resp.success || !resp.proxies) { failed++; processNext(); return; }
+
+                    var found = null;
+                    if (task.proxy_name) {
+                        for (var j = 0; j < resp.proxies.length; j++) {
+                            if (resp.proxies[j].name === task.proxy_name) { found = resp.proxies[j]; break; }
+                        }
+                    }
+                    if (!found && resp.proxies.length === 1) found = resp.proxies[0];
+                    if (!found) { failed++; processNext(); return; }
+
+                    var attachXhr = new XMLHttpRequest();
+                    attachXhr.open('POST', URLS.attach);
+                    attachXhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                    attachXhr.onload = function() {
+                        if (attachXhr.status === 200) {
+                            try {
+                                var aResp = JSON.parse(attachXhr.responseText);
+                                if (aResp.success) {
+                                    if (aResp.unchanged) skipped++;
+                                    else updated++;
+                                } else { failed++; }
+                            } catch (e) { failed++; }
+                        } else { failed++; }
+                        processNext();
+                    };
+                    attachXhr.onerror = function() { failed++; processNext(); };
+                    attachXhr.send('token=' + encodeURIComponent(CSRF)
+                        + '&section=' + encodeURIComponent(task.section)
+                        + '&index=' + task.index
+                        + '&subscription_url=' + encodeURIComponent(task.url)
+                        + '&proxy_name=' + encodeURIComponent(found.name || '')
+                        + '&link=' + encodeURIComponent(found.link || ''));
+                };
+                fetchXhr.onerror = function() { failed++; processNext(); };
+                fetchXhr.send('token=' + encodeURIComponent(CSRF) + '&url=' + encodeURIComponent(task.url));
+            }
+
+            processNext();
+        };
+        xhr.onerror = function() {
+            setGlobalStatus('Network error', '#f44336');
+            updateAllBtn.disabled = false;
+        };
+        xhr.send();
+    });
+
+    refreshBtn.addEventListener('click', function() { loadStateSilent(); });
+
+    loadState();
+    loadOptions();
+})();
+</script>
+
+<%+footer%>

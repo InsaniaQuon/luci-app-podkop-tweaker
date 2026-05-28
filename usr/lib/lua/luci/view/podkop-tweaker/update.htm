@@ -1,0 +1,223 @@
+<%#
+LuCI Podkop Tweaker — Update Tab
+Author: InsaniaQuon
+-%>
+<%+header%>
+
+<div class="cbi-map" id="cbi-podkop-tweaker">
+    <h2 name="content">Podkop Tweaker</h2>
+
+    <ul class="cbi-tabmenu">
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
+        <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Update Tweaker</a></li>
+    </ul>
+
+    <div class="cbi-section">
+        <div class="ps-sysinfo-header">
+            <h3>Update Tweaker</h3>
+        </div>
+
+        <div class="ps-update-block ps-update-disabled">
+            <h4>Git Update</h4>
+            <p style="margin:0;font-size:13px;color:var(--ps-text-dim)">Update from Git repository. This feature will be available in a future version.</p>
+        </div>
+
+        <div class="ps-update-block">
+            <h4>Local Update</h4>
+            <p style="margin:0 0 12px;font-size:13px;color:var(--ps-text-muted)">Upload an archive to update Podkop Tweaker. The archive will be validated before applying.</p>
+
+            <div class="ps-drop-zone" id="ps-drop-zone">
+                <input type="file" id="ps-file-input" accept=".tar.gz,.tgz" style="display:none" />
+                <div class="ps-drop-zone-icon">&#128194;</div>
+                <div class="ps-drop-zone-text">Drop archive here or click to browse</div>
+            </div>
+
+            <div class="ps-update-result" id="ps-update-result" style="display:none">
+                <div class="ps-update-versions">
+                    <span class="ps-update-version-label">Current version:</span>
+                    <span class="ps-update-version-value" id="ps-current-ver"></span>
+                    <span class="ps-update-version-label">Archive version:</span>
+                    <span class="ps-update-version-value" id="ps-archive-ver"></span>
+                </div>
+                <div class="ps-update-actions" id="ps-update-actions"></div>
+            </div>
+        </div>
+
+        <div class="ps-warning-box">
+            <strong>&#9888; Warning:</strong> During update, the web interface (LuCI) will restart. The page will automatically reload after a few seconds. Do not power off the router.
+        </div>
+    </div>
+
+    <div class="ps-version">Podkop Tweaker v<%= app_version %> by InsaniaQuon</div>
+</div>
+
+<style>
+<% include("podkop-tweaker/podkop-tweaker-css") %>
+</style>
+
+<script>
+(function() {
+    var CSRF = '<%= token or csrf_token or "" %>';
+    var URLS = {
+        upload: '<%=url("admin/services/podkop-tweaker/api/upload_update")%>',
+        apply: '<%=url("admin/services/podkop-tweaker/api/apply_update")%>'
+    };
+
+    var dropZone = document.getElementById('ps-drop-zone');
+    var fileInput = document.getElementById('ps-file-input');
+    var resultEl = document.getElementById('ps-update-result');
+    var currentVerEl = document.getElementById('ps-current-ver');
+    var archiveVerEl = document.getElementById('ps-archive-ver');
+    var actionsEl = document.getElementById('ps-update-actions');
+
+    function escapeHtml(s) {
+        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function setStatus(text, color) {
+        actionsEl.innerHTML = '<span class="ps-update-status" style="color:' + (color || '#888') + '">' + escapeHtml(text) + '</span>';
+    }
+
+    function showResult(data) {
+        resultEl.style.display = '';
+        currentVerEl.textContent = 'v' + data.current_version;
+        archiveVerEl.textContent = 'v' + data.archive_version;
+
+        if (data.same_version) {
+            archiveVerEl.style.color = '#ff9800';
+            actionsEl.innerHTML = '<span class="ps-update-status" style="color:#ff9800">Same version as installed</span>';
+        } else if (data.can_update) {
+            archiveVerEl.style.color = '#4caf50';
+            actionsEl.innerHTML = '<button class="btn cbi-button cbi-button-apply" id="ps-apply-btn">Update</button>'
+                + '<span class="ps-update-status" id="ps-apply-status" style="margin-left:8px"></span>';
+            document.getElementById('ps-apply-btn').addEventListener('click', doApply);
+        } else {
+            archiveVerEl.style.color = '#f44336';
+            actionsEl.innerHTML = '<span class="ps-update-status" style="color:#f44336">Archive version is older than installed</span>';
+        }
+    }
+
+    function showError(text) {
+        resultEl.style.display = '';
+        currentVerEl.textContent = '-';
+        archiveVerEl.textContent = '-';
+        actionsEl.innerHTML = '<span class="ps-update-status" style="color:#f44336">' + escapeHtml(text) + '</span>';
+    }
+
+    function uploadFile(file) {
+        setStatus('Uploading...', '#2196f3');
+
+        var reader = new FileReader();
+        reader.onerror = function() { showError('Failed to read file'); };
+        reader.onload = function() {
+            var b64 = reader.result.split(',')[1];
+            if (!b64) { showError('Failed to read file'); return; }
+
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', URLS.upload);
+            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    try {
+                        var resp = JSON.parse(xhr.responseText);
+                        if (resp.success) {
+                            showResult(resp);
+                        } else {
+                            showError(resp.error || 'Unknown error');
+                        }
+                    } catch (e) { showError('Invalid response'); }
+                } else { showError('HTTP error: ' + xhr.status); }
+            };
+            xhr.onerror = function() { showError('Network error'); };
+            xhr.send('token=' + encodeURIComponent(CSRF)
+                + '&file_data=' + encodeURIComponent(b64)
+                + '&file_name=' + encodeURIComponent(file.name));
+        };
+        reader.readAsDataURL(file);
+    }
+
+    function doApply() {
+        var applyBtn = document.getElementById('ps-apply-btn');
+        var statusEl = document.getElementById('ps-apply-status');
+        if (!applyBtn) return;
+
+        applyBtn.disabled = true;
+        statusEl.textContent = 'Applying update...';
+        statusEl.style.color = '#2196f3';
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', URLS.apply);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success) {
+                        statusEl.textContent = 'Update applied! Reloading...';
+                        statusEl.style.color = '#4caf50';
+                        setTimeout(function() { window.location.reload(); }, 5000);
+                    } else {
+                        statusEl.textContent = resp.error || 'Update failed';
+                        statusEl.style.color = '#f44336';
+                        applyBtn.disabled = false;
+                    }
+                } catch (e) {
+                    statusEl.textContent = 'Invalid response';
+                    statusEl.style.color = '#f44336';
+                    applyBtn.disabled = false;
+                }
+            } else {
+                statusEl.textContent = 'HTTP error: ' + xhr.status;
+                statusEl.style.color = '#f44336';
+                applyBtn.disabled = false;
+            }
+        };
+        xhr.onerror = function() {
+            statusEl.textContent = 'Network error';
+            statusEl.style.color = '#f44336';
+            applyBtn.disabled = false;
+        };
+        xhr.send('token=' + encodeURIComponent(CSRF));
+    }
+
+    dropZone.addEventListener('click', function() { fileInput.click(); });
+
+    fileInput.addEventListener('change', function() {
+        if (fileInput.files && fileInput.files.length > 0) {
+            uploadFile(fileInput.files[0]);
+        }
+    });
+
+    dropZone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.add('ps-drop-active');
+    });
+
+    dropZone.addEventListener('dragenter', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.add('ps-drop-active');
+    });
+
+    dropZone.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.remove('ps-drop-active');
+    });
+
+    dropZone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.remove('ps-drop-active');
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            uploadFile(e.dataTransfer.files[0]);
+        }
+    });
+})();
+</script>
+
+<%+footer%>

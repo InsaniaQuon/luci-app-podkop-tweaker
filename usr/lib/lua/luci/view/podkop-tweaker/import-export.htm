@@ -1,0 +1,411 @@
+<%#
+LuCI Podkop Tweaker — Import/Export Tab
+Author: InsaniaQuon
+-%>
+<%+header%>
+
+<div class="cbi-map" id="cbi-podkop-tweaker">
+    <h2 name="content">Podkop Tweaker</h2>
+
+    <ul class="cbi-tabmenu">
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
+        <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Update Tweaker</a></li>
+    </ul>
+
+    <div class="cbi-section ps-ie-status-section">
+        <div class="ps-service-status" id="ps-service-status">
+            <span class="ps-status-dot checking" id="ps-status-dot"></span>
+            <span class="ps-status-text" id="ps-status-text">Checking...</span>
+        </div>
+    </div>
+
+    <div class="cbi-section">
+        <h3>Export</h3>
+
+        <div class="ps-ie-block">
+            <div class="ps-ie-desc">
+                <p>Download the current Podkop configuration file (<code>/etc/config/podkop</code>).</p>
+                <div class="ps-warning-box">
+                    <strong>&#9888; Warning:</strong> This file contains proxy credentials (UUIDs, passwords). Do not share it with third parties.
+                </div>
+            </div>
+            <div class="ps-ie-actions">
+                <button class="btn cbi-button cbi-button-apply" data-action="export">
+                    Download Podkop Config
+                </button>
+            </div>
+        </div>
+
+        <div class="ps-ie-block">
+            <h4>Auto Backup</h4>
+            <div class="ps-ie-desc">
+                <p>Auto config backup — created before imports and config edits. Auto sub backup — created before subscription updates.</p>
+                <table class="ps-ie-backup-table">
+                    <tr>
+                        <td>Auto config backup</td>
+                        <td>
+                            <% if auto_backup_time then %>
+                                <span class="ps-status-ok"><%=auto_backup_time%></span>
+                            <% else %>
+                                <span class="ps-status-none">Not found</span>
+                            <% end %>
+                        </td>
+                        <td>
+                            <% if auto_backup_time then %>
+                                <button class="btn cbi-button" data-action="backup-auto">Download</button>
+                            <% end %>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Auto sub backup</td>
+                        <td>
+                            <% if auto_sub_backup_time then %>
+                                <span class="ps-status-ok"><%=auto_sub_backup_time%></span>
+                            <% else %>
+                                <span class="ps-status-none">Not found</span>
+                            <% end %>
+                        </td>
+                        <td>
+                            <% if auto_sub_backup_time then %>
+                                <button class="btn cbi-button" data-action="backup-sub">Download</button>
+                            <% end %>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="cbi-section">
+        <h3>Import</h3>
+
+        <div class="ps-ie-block">
+            <div class="ps-ie-desc">
+                <p>Upload a Podkop configuration file to replace the current one.</p>
+                <div class="ps-danger-box">
+                    <strong>&#10007; This will:</strong>
+                    <ul>
+                        <li>Completely replace <code>/etc/config/podkop</code></li>
+                        <li>Create an automatic backup of the current config</li>
+                        <li>Restart Podkop service</li>
+                        <li>Offer rollback if sing-box fails to start</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="ps-ie-upload-area" id="ps-upload-area">
+                <div class="ps-ie-upload-content">
+                    <span class="ps-ie-upload-icon">&#128193;</span>
+                    <p>Drag and drop file here or click to browse</p>
+                    <input type="file" id="ps-import-file" accept=".conf,.config,.txt,.bak" />
+                </div>
+                <div class="ps-ie-file-info" id="ps-file-info" style="display:none;">
+                    <span id="ps-file-name"></span>
+                    <span id="ps-file-size"></span>
+                </div>
+            </div>
+
+            <div class="ps-ie-actions">
+                <button class="btn cbi-button cbi-button-apply" id="ps-import-btn" disabled>
+                    Import Configuration
+                </button>
+                <button class="btn cbi-button ps-rollback-btn" id="ps-rollback-btn" style="display:none">
+                    Rollback
+                </button>
+                <span class="ps-config-status" id="ps-import-status"></span>
+                <button class="btn cbi-button ps-error-btn" id="ps-error-btn" style="display:none">
+                    &#9888; Error
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="ps-version">Podkop Tweaker v<%= app_version %> by InsaniaQuon</div>
+</div>
+
+<div class="ps-modal" id="ps-error-modal" style="display:none;">
+    <div class="ps-modal-content">
+        <h3>Error Details</h3>
+        <pre class="ps-error-details" id="ps-error-details"></pre>
+        <div class="ps-modal-footer">
+            <button class="btn cbi-button" id="ps-error-close">Close</button>
+        </div>
+    </div>
+</div>
+
+<style>
+<% include("podkop-tweaker/podkop-tweaker-css") %>
+</style>
+
+<script>
+(function() {
+    var CSRF = '<%= token or csrf_token or "" %>';
+    var URLS = {
+        importCfg: '<%=url("admin/services/podkop-tweaker/api/import_config")%>',
+        exportCfg: '<%=url("admin/services/podkop-tweaker/api/export_config")%>',
+        backup: '<%=url("admin/services/podkop-tweaker/api/download_backup")%>',
+        backupSub: '<%=url("admin/services/podkop-tweaker/api/download_sub_backup")%>',
+        status: '<%=url("admin/services/podkop-tweaker/api/service_status")%>',
+        rollback: '<%=url("admin/services/podkop-tweaker/api/rollback")%>'
+    };
+
+    var selectedFile = null;
+    var uploadArea = document.getElementById('ps-upload-area');
+    var fileInput = document.getElementById('ps-import-file');
+    var fileInfo = document.getElementById('ps-file-info');
+    var fileName = document.getElementById('ps-file-name');
+    var fileSize = document.getElementById('ps-file-size');
+    var importBtn = document.getElementById('ps-import-btn');
+    var importStatus = document.getElementById('ps-import-status');
+    var rollbackBtn = document.getElementById('ps-rollback-btn');
+    var errorBtn = document.getElementById('ps-error-btn');
+    var errorModal = document.getElementById('ps-error-modal');
+    var errorDetails = document.getElementById('ps-error-details');
+    var errorClose = document.getElementById('ps-error-close');
+    var statusDot = document.getElementById('ps-status-dot');
+    var statusText = document.getElementById('ps-status-text');
+
+    var _lastError = null;
+    var _errorTimer = null;
+    var ERROR_TTL = 600000;
+    var _pollTimer = null;
+
+    function setImportStatus(text, color) {
+        importStatus.textContent = text;
+        importStatus.style.color = color || '#888';
+    }
+
+    function pushError(shortMsg, fullDetails) {
+        var ts = new Date();
+        var t = [ts.getHours(), ts.getMinutes(), ts.getSeconds()].map(function(v) {
+            return String(v).padStart(2, '0');
+        }).join(':');
+        _lastError = {
+            msg: shortMsg,
+            details: '[' + t + '] ' + (fullDetails || shortMsg),
+            ts: Date.now()
+        };
+        errorBtn.style.display = 'inline-block';
+        if (_errorTimer) clearTimeout(_errorTimer);
+        _errorTimer = setTimeout(function() {
+            _lastError = null;
+            errorBtn.style.display = 'none';
+        }, ERROR_TTL);
+    }
+
+    function xhrPost(url, params, cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() { cb(xhr); };
+        xhr.onerror = function() { cb(null); };
+        xhr.send('token=' + encodeURIComponent(CSRF) + (params ? '&' + params : ''));
+    }
+
+    function checkStatus(cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.status);
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var r = JSON.parse(xhr.responseText);
+                    cb(r.running, r.pid);
+                } catch (e) { cb(false, null); }
+            } else { cb(false, null); }
+        };
+        xhr.onerror = function() { cb(false, null); };
+        xhr.send();
+    }
+
+    function updateStatusUI(running, pid) {
+        statusDot.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
+        statusText.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
+        statusText.style.color = running ? '#4caf50' : '#f44336';
+    }
+
+    function pollStatus(onSuccess, onTimeout, attempts) {
+        if (_pollTimer) clearTimeout(_pollTimer);
+        attempts = attempts || 0;
+        if (attempts >= 8) {
+            onTimeout();
+            return;
+        }
+        _pollTimer = setTimeout(function() {
+            checkStatus(function(running, pid) {
+                updateStatusUI(running, pid);
+                if (running) {
+                    onSuccess();
+                } else {
+                    pollStatus(onSuccess, onTimeout, attempts + 1);
+                }
+            });
+        }, 2000);
+    }
+
+    errorBtn.addEventListener('click', function() {
+        if (!_lastError) return;
+        errorDetails.textContent = _lastError.details;
+        errorModal.style.display = 'flex';
+    });
+    errorClose.addEventListener('click', function() { errorModal.style.display = 'none'; });
+    errorModal.addEventListener('click', function(e) { if (e.target === errorModal) errorModal.style.display = 'none'; });
+
+    function formatSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / 1048576).toFixed(1) + ' MB';
+    }
+
+    function doExport() {
+        window.location.href = URLS.exportCfg;
+    }
+
+    function doDownloadBackup() {
+        window.location.href = URLS.backup;
+    }
+
+    function doImport() {
+        if (!selectedFile) return;
+        if (!confirm('This will replace the current Podkop configuration.\n\nAn automatic backup will be created.\n\nContinue?')) return;
+
+        importBtn.disabled = true;
+        rollbackBtn.style.display = 'none';
+        importBtn.textContent = 'Reading file...';
+        setImportStatus('', '');
+
+        var reader = new FileReader();
+        reader.onerror = function() {
+            importBtn.disabled = false;
+            importBtn.textContent = 'Import Configuration';
+            pushError('File read failed', 'Could not read the selected file');
+            setImportStatus('File read failed', '#f44336');
+        };
+        reader.onload = function() {
+            importBtn.textContent = 'Importing...';
+            setImportStatus('Importing and restarting podkop...', '#2196f3');
+
+            xhrPost(URLS.importCfg, 'content=' + encodeURIComponent(reader.result), function(xhr) {
+                importBtn.disabled = false;
+                importBtn.textContent = 'Import Configuration';
+                if (!xhr) {
+                    pushError('Import failed', 'Network error: failed to connect to server');
+                    setImportStatus('Network error', '#f44336');
+                    return;
+                }
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success && resp.restarting) {
+                        setImportStatus('Restarting podkop...', '#2196f3');
+                        pollStatus(
+                            function() {
+                                selectedFile = null;
+                                fileInfo.style.display = 'none';
+                                fileInput.value = '';
+                                importBtn.disabled = true;
+                                setImportStatus('Imported successfully. Podkop restarted.', '#4caf50');
+                            },
+                            function() {
+                                rollbackBtn.style.display = 'inline-block';
+                                setImportStatus('sing-box did not start after import.', '#f44336');
+                                pushError('Restart failed', 'sing-box did not start within 16 seconds after import.');
+                            }
+                        );
+                    } else {
+                        pushError('Import failed', resp.error || 'Unknown error');
+                        setImportStatus('Import failed', '#f44336');
+                    }
+                } catch (e) {
+                    pushError('Import failed', 'Invalid server response:\n' + (xhr.responseText || '').substring(0, 500));
+                    setImportStatus('Import failed', '#f44336');
+                }
+            });
+        };
+        reader.readAsText(selectedFile);
+    }
+
+    function doRollback() {
+        rollbackBtn.style.display = 'none';
+        setImportStatus('Rolling back...', '#2196f3');
+
+        xhrPost(URLS.rollback, '', function(xhr) {
+            if (!xhr) {
+                setImportStatus('Rollback network error', '#f44336');
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                if (resp.success) {
+                    setImportStatus('Rolled back. Restarting...', '#2196f3');
+                    pollStatus(
+                        function() {
+                            setImportStatus('Rolled back successfully.', '#4caf50');
+                        },
+                        function() {
+                            setImportStatus('Rollback done but sing-box still not running.', '#ff9800');
+                        }
+                    );
+                } else {
+                    setImportStatus('Rollback failed: ' + (resp.error || ''), '#f44336');
+                }
+            } catch (e) {
+                setImportStatus('Rollback failed', '#f44336');
+            }
+        });
+    }
+
+    rollbackBtn.addEventListener('click', doRollback);
+
+    document.querySelectorAll('[data-action]').forEach(function(btn) {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            var action = btn.getAttribute('data-action');
+            switch (action) {
+                case 'export': doExport(); break;
+                case 'backup-auto': doDownloadBackup(); break;
+                case 'backup-sub': window.location.href = URLS.backupSub; break;
+            }
+        });
+    });
+
+    function handleFile(file) {
+        if (!file) return;
+        if (file.size > 1048576) {
+            setImportStatus('File too large (max 1 MB)', '#f44336');
+            return;
+        }
+        selectedFile = file;
+        fileName.textContent = file.name;
+        fileSize.textContent = formatSize(file.size);
+        fileInfo.style.display = 'flex';
+        importBtn.disabled = false;
+    }
+
+    uploadArea.addEventListener('click', function() { fileInput.click(); });
+    fileInput.addEventListener('change', function() {
+        if (this.files && this.files[0]) handleFile(this.files[0]);
+    });
+    uploadArea.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        uploadArea.classList.add('ps-ie-dragover');
+    });
+    uploadArea.addEventListener('dragleave', function() {
+        uploadArea.classList.remove('ps-ie-dragover');
+    });
+    uploadArea.addEventListener('drop', function(e) {
+        e.preventDefault();
+        uploadArea.classList.remove('ps-ie-dragover');
+        if (e.dataTransfer.files && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+    });
+
+    importBtn.addEventListener('click', function() {
+        if (selectedFile) doImport();
+    });
+
+    checkStatus(updateStatusUI);
+})();
+</script>
+
+<%+footer%>

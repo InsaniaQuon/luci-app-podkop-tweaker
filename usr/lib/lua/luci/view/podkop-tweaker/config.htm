@@ -1,0 +1,414 @@
+<%#
+LuCI Podkop Tweaker — Podkop Config Tab (text editor)
+Author: InsaniaQuon
+-%>
+<%+header%>
+
+<div class="cbi-map" id="cbi-podkop-tweaker">
+    <h2 name="content">Podkop Tweaker</h2>
+
+    <ul class="cbi-tabmenu">
+        <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Update Tweaker</a></li>
+    </ul>
+
+    <div class="cbi-section">
+        <div class="ps-config-header">
+            <span class="ps-config-path">/etc/config/podkop</span>
+            <div class="ps-service-status" id="ps-service-status">
+                <span class="ps-status-dot checking" id="ps-status-dot"></span>
+                <span class="ps-status-text" id="ps-status-text">Checking...</span>
+            </div>
+        </div>
+
+        <div class="ps-editor-wrap">
+            <div class="ps-line-numbers" id="ps-line-numbers">1</div>
+            <textarea id="ps-config-editor" class="ps-config-editor" spellcheck="false" autocomplete="off"></textarea>
+        </div>
+
+        <div class="ps-config-actions">
+            <button class="btn cbi-button cbi-button-apply" id="ps-config-save" disabled>
+                Save Changes
+            </button>
+            <button class="btn cbi-button" id="ps-config-undo">
+                Undo Changes
+            </button>
+            <button class="btn cbi-button" id="ps-config-diff" disabled>
+                Show Diff
+            </button>
+            <button class="btn cbi-button ps-rollback-btn" id="ps-rollback-btn" style="display:none">
+                Rollback
+            </button>
+            <span class="ps-config-status" id="ps-config-status"></span>
+            <button class="btn cbi-button ps-error-btn" id="ps-error-btn" style="display:none">
+                &#9888; Error
+            </button>
+        </div>
+
+        <div class="ps-warning-box">
+            <strong>&#9888; Warning:</strong> Editing this file directly can break your Podkop configuration. A backup will be created automatically before saving. If sing-box fails to start, you can roll back. <kbd>Ctrl+S</kbd> to quick-save.
+        </div>
+    </div>
+
+    <div class="ps-version">Podkop Tweaker v<%= app_version %> by InsaniaQuon</div>
+</div>
+
+<div class="ps-modal" id="ps-error-modal" style="display:none;">
+    <div class="ps-modal-content">
+        <h3>Error Details</h3>
+        <pre class="ps-error-details" id="ps-error-details"></pre>
+        <div class="ps-modal-footer">
+            <button class="btn cbi-button" id="ps-error-close">Close</button>
+        </div>
+    </div>
+</div>
+
+<div class="ps-modal" id="ps-diff-modal" style="display:none;">
+    <div class="ps-modal-content ps-modal-wide">
+        <h3>Configuration Changes</h3>
+        <div class="ps-diff-stats" id="ps-diff-stats"></div>
+        <div class="ps-diff-body" id="ps-diff-body"></div>
+        <div class="ps-modal-footer">
+            <button class="btn cbi-button" id="ps-diff-close">Close</button>
+        </div>
+    </div>
+</div>
+
+<style>
+<% include("podkop-tweaker/podkop-tweaker-css") %>
+</style>
+
+<script>
+(function() {
+    var CSRF = '<%= token or csrf_token or "" %>';
+    var URLS = {
+        read: '<%=url("admin/services/podkop-tweaker/api/read_config")%>',
+        save: '<%=url("admin/services/podkop-tweaker/api/save_config")%>',
+        status: '<%=url("admin/services/podkop-tweaker/api/service_status")%>',
+        rollback: '<%=url("admin/services/podkop-tweaker/api/rollback")%>'
+    };
+
+    var editor = document.getElementById('ps-config-editor');
+    var lineNums = document.getElementById('ps-line-numbers');
+    var saveBtn = document.getElementById('ps-config-save');
+    var undoBtn = document.getElementById('ps-config-undo');
+    var diffBtn = document.getElementById('ps-config-diff');
+    var rollbackBtn = document.getElementById('ps-rollback-btn');
+    var statusEl = document.getElementById('ps-config-status');
+    var statusDot = document.getElementById('ps-status-dot');
+    var statusText = document.getElementById('ps-status-text');
+    var errorBtn = document.getElementById('ps-error-btn');
+    var errorModal = document.getElementById('ps-error-modal');
+    var errorDetails = document.getElementById('ps-error-details');
+    var errorClose = document.getElementById('ps-error-close');
+    var diffModal = document.getElementById('ps-diff-modal');
+    var diffBody = document.getElementById('ps-diff-body');
+    var diffStats = document.getElementById('ps-diff-stats');
+    var diffClose = document.getElementById('ps-diff-close');
+
+    var originalContent = '';
+    var isDirty = false;
+    var _lastError = null;
+    var _errorTimer = null;
+    var ERROR_TTL = 600000;
+    var _pollTimer = null;
+
+    function escapeHtml(s) {
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function setStatus(text, color) {
+        statusEl.textContent = text;
+        statusEl.style.color = color || '#888';
+    }
+
+    function pushError(shortMsg, fullDetails) {
+        var ts = new Date();
+        var t = [ts.getHours(), ts.getMinutes(), ts.getSeconds()].map(function(v) {
+            return String(v).padStart(2, '0');
+        }).join(':');
+        _lastError = {
+            msg: shortMsg,
+            details: '[' + t + '] ' + (fullDetails || shortMsg),
+            ts: Date.now()
+        };
+        errorBtn.style.display = 'inline-block';
+        if (_errorTimer) clearTimeout(_errorTimer);
+        _errorTimer = setTimeout(function() {
+            _lastError = null;
+            errorBtn.style.display = 'none';
+        }, ERROR_TTL);
+        setStatus('Error', '#f44336');
+    }
+
+    function xhrPost(url, params, cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() { cb(xhr); };
+        xhr.onerror = function() { cb(null); };
+        xhr.send('token=' + encodeURIComponent(CSRF) + (params ? '&' + params : ''));
+    }
+
+    function updateLineNumbers() {
+        var count = editor.value.split('\n').length;
+        var nums = [];
+        for (var i = 1; i <= count; i++) nums.push(i);
+        lineNums.textContent = nums.join('\n');
+    }
+
+    editor.addEventListener('scroll', function() {
+        lineNums.scrollTop = editor.scrollTop;
+    });
+
+    function checkStatus(cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.status);
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var r = JSON.parse(xhr.responseText);
+                    cb(r.running, r.pid);
+                } catch (e) { cb(false, null); }
+            } else { cb(false, null); }
+        };
+        xhr.onerror = function() { cb(false, null); };
+        xhr.send();
+    }
+
+    function updateStatusUI(running, pid) {
+        statusDot.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
+        statusText.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
+        statusText.style.color = running ? '#4caf50' : '#f44336';
+    }
+
+    function pollStatus(onSuccess, onTimeout, attempts) {
+        if (_pollTimer) clearTimeout(_pollTimer);
+        attempts = attempts || 0;
+        if (attempts >= 8) {
+            onTimeout();
+            return;
+        }
+        _pollTimer = setTimeout(function() {
+            checkStatus(function(running, pid) {
+                updateStatusUI(running, pid);
+                if (running) {
+                    onSuccess();
+                } else {
+                    pollStatus(onSuccess, onTimeout, attempts + 1);
+                }
+            });
+        }, 2000);
+    }
+
+    function loadConfig() {
+        setStatus('Loading...', '#888');
+        editor.disabled = true;
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.read);
+        xhr.onload = function() {
+            editor.disabled = false;
+            if (xhr.status === 200) {
+                originalContent = xhr.responseText;
+                editor.value = originalContent;
+                isDirty = false;
+                saveBtn.disabled = true;
+                diffBtn.disabled = true;
+                updateLineNumbers();
+                setStatus('Loaded', '#4caf50');
+            } else {
+                setStatus('Failed to load', '#f44336');
+                pushError('Failed to load config', 'HTTP ' + xhr.status);
+            }
+        };
+        xhr.onerror = function() {
+            editor.disabled = false;
+            setStatus('Network error', '#f44336');
+        };
+        xhr.send();
+    }
+
+    editor.addEventListener('input', function() {
+        isDirty = (editor.value !== originalContent);
+        saveBtn.disabled = !isDirty;
+        diffBtn.disabled = !isDirty;
+        updateLineNumbers();
+        setStatus(isDirty ? 'Unsaved changes' : 'Loaded', isDirty ? '#ff9800' : '#4caf50');
+    });
+
+    editor.addEventListener('keydown', function(e) {
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            var s = editor.selectionStart, end = editor.selectionEnd;
+            editor.value = editor.value.substring(0, s) + '\t' + editor.value.substring(end);
+            editor.selectionStart = editor.selectionEnd = s + 1;
+            editor.dispatchEvent(new Event('input'));
+        }
+    });
+
+    document.addEventListener('keydown', function(e) {
+        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+            e.preventDefault();
+            if (isDirty && !saveBtn.disabled) doSave();
+        }
+    });
+
+    function doSave() {
+        saveBtn.disabled = true;
+        diffBtn.disabled = true;
+        rollbackBtn.style.display = 'none';
+        saveBtn.textContent = 'Saving...';
+        editor.disabled = true;
+        setStatus('Saving and restarting podkop...', '#2196f3');
+
+        xhrPost(URLS.save, 'content=' + encodeURIComponent(editor.value), function(xhr) {
+            editor.disabled = false;
+            saveBtn.textContent = 'Save Changes';
+            if (!xhr) {
+                saveBtn.disabled = isDirty;
+                diffBtn.disabled = !isDirty;
+                setStatus('Network error', '#f44336');
+                pushError('Network error', 'Failed to connect to server');
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                if (resp.success && resp.restarting) {
+                    setStatus('Restarting podkop...', '#2196f3');
+                    pollStatus(
+                        function() {
+                            originalContent = editor.value;
+                            isDirty = false;
+                            diffBtn.disabled = true;
+                            setStatus('Config saved. Podkop restarted.', '#4caf50');
+                        },
+                        function() {
+                            setStatus('sing-box did not start after save.', '#f44336');
+                            rollbackBtn.style.display = 'inline-block';
+                            pushError('Restart failed', 'sing-box did not start within 16 seconds after saving.');
+                        }
+                    );
+                } else {
+                    saveBtn.disabled = isDirty;
+                    diffBtn.disabled = !isDirty;
+                    setStatus('Save failed', '#f44336');
+                    pushError('Save failed', resp.error || 'Unknown error');
+                }
+            } catch (e) {
+                saveBtn.disabled = isDirty;
+                diffBtn.disabled = !isDirty;
+                setStatus('Save failed', '#f44336');
+                pushError('Save failed', 'Invalid response: ' + (xhr.responseText || '').substring(0, 300));
+            }
+        });
+    }
+
+    saveBtn.addEventListener('click', function() {
+        if (isDirty) doSave();
+    });
+
+    function doRollback() {
+        rollbackBtn.style.display = 'none';
+        setStatus('Rolling back...', '#2196f3');
+
+        xhrPost(URLS.rollback, '', function(xhr) {
+            if (!xhr) {
+                setStatus('Rollback network error', '#f44336');
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                if (resp.success) {
+                    setStatus('Rolled back. Restarting...', '#2196f3');
+                    pollStatus(
+                        function() {
+                            setStatus('Rolled back successfully.', '#4caf50');
+                            loadConfig();
+                        },
+                        function() {
+                            setStatus('Rollback done but sing-box still not running.', '#ff9800');
+                            loadConfig();
+                        }
+                    );
+                } else {
+                    setStatus('Rollback failed: ' + (resp.error || ''), '#f44336');
+                }
+            } catch (e) {
+                setStatus('Rollback failed', '#f44336');
+            }
+        });
+    }
+
+    rollbackBtn.addEventListener('click', doRollback);
+
+    undoBtn.addEventListener('click', function() {
+        if (!isDirty) return;
+        if (!confirm('Discard unsaved changes?')) return;
+        editor.value = originalContent;
+        isDirty = false;
+        saveBtn.disabled = true;
+        diffBtn.disabled = true;
+        updateLineNumbers();
+        setStatus('Loaded', '#4caf50');
+    });
+
+    function buildDiff(oldText, newText) {
+        var oldLines = oldText.split('\n');
+        var newLines = newText.split('\n');
+        var html = '';
+        var added = 0, removed = 0;
+        var max = Math.max(oldLines.length, newLines.length);
+        for (var i = 0; i < max; i++) {
+            var o = oldLines[i];
+            var n = newLines[i];
+            if (o === n) {
+                html += '<div class="ps-diff-line ps-diff-same"><span class="ps-diff-num">' + (i + 1) + '</span> ' + escapeHtml(o || '') + '</div>';
+            } else {
+                if (o !== undefined) {
+                    removed++;
+                    html += '<div class="ps-diff-line ps-diff-del"><span class="ps-diff-num">' + (i + 1) + '</span><span class="ps-diff-mark">-</span> ' + escapeHtml(o) + '</div>';
+                }
+                if (n !== undefined) {
+                    added++;
+                    html += '<div class="ps-diff-line ps-diff-add"><span class="ps-diff-num">' + (i + 1) + '</span><span class="ps-diff-mark">+</span> ' + escapeHtml(n) + '</div>';
+                }
+            }
+        }
+        diffStats.textContent = added + ' added, ' + removed + ' removed (' + newLines.length + ' lines total)';
+        return html;
+    }
+
+    diffBtn.addEventListener('click', function() {
+        if (!isDirty) return;
+        diffBody.innerHTML = buildDiff(originalContent, editor.value);
+        diffModal.style.display = 'flex';
+    });
+
+    diffClose.addEventListener('click', function() {
+        diffModal.style.display = 'none';
+    });
+    diffModal.addEventListener('click', function(e) {
+        if (e.target === diffModal) diffModal.style.display = 'none';
+    });
+
+    errorBtn.addEventListener('click', function() {
+        if (!_lastError) return;
+        errorDetails.textContent = _lastError.details;
+        errorModal.style.display = 'flex';
+    });
+    errorClose.addEventListener('click', function() { errorModal.style.display = 'none'; });
+    errorModal.addEventListener('click', function(e) { if (e.target === errorModal) errorModal.style.display = 'none'; });
+
+    window.addEventListener('beforeunload', function(e) {
+        if (isDirty) { e.preventDefault(); e.returnValue = ''; }
+    });
+
+    checkStatus(updateStatusUI);
+    loadConfig();
+})();
+</script>
+
+<%+footer%>
