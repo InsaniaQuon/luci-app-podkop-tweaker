@@ -12,7 +12,7 @@ Author: InsaniaQuon
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
         <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
-        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Update Tweaker</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Local Update</a></li>
     </ul>
 
     <div class="cbi-section">
@@ -34,6 +34,10 @@ Author: InsaniaQuon
                     <td class="ps-sysinfo-value" id="ps-info-luci">—</td>
                 </tr>
                 <tr>
+                    <td class="ps-sysinfo-label">Podkop Tweaker</td>
+                    <td class="ps-sysinfo-value" id="ps-info-tweaker">—</td>
+                </tr>
+                <tr>
                     <td class="ps-sysinfo-label">Sing-box</td>
                     <td class="ps-sysinfo-value" id="ps-info-singbox">—</td>
                 </tr>
@@ -51,7 +55,7 @@ Author: InsaniaQuon
         <div class="ps-sysinfo-error" id="ps-sysinfo-error" style="display:none;"></div>
 
         <div class="ps-sysinfo-actions" id="ps-sysinfo-actions" style="display:none;">
-            <button class="btn cbi-button cbi-button-apply ps-update-btn" id="ps-update-btn" style="display:none;">
+            <button class="btn cbi-button cbi-button-apply" id="ps-update-podkop" style="display:none;">
                 Update Podkop
             </button>
             <span class="ps-latest-info" id="ps-latest-info" style="display:none;"></span>
@@ -59,7 +63,11 @@ Author: InsaniaQuon
         </div>
 
         <div class="ps-warning-box">
-            <strong>&#9888; Update info:</strong> The update opens a terminal window (ttyd) where you can follow the process and answer any questions. An automatic backup of your config will be created before updating. After the update completes, click Refresh to see the new version.
+            <strong>&#9888; Update info:</strong>
+            <ul style="margin:6px 0 0;padding-left:20px;">
+                <li><strong>Podkop:</strong> Opens a terminal window (ttyd) for interactive update. Backup is created automatically. Click Refresh after completion.</li>
+                <li><strong>Podkop Tweaker:</strong> LuCI will restart during update. Page reloads automatically. Do not power off the router.</li>
+            </ul>
         </div>
     </div>
 
@@ -75,17 +83,23 @@ Author: InsaniaQuon
     var CSRF = '<%= token or csrf_token or "" %>';
     var URLS = {
         systemInfo: '<%=url("admin/services/podkop-tweaker/api/system_info")%>',
-        updateStart: '<%=url("admin/services/podkop-tweaker/api/update_start")%>'
+        updateStart: '<%=url("admin/services/podkop-tweaker/api/update_start")%>',
+        tweakerCheck: '<%=url("admin/services/podkop-tweaker/api/tweaker_check_update")%>',
+        tweakerUpdate: '<%=url("admin/services/podkop-tweaker/api/tweaker_git_update")%>'
     };
 
     var loadingEl = document.getElementById('ps-sysinfo-loading');
     var tableEl = document.getElementById('ps-sysinfo-table');
     var errorEl = document.getElementById('ps-sysinfo-error');
     var actionsEl = document.getElementById('ps-sysinfo-actions');
-    var updateBtn = document.getElementById('ps-update-btn');
+    var updatePodkopBtn = document.getElementById('ps-update-podkop');
     var latestInfo = document.getElementById('ps-latest-info');
     var updateStatus = document.getElementById('ps-update-status');
     var refreshBtn = document.getElementById('ps-refresh-info');
+
+    var tweakerLatest = null;
+    var tweakerDownloadUrl = '';
+    var countdownTimer = null;
 
     function escapeHtml(s) {
         return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -108,16 +122,16 @@ Author: InsaniaQuon
 
         if (data.update_available) {
             podkopCell.innerHTML = currentVer + ' <span class="ps-ver-outdated">(Outdated)</span>';
-            updateBtn.style.display = 'inline-block';
+            updatePodkopBtn.style.display = 'inline-block';
             latestInfo.textContent = 'Latest: ' + latestVer;
             latestInfo.style.display = 'inline';
         } else if (data.podkop_latest_version && data.podkop_latest_version !== 'unknown') {
             podkopCell.innerHTML = currentVer + ' <span class="ps-ver-latest">(Latest)</span>';
-            updateBtn.style.display = 'none';
+            updatePodkopBtn.style.display = 'none';
             latestInfo.style.display = 'none';
         } else {
             podkopCell.textContent = currentVer;
-            updateBtn.style.display = 'none';
+            updatePodkopBtn.style.display = 'none';
             latestInfo.style.display = 'none';
         }
 
@@ -126,10 +140,68 @@ Author: InsaniaQuon
         document.getElementById('ps-info-os').textContent = data.openwrt_version || 'unknown';
         document.getElementById('ps-info-device').textContent = data.device_model || 'unknown';
 
+        renderTweakerRow(data);
+
         if (data.error) {
             errorEl.textContent = data.error;
             errorEl.style.display = 'block';
         }
+    }
+
+    function renderTweakerRow(data) {
+        var cell = document.getElementById('ps-info-tweaker');
+        var ver = data.tweaker_version || 'unknown';
+        var latest = data.tweaker_latest || tweakerLatest;
+        tweakerLatest = latest;
+
+        if (!latest) {
+            cell.innerHTML = 'v' + escapeHtml(ver) +
+                ' <a href="#" id="ps-tweaker-check-link" style="font-size:12px">Check for updates</a>' +
+                '<span id="ps-tweaker-countdown" style="font-size:12px;color:#ff9800;margin-left:6px"></span>' +
+                '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
+            var checkLink = document.getElementById('ps-tweaker-check-link');
+            if (checkLink) checkLink.addEventListener('click', function(e) { e.preventDefault(); doCheckTweaker(); });
+            return;
+        }
+
+        var lt = versionLt(ver, latest);
+        var gt = versionLt(latest, ver);
+
+        if (lt) {
+            cell.innerHTML = 'v' + escapeHtml(ver) + ' <span class="ps-ver-outdated">(Outdated)</span>' +
+                ' <span style="font-size:12px;color:var(--ps-text-muted)">&rarr; v' + escapeHtml(latest) + '</span>' +
+                ' <button class="btn cbi-button cbi-button-apply" id="ps-tweaker-update-btn" style="font-size:12px;padding:2px 8px">Update from Git</button>' +
+                '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
+            var btn = document.getElementById('ps-tweaker-update-btn');
+            if (btn) btn.addEventListener('click', function() { doUpdateTweaker(false); });
+        } else if (gt) {
+            cell.innerHTML = 'v' + escapeHtml(ver) + ' <span style="font-size:12px;color:#ff9800">(Newer than repo v' + escapeHtml(latest) + ')</span>' +
+                ' <button class="btn cbi-button" id="ps-tweaker-downgrade-btn" style="font-size:12px;padding:2px 8px">Downgrade from Git</button>' +
+                ' <a href="#" id="ps-tweaker-check-link" style="font-size:12px;margin-left:6px">Check</a>' +
+                '<span id="ps-tweaker-countdown" style="font-size:12px;color:#ff9800;margin-left:6px"></span>' +
+                '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
+            var dgBtn = document.getElementById('ps-tweaker-downgrade-btn');
+            if (dgBtn) dgBtn.addEventListener('click', function() { doUpdateTweaker(true); });
+            var cl = document.getElementById('ps-tweaker-check-link');
+            if (cl) cl.addEventListener('click', function(e) { e.preventDefault(); doCheckTweaker(); });
+        } else {
+            cell.innerHTML = 'v' + escapeHtml(ver) + ' <span class="ps-ver-latest">(Latest)</span>' +
+                ' <a href="#" id="ps-tweaker-check-link" style="font-size:12px;margin-left:6px">Check</a>' +
+                '<span id="ps-tweaker-countdown" style="font-size:12px;color:#ff9800;margin-left:6px"></span>' +
+                '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
+            var cl2 = document.getElementById('ps-tweaker-check-link');
+            if (cl2) cl2.addEventListener('click', function(e) { e.preventDefault(); doCheckTweaker(); });
+        }
+    }
+
+    function versionLt(a, b) {
+        var pa = (a || '').replace(/^v/, '').split('.').map(Number);
+        var pb = (b || '').replace(/^v/, '').split('.').map(Number);
+        for (var i = 0; i < 3; i++) {
+            if ((pa[i] || 0) < (pb[i] || 0)) return true;
+            if ((pa[i] || 0) > (pb[i] || 0)) return false;
+        }
+        return false;
     }
 
     function renderError(msg) {
@@ -166,17 +238,17 @@ Author: InsaniaQuon
         xhr.send();
     }
 
-    function doUpdate() {
+    function doUpdatePodkop() {
         if (!confirm('Update Podkop to the latest version?\n\nAn automatic backup of your config will be created.\nA terminal window will open for the interactive update.')) return;
 
-        updateBtn.disabled = true;
+        updatePodkopBtn.disabled = true;
         setUpdateStatus('Starting terminal...', '#2196f3');
 
         var xhr = new XMLHttpRequest();
         xhr.open('POST', URLS.updateStart);
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.onload = function() {
-            updateBtn.disabled = false;
+            updatePodkopBtn.disabled = false;
             if (xhr.status === 200) {
                 try {
                     var resp = JSON.parse(xhr.responseText);
@@ -194,13 +266,126 @@ Author: InsaniaQuon
             }
         };
         xhr.onerror = function() {
-            updateBtn.disabled = false;
+            updatePodkopBtn.disabled = false;
             setUpdateStatus('Network error', '#f44336');
         };
         xhr.send('token=' + encodeURIComponent(CSRF));
     }
 
-    updateBtn.addEventListener('click', doUpdate);
+    function formatCountdown(sec) {
+        var m = Math.floor(sec / 60);
+        var s = sec % 60;
+        return (m > 0 ? m + ':' + (s < 10 ? '0' : '') + s : s + 's');
+    }
+
+    function startCountdown(seconds) {
+        if (countdownTimer) clearInterval(countdownTimer);
+        var countdownEl = document.getElementById('ps-tweaker-countdown');
+        if (!countdownEl) return;
+        var remaining = seconds;
+        countdownEl.textContent = 'Try again in ' + formatCountdown(remaining);
+        countdownTimer = setInterval(function() {
+            remaining--;
+            if (remaining <= 0) {
+                clearInterval(countdownTimer);
+                countdownTimer = null;
+                countdownEl.textContent = '';
+                return;
+            }
+            countdownEl.textContent = 'Try again in ' + formatCountdown(remaining);
+        }, 1000);
+    }
+
+    function setTweakerStatus(text, color) {
+        var el = document.getElementById('ps-tweaker-status');
+        if (el) { el.textContent = text; el.style.color = color || '#888'; }
+    }
+
+    function doCheckTweaker() {
+        setTweakerStatus('Checking...', '#2196f3');
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.tweakerCheck);
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.error === 'rate_limited') {
+                        setTweakerStatus('', '');
+                        startCountdown(resp.retry_after || 900);
+                        return;
+                    }
+                    if (resp.error) {
+                        setTweakerStatus(resp.error, '#f44336');
+                        return;
+                    }
+                    tweakerLatest = resp.latest_version;
+                    tweakerDownloadUrl = resp.download_url || '';
+                    renderTweakerRow({ tweaker_version: resp.current_version });
+                    setTweakerStatus('', '');
+                } catch (e) {
+                    setTweakerStatus('Invalid response', '#f44336');
+                }
+            } else {
+                setTweakerStatus('HTTP error: ' + xhr.status, '#f44336');
+            }
+        };
+        xhr.onerror = function() {
+            setTweakerStatus('Network error', '#f44336');
+        };
+        xhr.send();
+    }
+
+    function doUpdateTweaker(isDowngrade) {
+        if (!tweakerDownloadUrl) return;
+        var confirmed;
+        if (isDowngrade) {
+            confirmed = confirm('Your version is newer than the repository version (' + tweakerLatest + ').\n\nDowngrade to v' + escapeHtml(tweakerLatest) + '?\n\nThe web interface will restart during the update.');
+        } else {
+            confirmed = confirm('Update Podkop Tweaker to v' + escapeHtml(tweakerLatest) + '?\n\nThe web interface will restart during the update.');
+        }
+        if (!confirmed) return;
+
+        var statusEl = document.getElementById('ps-tweaker-status');
+        var btnId = isDowngrade ? 'ps-tweaker-downgrade-btn' : 'ps-tweaker-update-btn';
+        var btn = document.getElementById(btnId);
+        if (btn) btn.disabled = true;
+        if (statusEl) { statusEl.textContent = 'Downloading...'; statusEl.style.color = '#2196f3'; }
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', URLS.tweakerUpdate);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success) {
+                        if (statusEl) { statusEl.textContent = 'Update applied! Reloading...'; statusEl.style.color = '#4caf50'; }
+                        setTimeout(function() { window.location.reload(); }, 5000);
+                    } else {
+                        if (statusEl) { statusEl.textContent = resp.error || 'Update failed'; statusEl.style.color = '#f44336'; }
+                        if (btn) btn.disabled = false;
+                    }
+                } catch (e) {
+                    if (statusEl) { statusEl.textContent = 'Invalid response'; statusEl.style.color = '#f44336'; }
+                    if (btn) btn.disabled = false;
+                }
+            } else {
+                if (statusEl) { statusEl.textContent = 'HTTP error: ' + xhr.status; statusEl.style.color = '#f44336'; }
+                if (btn) btn.disabled = false;
+            }
+        };
+        xhr.onerror = function() {
+            if (statusEl) { statusEl.textContent = 'Network error'; statusEl.style.color = '#f44336'; }
+            if (btn) btn.disabled = false;
+        };
+        var body = 'token=' + encodeURIComponent(CSRF)
+            + '&download_url=' + encodeURIComponent(tweakerDownloadUrl);
+        if (isDowngrade) body += '&force=1';
+        xhr.send(body);
+    }
+
+    updatePodkopBtn.addEventListener('click', doUpdatePodkop);
 
     refreshBtn.addEventListener('click', function() {
         setUpdateStatus('', '');

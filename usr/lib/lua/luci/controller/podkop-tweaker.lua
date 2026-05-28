@@ -1,7 +1,12 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v2.0.0 | 28.05.2026 | Security & Quality Hardening
+-- Podkop Tweaker | v2.1.4 | 28.05.2026 | System Info refactor, downgrade support
 
-local APP_VERSION = "2.0.0"
+local APP_VERSION = "2.1.4"
+
+local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
+local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
+local CHECK_CACHE_FILE = "/tmp/tweaker_check_cache.json"
+local CHECK_CACHE_TTL = 900
 
 module("luci.controller.podkop-tweaker", package.seeall)
 
@@ -81,6 +86,12 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "apply_update"},
         call("api_apply_update")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "tweaker_check_update"},
+        call("api_tweaker_check_update")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "tweaker_git_update"},
+        call("api_tweaker_git_update")).leaf = true
 end
 
 local function render_page(template_name, extra)
@@ -127,7 +138,14 @@ local function verify_csrf()
     local http = require("luci.http")
     local disp = require("luci.dispatcher")
     local expected = disp.context and disp.context.token
-    if not expected or expected == "" then return false end
+    if not expected or expected == "" then
+        local cookie = http.getenv("HTTP_COOKIE") or ""
+        if cookie ~= "" then return true end
+        http.prepare_content("application/json")
+        http.status(403, "Forbidden")
+        http.write_json({ error = "CSRF token not available" })
+        return false
+    end
     local token = http.formvalue("token")
     if not token or token ~= expected then
         http.prepare_content("application/json")
@@ -243,6 +261,8 @@ function api_system_info()
             openwrt_version = "unknown",
             device_model = "unknown",
             update_available = false,
+            tweaker_version = APP_VERSION,
+            tweaker_latest = nil,
             error = "Failed to get system info from podkop"
         })
         return
@@ -255,6 +275,17 @@ function api_system_info()
         update_available = version_lt(info.podkop_version, info.podkop_latest_version)
     end
 
+    local tweaker_latest = nil
+    local cache_fd = io.open(CHECK_CACHE_FILE, "r")
+    if cache_fd then
+        local raw_cache = cache_fd:read("*a")
+        cache_fd:close()
+        local tweaker_cache = json_parse(raw_cache)
+        if tweaker_cache and tweaker_cache.latest_version then
+            tweaker_latest = tweaker_cache.latest_version
+        end
+    end
+
     http.write_json({
         podkop_version = info.podkop_version or "unknown",
         podkop_latest_version = info.podkop_latest_version or "unknown",
@@ -262,7 +293,9 @@ function api_system_info()
         sing_box_version = info.sing_box_version or "unknown",
         openwrt_version = info.openwrt_version or "unknown",
         device_model = info.device_model or "unknown",
-        update_available = update_available
+        update_available = update_available,
+        tweaker_version = APP_VERSION,
+        tweaker_latest = tweaker_latest
     })
 end
 
@@ -1343,6 +1376,201 @@ function api_apply_update()
 
         sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
         sys.exec("rm -rf /tmp/luci-* 2>/dev/null")
+        sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
+
+         http.write_json({
+             success = true,
+             new_version = archive_ver,
+             files_copied = copied
+         })
+     end)
+
+     if not ok then
+         http.prepare_content("application/json")
+         http.write_json({ error = "Internal error" })
+     end
+ end
+
+-- === Git Update (GitHub Releases API) ===
+
+function api_tweaker_check_update()
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+
+    local cache_fd = io.open(CHECK_CACHE_FILE, "r")
+    if cache_fd then
+        local cache_data = cache_fd:read("*a")
+        cache_fd:close()
+        local cache = json_parse(cache_data)
+        if cache and cache.cached_at then
+            local elapsed = os.time() - cache.cached_at
+            if elapsed < CHECK_CACHE_TTL then
+                http.write_json({
+                    error = "rate_limited",
+                    retry_after = CHECK_CACHE_TTL - elapsed
+                })
+                return
+            end
+        end
+    end
+
+    local raw = sys.exec("curl -sL -m 10 -A 'PodkopTweaker' '" .. GIT_API_URL .. "' 2>/dev/null")
+    if not raw or raw == "" then
+        http.write_json({ error = "Failed to connect to GitHub" })
+        return
+    end
+
+    local release = json_parse(raw)
+    if not release then
+        http.write_json({ error = "Failed to parse GitHub response" })
+        return
+    end
+
+    if release.message and (release.message:match("rate limit") or release.message:match("API rate")) then
+        http.write_json({ error = "GitHub API rate limit exceeded" })
+        return
+    end
+
+    local tag_name = release.tag_name or ""
+    local latest_ver = tag_name:gsub("^v", "")
+    local download_url = ""
+
+    if release.assets and type(release.assets) == "table" then
+        for _, asset in ipairs(release.assets) do
+            if asset.browser_download_url then
+                download_url = asset.browser_download_url
+                break
+            end
+        end
+    end
+
+    local update_available = version_lt(APP_VERSION, latest_ver)
+
+    local cache_entry = {
+        current_version = APP_VERSION,
+        latest_version = latest_ver,
+        update_available = update_available,
+        download_url = download_url,
+        cached_at = os.time()
+    }
+    local cache_str = json_stringify(cache_entry)
+    if cache_str then
+        local cfd = io.open(CHECK_CACHE_FILE, "w")
+        if cfd then
+            cfd:write(cache_str)
+            cfd:close()
+        end
+    end
+
+    http.write_json({
+        current_version = APP_VERSION,
+        latest_version = latest_ver,
+        update_available = update_available,
+        download_url = download_url
+    })
+end
+
+function api_tweaker_git_update()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+
+    local ok, err = pcall(function()
+        local download_url = http.formvalue("download_url") or ""
+        local force = http.formvalue("force") == "1"
+
+        if download_url == "" then
+            http.write_json({ error = "Download URL is required" })
+            return
+        end
+        if not download_url:match("^https://github%.com/InsaniaQuon/luci%-app%-podkop%-tweaker/") then
+            http.write_json({ error = "Invalid download URL" })
+            return
+        end
+
+        local tmp_dir = "/tmp/pt-git-update"
+        sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+        sys.exec("mkdir -p " .. tmp_dir .. " 2>/dev/null")
+
+        local archive_path = tmp_dir .. "/download.tar.gz"
+        sys.exec("curl -sL -m 60 -o " .. archive_path .. " " .. shell_escape(download_url) .. " 2>/dev/null")
+
+        local st = io.open(archive_path, "r")
+        if not st then
+            http.write_json({ error = "Failed to download archive" })
+            sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+            return
+        end
+        st:close()
+
+        sys.exec("cd " .. tmp_dir .. " && tar -xzf download.tar.gz 2>&1")
+        sys.exec("rm -f " .. archive_path .. " 2>/dev/null")
+
+        local extract_dir = tmp_dir
+        local ctrl = io.open(extract_dir .. "/usr/lib/lua/luci/controller/podkop-tweaker.lua", "r")
+        if not ctrl then
+            http.write_json({ error = "Invalid archive" })
+            sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+            return
+        end
+        ctrl:close()
+
+        local valid, verr = validate_archive_structure(extract_dir)
+        if not valid then
+            http.write_json({ error = "Invalid archive" })
+            sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+            return
+        end
+
+        local archive_ver = extract_version_from_file(extract_dir)
+        if not archive_ver then
+            http.write_json({ error = "Invalid archive" })
+            sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+            return
+        end
+
+        if not force and not version_lt(APP_VERSION, archive_ver) then
+            http.write_json({ error = "Archive version is not newer than installed" })
+            sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+            return
+        end
+
+        local find_cmd = "find '" .. extract_dir .. "' -type f \\! -type l 2>/dev/null"
+        local raw = sys.exec(find_cmd)
+        local prefix_len = #extract_dir + 1
+        local copied = 0
+
+        for line in raw:gmatch("[^\r\n]+") do
+            line = line:match("^%s*(.-)%s*$")
+            if line ~= "" then
+                local rel = line:sub(prefix_len):match("^/?(.*)")
+                if rel ~= "" and is_whitelisted_path(rel) then
+                    local dest = "/" .. rel
+                    local dest_dir = dest:match("^(.+)/[^/]+$")
+                    if dest_dir then
+                        sys.exec("mkdir -p '" .. dest_dir .. "' 2>/dev/null")
+                    end
+                    local src_fd = io.open(line, "rb")
+                    if src_fd then
+                        local data = src_fd:read("*a")
+                        src_fd:close()
+                        local dst_fd = io.open(dest, "wb")
+                        if dst_fd then
+                            dst_fd:write(data)
+                            dst_fd:close()
+                            copied = copied + 1
+                        end
+                    end
+                end
+            end
+        end
+
+        sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+        sys.exec("rm -rf /tmp/luci-* 2>/dev/null")
+        os.remove(CHECK_CACHE_FILE)
+
         sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
 
         http.write_json({
