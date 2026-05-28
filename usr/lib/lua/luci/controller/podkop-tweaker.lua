@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v2.1.4 | 28.05.2026 | System Info refactor, downgrade support
+-- Podkop Tweaker | v2.1.6 | 28.05.2026 | Fix json_parse scope in api_system_info
 
-local APP_VERSION = "2.1.4"
+local APP_VERSION = "2.1.6"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -280,7 +280,11 @@ function api_system_info()
     if cache_fd then
         local raw_cache = cache_fd:read("*a")
         cache_fd:close()
-        local tweaker_cache = json_parse(raw_cache)
+        local tweaker_cache = nil
+        pcall(function()
+            local json = require("luci.jsonc")
+            tweaker_cache = json.parse(raw_cache)
+        end)
         if tweaker_cache and tweaker_cache.latest_version then
             tweaker_latest = tweaker_cache.latest_version
         end
