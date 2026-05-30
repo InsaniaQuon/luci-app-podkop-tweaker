@@ -38,8 +38,8 @@ Author: InsaniaQuon
 .ps-rollback-btn{background:rgba(244,67,54,.1)!important;color:var(--ps-error)!important;border-color:rgba(244,67,54,.3)!important}
 .ps-rollback-btn:hover{background:rgba(244,67,54,.2)!important}
 .ps-editor-wrap{display:flex;border:1px solid var(--ps-border);border-radius:6px;overflow:hidden;margin:12px 0;height:500px;resize:vertical}
-.ps-line-numbers{width:48px;min-width:48px;padding:14px 6px 14px 4px;text-align:right;font-family:'Courier New',Courier,monospace;font-size:13px;line-height:1.5;color:var(--ps-text-dim);background:var(--ps-bg-alt);border-right:1px solid var(--ps-border);overflow:hidden;user-select:none;white-space:pre-line;opacity:.7}
-.ps-config-editor{flex:1;width:100%;height:100%;font-family:'Courier New',Courier,monospace;font-size:13px;line-height:1.5;padding:14px;border:none;resize:none;background:var(--ps-bg);color:var(--ps-text)}
+.ps-line-numbers{width:48px;min-width:48px;padding:14px 6px 14px 4px;text-align:right;font-family:'Consolas','Monaco','Courier New',monospace;font-size:13px;line-height:1.6;color:var(--ps-text-dim);background:var(--ps-bg-alt);border-right:1px solid var(--ps-border);overflow:hidden;user-select:none;white-space:pre-line;opacity:.7}
+.ps-config-editor{flex:1;width:100%;height:100%;font-family:'Consolas','Monaco','Courier New',monospace;font-size:13px;line-height:1.6;padding:14px;border:none;resize:none;background:var(--ps-bg);color:var(--ps-text)}
 .ps-config-editor:focus{outline:none;box-shadow:inset 0 0 0 2px var(--ps-primary)}
 .ps-service-status{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600}
 .ps-status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
@@ -143,3 +143,36 @@ Author: InsaniaQuon
 .ps-update-version-value{font-weight:600;color:var(--ps-text)}
 .ps-update-actions{display:flex;align-items:center;gap:8px}
 .ps-update-status{font-size:13px;font-weight:600}
+.ps-stale-banner{display:none;background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.3);border-radius:6px;padding:10px 14px;margin:12px 0;font-size:13px;color:var(--ps-warning);align-items:center;gap:10px}
+.ps-stale-banner.ps-stale-visible{display:flex}
+.ps-stale-banner span{flex:1}
+.ps-stale-banner button{font-size:12px;padding:2px 10px}
+.ps-split-layout{display:flex;gap:16px;align-items:flex-start}
+.ps-split-left{flex:0 0 65%;max-width:65%}
+.ps-split-right{flex:1;min-width:0}
+@media(max-width:768px){.ps-split-layout{flex-direction:column}.ps-split-left,.ps-split-right{flex:none;max-width:100%}}
+.ps-last-update{font-size:13px;margin-bottom:10px;padding:8px 10px;border-radius:4px;background:rgba(76,175,80,.08);border:1px solid rgba(76,175,80,.2)}
+.ps-last-update-label{font-weight:600;color:var(--ps-text)}
+.ps-last-update-stats{color:var(--ps-text-muted);margin-top:4px}
+.ps-last-update-stats b{color:var(--ps-text)}
+.ps-log-settings{display:flex;align-items:center;gap:8px;padding:6px 0;flex-wrap:wrap}
+.ps-log-settings-label{font-size:13px;color:var(--ps-text)}
+.ps-log-settings-select{padding:2px 6px;font-size:13px;border:1px solid var(--ps-border);border-radius:4px;background:var(--ps-bg);color:var(--ps-text)}
+.ps-log-settings-status{font-size:12px}
+.ps-log-settings-note{font-size:11px;color:var(--ps-text-muted);padding:0 0 6px 0;line-height:1.4}
+.ps-log-viewer-wrap{border:1px solid var(--ps-border);border-radius:6px;overflow-y:auto;font-family:'Consolas','Monaco','Courier New',monospace;font-size:13px;line-height:1.6;background:var(--ps-bg)}
+.ps-log-event{padding:4px 10px;border-bottom:1px solid var(--ps-bg-alt)}
+.ps-log-event:last-child{border-bottom:none}
+.ps-log-summary{white-space:nowrap}
+.ps-log-num{color:var(--ps-text-dim);font-weight:600}
+.ps-log-ts{color:var(--ps-text-dim)}
+.ps-log-mode-auto{color:#2196f3;font-weight:600}
+.ps-log-mode-manual{color:#4caf50;font-weight:600}
+.ps-log-stats{color:var(--ps-text-muted)}
+.ps-log-details{padding:4px 0 2px 20px}
+.ps-log-detail-line{white-space:nowrap;padding:1px 0}
+.ps-log-detail-section{color:var(--ps-text);font-weight:600}
+.ps-status-updated{color:#4caf50}
+.ps-status-unchanged{color:var(--ps-text-dim)}
+.ps-status-failed{color:#f44336}
+.ps-log-viewer-full{max-height:60vh;overflow-y:auto;border:1px solid var(--ps-border);border-radius:6px;font-family:'Consolas','Monaco','Courier New',monospace;font-size:13px;line-height:1.6;background:var(--ps-bg)}

@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v2.4.0 | 30.05.2026 | no-cache headers, clear LuCI cache endpoint
+-- Podkop Tweaker | v2.5.1 | 30.05.2026 | text-based update log with details, improved fonts, log display settings
 
-local APP_VERSION = "2.4.0"
+local APP_VERSION = "2.5.1"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -113,6 +113,12 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "clear_cache"},
         call("api_clear_cache")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "app_version"},
+        call("api_app_version")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "read_update_log"},
+        call("api_read_update_log")).leaf = true
 end
 
 local function render_page(template_name, extra)
@@ -194,6 +200,41 @@ local function validate_config(content)
     end
     if content:find("\0", 1, true) then
         return false, "Invalid content: contains null bytes"
+    end
+    local line_no = 0
+    for line in content:gmatch("[^\r\n]+") do
+        line_no = line_no + 1
+        local trimmed = line:match("^%s*(.-)%s*$")
+        if trimmed ~= "" and not trimmed:match("^#") then
+            if not trimmed:match("^config%s")
+                and not trimmed:match("^option%s")
+                and not trimmed:match("^list%s")
+                and trimmed ~= "" then
+                return false, "Invalid UCI syntax at line " .. line_no .. ": unexpected token"
+            end
+        end
+        local sq_open = 0
+        local dq_open = 0
+        local i = 1
+        while i <= #line do
+            local c = line:sub(i, i)
+            if c == "'" then sq_open = sq_open + 1
+            elseif c == '"' then dq_open = dq_open + 1
+            end
+            i = i + 1
+        end
+        if sq_open % 2 ~= 0 then
+            return false, "Unmatched single quote at line " .. line_no
+        end
+        if dq_open % 2 ~= 0 then
+            return false, "Unmatched double quote at line " .. line_no
+        end
+        for ci = 1, #line do
+            local b = line:byte(ci)
+            if b < 9 or (b > 13 and b < 32) then
+                return false, "Invalid character at line " .. line_no .. ", column " .. ci
+            end
+        end
     end
     return true
 end
@@ -490,6 +531,9 @@ function api_subscription_attach()
                 http.write_json({ error = "Failed to save data" })
                 return
             end
+            local log_text = os.date("%H:%M %d.%m.%Y") .. "|manual|updated=0|unchanged=1|failed=0"
+                .. "\n  " .. section_name .. ":\n    " .. proxy_name .. ": unchanged"
+            S.append_log(UPDATE_LOG_FILE, UPDATE_LOG_MAX, log_text)
             http.write_json({ success = true, unchanged = true })
             return
         end
@@ -522,6 +566,9 @@ function api_subscription_attach()
         end
 
         sys.exec("nohup /etc/init.d/podkop restart >/dev/null 2>&1 &")
+        local log_text = os.date("%H:%M %d.%m.%Y") .. "|manual|updated=1|unchanged=0|failed=0"
+            .. "\n  " .. section_name .. ":\n    " .. proxy_name .. ": updated"
+        S.append_log(UPDATE_LOG_FILE, UPDATE_LOG_MAX, log_text)
         http.write_json({ success = true, restarting = true })
     end)
 
@@ -779,7 +826,8 @@ function api_settings_read()
     http.write_json({
         auto_update_interval = settings.auto_update_interval or 0,
         auto_update_start = settings.auto_update_start or "",
-        auto_update_on_restart = settings.auto_update_on_restart or false
+        auto_update_on_restart = settings.auto_update_on_restart or false,
+        log_display_count = settings.log_display_count or 10
     })
 end
 
@@ -793,6 +841,9 @@ function api_settings_save()
         local interval = tonumber(http.formvalue("auto_update_interval") or "0") or 0
         local start_time = http.formvalue("auto_update_start") or ""
         local on_restart = http.formvalue("auto_update_on_restart") == "1"
+        local log_display = tonumber(http.formvalue("log_display_count") or "10") or 10
+        if log_display < 1 then log_display = 1 end
+        if log_display > 25 then log_display = 25 end
 
         if interval > 0 then
             if interval < 1 or interval > 24 then
@@ -818,7 +869,8 @@ function api_settings_save()
         subs.settings = {
             auto_update_interval = interval,
             auto_update_start = start_time,
-            auto_update_on_restart = on_restart
+            auto_update_on_restart = on_restart,
+            log_display_count = log_display
         }
         if not S.write_subs(subs, SUBS_FILE) then
             http.write_json({ error = "Failed to save settings" })
@@ -860,6 +912,7 @@ function api_update_all_subs()
         local unchanged = 0
         local failed = 0
         local need_restart = false
+        local details = {}
 
         for _, sec in ipairs(sections) do
             local sec_subs = subs[sec.name] or {}
@@ -868,6 +921,7 @@ function api_update_all_subs()
                 if sub_entry and sub_entry.subscription_url and sub_entry.subscription_url ~= "" then
                     local proxy, ferr = S.do_update_subscription(
                         sec.name, i - 1, sub_entry.subscription_url, sub_entry.proxy_name)
+                    local pname = sub_entry.proxy_name or ""
                     if proxy and proxy.link then
                         local current_link = link or ""
                         if current_link ~= proxy.link then
@@ -882,15 +936,19 @@ function api_update_all_subs()
                             if rok then
                                 updated = updated + 1
                                 need_restart = true
+                                table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "updated"})
                             else
                                 failed = failed + 1
+                                table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "failed"})
                             end
                         else
                             unchanged = unchanged + 1
+                            table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "unchanged"})
                         end
                         S.update_subs_timestamp(SUBS_FILE, sec.name, i - 1, "manual")
                     else
                         failed = failed + 1
+                        table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "failed"})
                     end
                 end
             end
@@ -900,9 +958,23 @@ function api_update_all_subs()
             sys.exec("nohup /etc/init.d/podkop restart >/dev/null 2>&1 &")
         end
 
-        local log_line = os.date("%Y-%m-%d %H:%M") .. "|manual|updated=" .. updated
+        local log_text = os.date("%H:%M %d.%m.%Y") .. "|manual|updated=" .. updated
             .. "|unchanged=" .. unchanged .. "|failed=" .. failed
-        S.append_log(UPDATE_LOG_FILE, UPDATE_LOG_MAX, log_line)
+        local by_section = {}
+        for _, d in ipairs(details) do
+            if not by_section[d.section] then by_section[d.section] = {} end
+            by_section[d.section][#by_section[d.section] + 1] = d
+        end
+        local sec_names = {}
+        for k, _ in pairs(by_section) do sec_names[#sec_names + 1] = k end
+        table.sort(sec_names)
+        for _, sname in ipairs(sec_names) do
+            log_text = log_text .. "\n  " .. sname .. ":"
+            for _, d in ipairs(by_section[sname]) do
+                log_text = log_text .. "\n    " .. d.proxy .. ": " .. d.status
+            end
+        end
+        local log_ok, log_err = pcall(S.append_log, UPDATE_LOG_FILE, UPDATE_LOG_MAX, log_text)
 
         http.write_json({
             success = true,
@@ -1182,6 +1254,39 @@ function api_clear_cache()
     sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
 
     http.write_json({ success = true })
+end
+
+function api_app_version()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    http.write_json({ version = APP_VERSION })
+end
+
+function api_read_update_log()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+
+    local lines = {}
+    local n = 0
+    local fd = io.open(UPDATE_LOG_FILE, "r")
+    if fd then
+        for line in fd:lines() do
+            n = n + 1
+            lines[n] = line
+        end
+        fd:close()
+    end
+
+    local json = require("luci.jsonc")
+    local resp = '{"lines":['
+    for i = 1, n do
+        if i > 1 then resp = resp .. ',' end
+        resp = resp .. json.stringify(lines[i])
+    end
+    resp = resp .. ']}'
+    http.write(resp)
 end
 
 -- === Git Update (GitHub Releases API) ===

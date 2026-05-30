@@ -15,26 +15,64 @@ Author: InsaniaQuon
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Local Update</a></li>
     </ul>
 
-    <div class="cbi-section">
-        <div class="ps-sysinfo-header">
-            <h3>Subscriptions</h3>
-            <div class="ps-header-btns">
-                <button class="btn cbi-button" id="ps-subs-refresh">Refresh Sections</button>
-                <button class="btn cbi-button cbi-button-apply" id="ps-subs-update-all">Update All Subs</button>
-                <span class="ps-global-status" id="ps-global-status"></span>
+    <div class="ps-stale-banner" id="ps-stale-banner">
+        <span>Page shows cached version. Updated version available.</span>
+        <button class="btn cbi-button" onclick="window.location.reload(true)">Reload</button>
+    </div>
+
+    <div class="ps-split-layout">
+        <div class="ps-split-left">
+            <div class="cbi-section">
+                <div class="ps-sysinfo-header">
+                    <h3>Subscriptions</h3>
+                    <div class="ps-header-btns">
+                        <button class="btn cbi-button" id="ps-subs-refresh">Refresh Sections</button>
+                        <button class="btn cbi-button cbi-button-apply" id="ps-subs-update-all">Update All Subs</button>
+                        <span class="ps-global-status" id="ps-global-status"></span>
+                    </div>
+                </div>
+
+                <div class="ps-sysinfo-loading" id="ps-subs-loading">Loading proxy sections...</div>
+
+                <div id="ps-subs-content" style="display:none;"></div>
+
+                <div class="ps-sysinfo-error" id="ps-subs-error" style="display:none;"></div>
+
+                <div id="ps-options-container" style="display:none;"></div>
+
+                <div class="ps-warning-box">
+                    <strong>&#9888; Info:</strong> Attach a subscription URL to each proxy slot. When you update a subscription, the proxy link will be replaced with the selected server from the subscription response. A backup is created automatically before each change.
+                </div>
             </div>
         </div>
 
-        <div class="ps-sysinfo-loading" id="ps-subs-loading">Loading proxy sections...</div>
-
-        <div id="ps-subs-content" style="display:none;"></div>
-
-        <div class="ps-sysinfo-error" id="ps-subs-error" style="display:none;"></div>
-
-        <div id="ps-options-container" style="display:none;"></div>
-
-        <div class="ps-warning-box">
-            <strong>&#9888; Info:</strong> Attach a subscription URL to each proxy slot. When you update a subscription, the proxy link will be replaced with the selected server from the subscription response. A backup is created automatically before each change.
+        <div class="ps-split-right">
+            <div class="cbi-section">
+                <div class="ps-sysinfo-header">
+                    <h3>Update Log</h3>
+                    <button class="btn cbi-button" id="ps-full-log-btn" style="display:none;">Full Log</button>
+                </div>
+                <div class="ps-log-settings" id="ps-log-settings">
+                    <label class="ps-log-settings-label">Display last
+                        <select id="ps-log-display-count" class="ps-log-settings-select">
+                            <option value="5">5</option>
+                            <option value="10" selected>10</option>
+                            <option value="15">15</option>
+                            <option value="20">20</option>
+                            <option value="25">25</option>
+                        </select>
+                        entries
+                    </label>
+                    <button class="btn cbi-button cbi-button-apply" id="ps-log-settings-save">Save</button>
+                    <span class="ps-log-settings-status" id="ps-log-settings-status"></span>
+                </div>
+                <div class="ps-log-settings-note">
+                    <strong>&#9888; Note:</strong> The log panel has a fixed height. Displaying many entries with details may require scrolling. On smaller screens or with browser zoom enabled, the layout may shift — reduce the number of displayed entries if needed.
+                </div>
+                <div class="ps-log-viewer-wrap" id="ps-log-wrap">
+                    <div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">Loading log...</div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -59,12 +97,23 @@ Author: InsaniaQuon
     </div>
 </div>
 
+<div class="ps-modal" id="ps-full-log-modal" style="display:none;">
+    <div class="ps-modal-content ps-modal-wide">
+        <h3>Full Update Log</h3>
+        <div class="ps-log-viewer-full" id="ps-full-log-body"></div>
+        <div class="ps-modal-footer">
+            <button class="btn cbi-button" id="ps-full-log-close">Close</button>
+        </div>
+    </div>
+</div>
+
 <style>
 <% include("podkop-tweaker/podkop-tweaker-css") %>
 </style>
 
 <script>
 (function() {
+    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
     var CSRF = '<%= token or csrf_token or "" %>';
     var URLS = {
         state: '<%=url("admin/services/podkop-tweaker/api/subscription_state")%>',
@@ -74,7 +123,8 @@ Author: InsaniaQuon
         service_status: '<%=url("admin/services/podkop-tweaker/api/service_status")%>',
         settings_read: '<%=url("admin/services/podkop-tweaker/api/settings_read")%>',
         settings_save: '<%=url("admin/services/podkop-tweaker/api/settings_save")%>',
-        update_all: '<%=url("admin/services/podkop-tweaker/api/update_all_subs")%>'
+        update_all: '<%=url("admin/services/podkop-tweaker/api/update_all_subs")%>',
+        read_log: '<%=url("admin/services/podkop-tweaker/api/read_update_log")%>'
     };
 
     var loadingEl = document.getElementById('ps-subs-loading');
@@ -414,6 +464,7 @@ Author: InsaniaQuon
                         waitForRestart(function() {
                             setGlobalStatus('Updated successfully', '#4caf50');
                             loadSectionState(section);
+                            loadUpdateLog();
                         });
                     } else {
                         setFetchStatus(resp.error || 'Unknown error', '#f44336');
@@ -486,6 +537,7 @@ Author: InsaniaQuon
                                 setSlotStatus(section, index, 'Updated', '#4caf50');
                             }
                             loadSectionState(section);
+                            loadUpdateLog();
                         });
                     } else {
                         setSlotStatus(section, index, resp.error || 'Unknown error', '#f44336');
@@ -533,8 +585,18 @@ Author: InsaniaQuon
         var interval = settings.auto_update_interval || 0;
         var startVal = settings.auto_update_start || '02:00';
         var restartVal = !!settings.auto_update_on_restart;
+        var logDisplay = settings.log_display_count || 10;
         var cronEnabled = interval > 0;
         var showStyle = cronEnabled ? '' : 'display:none';
+
+        var logSel = document.getElementById('ps-log-display-count');
+        if (logSel) {
+            for (var i = 0; i < logSel.options.length; i++) {
+                if (parseInt(logSel.options[i].value) === logDisplay) {
+                    logSel.selectedIndex = i; break;
+                }
+            }
+        }
 
         var html = '<div class="ps-options-block">';
         html += '<h4>Auto-Update</h4>';
@@ -543,11 +605,11 @@ Author: InsaniaQuon
         html += '<label for="ps-opt-cron">Every</label>';
         html += '<input type="text" id="ps-opt-interval" value="' + (cronEnabled ? interval : 6) + '" placeholder="6" style="' + showStyle + '" />';
         html += '<span id="ps-opt-cron-fields" style="' + showStyle + '">hours starting at</span>';
-        html += '<input type="text" id="ps-opt-start" value="' + escapeAttr(startVal) + '" placeholder="02:00" style="' + showStyle + '" />';
+        html += '<input type="text" id="ps-opt-start" value="' + escapeAttr(startVal) + '" placeholder="02:30" style="' + showStyle + '" />';
         html += '<span id="ps-opt-cron-msk" style="' + showStyle + '">(MSK, daily)</span>';
         html += '</div>';
         html += '<div class="ps-options-row" style="font-size:12px;color:var(--ps-text-dim);margin-bottom:0">';
-        html += '<span style="margin-left:22px">Example: every 4 hours from 02:00 &rarr; 02:00, 06:00, 10:00, 14:00, 18:00, 22:00</span>';
+        html += '<span style="margin-left:22px">Example: every 4 hours from 01:30 &rarr; 01:30, 05:30, 09:30, 13:30, 17:30, 21:30</span>';
         html += '</div>';
         html += '<div class="ps-options-row">';
         html += '<input type="checkbox" id="ps-opt-restart"' + (restartVal ? ' checked' : '') + ' />';
@@ -630,7 +692,8 @@ Author: InsaniaQuon
             xhr.send('token=' + encodeURIComponent(CSRF)
                 + '&auto_update_interval=' + (cronChecked ? intervalVal : '0')
                 + '&auto_update_start=' + encodeURIComponent(cronChecked ? startInput : '')
-                + '&auto_update_on_restart=' + (restartChecked ? '1' : '0'));
+                + '&auto_update_on_restart=' + (restartChecked ? '1' : '0')
+                + '&log_display_count=' + (document.getElementById('ps-log-display-count') || {}).value);
         });
     }
 
@@ -639,132 +702,190 @@ Author: InsaniaQuon
         if (!confirm('Update all subscribed proxy slots from their subscription URLs?')) return;
 
         updateAllBtn.disabled = true;
-        setGlobalStatus('Loading subscription state...', '#2196f3');
+        setGlobalStatus('Updating subscriptions...', '#2196f3');
 
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.state);
+        xhr.open('POST', URLS.update_all);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.onload = function() {
             if (xhr.status !== 200) {
-                setGlobalStatus('Failed to load state', '#f44336');
+                setGlobalStatus('HTTP error: ' + xhr.status, '#f44336');
                 updateAllBtn.disabled = false;
                 return;
             }
-            var data;
-            try { data = JSON.parse(xhr.responseText); } catch (e) {
+            var resp;
+            try { resp = JSON.parse(xhr.responseText); } catch (e) {
                 setGlobalStatus('Invalid response', '#f44336');
                 updateAllBtn.disabled = false;
                 return;
             }
-
-            var tasks = [];
-            for (var s = 0; s < data.sections.length; s++) {
-                var sec = data.sections[s];
-                for (var i = 0; i < sec.slots.length; i++) {
-                    var slot = sec.slots[i];
-                    if (slot.subscription && slot.subscription.subscription_url) {
-                        tasks.push({
-                            section: sec.name,
-                            index: slot.index,
-                            url: slot.subscription.subscription_url,
-                            proxy_name: slot.subscription.proxy_name || ''
-                        });
-                    }
-                }
-            }
-
-            if (tasks.length === 0) {
-                setGlobalStatus('No subscriptions to update', '#ff9800');
+            if (resp.error) {
+                setGlobalStatus(resp.error, '#f44336');
                 updateAllBtn.disabled = false;
                 return;
             }
-
-            var updated = 0, skipped = 0, failed = 0;
-            var current = 0;
-
-            function processNext() {
-                if (current >= tasks.length) {
-                    if (updated > 0) {
-                        setGlobalStatus('Restarting service...', '#2196f3');
-                        waitForRestart(function() {
-                            setGlobalStatus('Done: ' + updated + ' updated, ' + skipped + ' up to date' + (failed > 0 ? ', ' + failed + ' failed' : ''), updated > 0 ? '#4caf50' : '#ff9800');
-                            updateAllBtn.disabled = false;
-                            loadStateSilent();
-                        });
-                    } else {
-                        setGlobalStatus('Done: ' + skipped + ' up to date' + (failed > 0 ? ', ' + failed + ' failed' : ''), failed > 0 ? '#f44336' : '#4caf50');
-                        updateAllBtn.disabled = false;
-                        loadStateSilent();
-                    }
-                    return;
-                }
-
-                var task = tasks[current];
-                current++;
-                setGlobalStatus('Updating ' + current + '/' + tasks.length + '...', '#2196f3');
-
-                var fetchXhr = new XMLHttpRequest();
-                fetchXhr.open('POST', URLS.fetch);
-                fetchXhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-                fetchXhr.onload = function() {
-                    if (fetchXhr.status !== 200) {
-                        failed++;
-                        processNext();
-                        return;
-                    }
-                    var resp;
-                    try { resp = JSON.parse(fetchXhr.responseText); } catch (e) { failed++; processNext(); return; }
-
-                    if (!resp.success || !resp.proxies) { failed++; processNext(); return; }
-
-                    var found = null;
-                    if (task.proxy_name) {
-                        for (var j = 0; j < resp.proxies.length; j++) {
-                            if (resp.proxies[j].name === task.proxy_name) { found = resp.proxies[j]; break; }
-                        }
-                    }
-                    if (!found && resp.proxies.length === 1) found = resp.proxies[0];
-                    if (!found) { failed++; processNext(); return; }
-
-                    var attachXhr = new XMLHttpRequest();
-                    attachXhr.open('POST', URLS.attach);
-                    attachXhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-                    attachXhr.onload = function() {
-                        if (attachXhr.status === 200) {
-                            try {
-                                var aResp = JSON.parse(attachXhr.responseText);
-                                if (aResp.success) {
-                                    if (aResp.unchanged) skipped++;
-                                    else updated++;
-                                } else { failed++; }
-                            } catch (e) { failed++; }
-                        } else { failed++; }
-                        processNext();
-                    };
-                    attachXhr.onerror = function() { failed++; processNext(); };
-                    attachXhr.send('token=' + encodeURIComponent(CSRF)
-                        + '&section=' + encodeURIComponent(task.section)
-                        + '&index=' + task.index
-                        + '&subscription_url=' + encodeURIComponent(task.url)
-                        + '&proxy_name=' + encodeURIComponent(found.name || '')
-                        + '&link=' + encodeURIComponent(found.link || ''));
-                };
-                fetchXhr.onerror = function() { failed++; processNext(); };
-                fetchXhr.send('token=' + encodeURIComponent(CSRF) + '&url=' + encodeURIComponent(task.url));
+            var msg = (resp.updated || 0) + ' updated, ' + (resp.unchanged || 0) + ' unchanged'
+                + ((resp.failed || 0) > 0 ? ', ' + resp.failed + ' failed' : '');
+            if (resp.restarted) {
+                setGlobalStatus('Restarting service...', '#2196f3');
+                waitForRestart(function() {
+                    setGlobalStatus('Done: ' + msg, (resp.failed || 0) > 0 ? '#ff9800' : '#4caf50');
+                    updateAllBtn.disabled = false;
+                    loadStateSilent();
+                    loadUpdateLog();
+                });
+            } else {
+                setGlobalStatus('Done: ' + msg, (resp.failed || 0) > 0 ? '#ff9800' : '#4caf50');
+                updateAllBtn.disabled = false;
+                loadStateSilent();
+                loadUpdateLog();
             }
-
-            processNext();
         };
         xhr.onerror = function() {
             setGlobalStatus('Network error', '#f44336');
             updateAllBtn.disabled = false;
         };
-        xhr.send();
+        xhr.send('token=' + encodeURIComponent(CSRF));
     });
 
     refreshBtn.addEventListener('click', function() { loadStateSilent(); });
 
+    var allLogLines = [];
+
+    function parseEvents(lines) {
+        var events = [];
+        var current = null;
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (line && !line.match(/^  /)) {
+                if (current) events.push(current);
+                var parts = line.split('|');
+                current = { summary: line, ts: parts[0] || '', mode: parts[1] || '',
+                    updated: (parts[2] || '').replace('updated=', ''),
+                    unchanged: (parts[3] || '').replace('unchanged=', ''),
+                    failed: (parts[4] || '').replace('failed=', ''),
+                    detailLines: [] };
+            } else if (current && line) {
+                current.detailLines.push(line);
+            }
+        }
+        if (current) events.push(current);
+        return events;
+    }
+
+    function renderEvents(container, events, maxCount) {
+        var show = events.slice(-maxCount).reverse();
+        var html = '';
+        for (var i = 0; i < show.length; i++) {
+            var e = show[i];
+            var num = '<span class="ps-log-num">' + (i + 1) + '.</span>';
+            var modeClass = e.mode === 'auto' ? 'ps-log-mode-auto' : 'ps-log-mode-manual';
+            html += '<div class="ps-log-event">';
+            html += '<div class="ps-log-summary">' + num + ' ' +
+                '<span class="ps-log-ts">' + escapeHtml(e.ts) + '</span> ' +
+                '<span class="' + modeClass + '">' + escapeHtml(e.mode) + '</span> ' +
+                '<span class="ps-log-stats">updated=' + e.updated + ' unchanged=' + e.unchanged + ' failed=' + e.failed + '</span></div>';
+            if (e.detailLines.length > 0) {
+                html += '<div class="ps-log-details">';
+                for (var j = 0; j < e.detailLines.length; j++) {
+                    var cls = 'ps-log-detail-line';
+                    if (e.detailLines[j].indexOf(': updated') !== -1) cls += ' ps-status-updated';
+                    else if (e.detailLines[j].indexOf(': failed') !== -1) cls += ' ps-status-failed';
+                    else if (e.detailLines[j].indexOf(': unchanged') !== -1) cls += ' ps-status-unchanged';
+                    else cls += ' ps-log-detail-section';
+                    html += '<div class="' + cls + '">' + escapeHtml(e.detailLines[j]) + '</div>';
+                }
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+        container.innerHTML = html || '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">No update log entries yet</div>';
+    }
+
+    function loadUpdateLog() {
+        var wrap = document.getElementById('ps-log-wrap');
+        var fullLogBtn = document.getElementById('ps-full-log-btn');
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.read_log);
+        xhr.onload = function() {
+            if (xhr.status !== 200) {
+                wrap.innerHTML = '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">Failed to load log</div>';
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                allLogLines = resp.lines || [];
+                var events = parseEvents(allLogLines);
+                if (events.length === 0) {
+                    wrap.innerHTML = '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">No update log entries yet</div>';
+                    fullLogBtn.style.display = 'none';
+                    return;
+                }
+                var logSel = document.getElementById('ps-log-display-count');
+                var count = logSel ? parseInt(logSel.value) || 10 : 10;
+                renderEvents(wrap, events, count);
+
+                if (events.length > count) {
+                    fullLogBtn.style.display = '';
+                } else {
+                    fullLogBtn.style.display = 'none';
+                }
+            } catch (e) {
+                wrap.innerHTML = '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">Invalid log data</div>';
+            }
+        };
+        xhr.onerror = function() {
+            wrap.innerHTML = '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">Failed to load log</div>';
+        };
+        xhr.send();
+    }
+
+    var logSettingsSave = document.getElementById('ps-log-settings-save');
+    var logSettingsStatus = document.getElementById('ps-log-settings-status');
+    logSettingsSave.addEventListener('click', function() {
+        var count = parseInt(document.getElementById('ps-log-display-count').value) || 10;
+        logSettingsStatus.textContent = 'Saving...';
+        logSettingsStatus.style.color = '#2196f3';
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', URLS.settings_save);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success) {
+                        logSettingsStatus.textContent = 'Saved';
+                        logSettingsStatus.style.color = '#4caf50';
+                        loadUpdateLog();
+                    } else {
+                        logSettingsStatus.textContent = resp.error || 'Save failed';
+                        logSettingsStatus.style.color = '#f44336';
+                    }
+                } catch (e) { logSettingsStatus.textContent = 'Invalid response'; logSettingsStatus.style.color = '#f44336'; }
+            } else { logSettingsStatus.textContent = 'HTTP error'; logSettingsStatus.style.color = '#f44336'; }
+        };
+        xhr.onerror = function() { logSettingsStatus.textContent = 'Network error'; logSettingsStatus.style.color = '#f44336'; };
+        xhr.send('token=' + encodeURIComponent(CSRF)
+            + '&auto_update_interval=0&auto_update_start=&auto_update_on_restart=0'
+            + '&log_display_count=' + count);
+    });
+
+    var fullLogModal = document.getElementById('ps-full-log-modal');
+    var fullLogBody = document.getElementById('ps-full-log-body');
+    var fullLogBtn = document.getElementById('ps-full-log-btn');
+    var fullLogClose = document.getElementById('ps-full-log-close');
+
+    fullLogBtn.addEventListener('click', function() {
+        var events = parseEvents(allLogLines);
+        renderEvents(fullLogBody, events, events.length);
+        fullLogModal.style.display = 'flex';
+    });
+    fullLogClose.addEventListener('click', function() { fullLogModal.style.display = 'none'; });
+    fullLogModal.addEventListener('click', function(e) { if (e.target === fullLogModal) fullLogModal.style.display = 'none'; });
+
     loadState();
     loadOptions();
+    loadUpdateLog();
 })();
 </script>
 

@@ -1,4 +1,7 @@
 package.path = "./usr/lib/lua/?.lua;" .. package.path
+package.preload["luci.jsonc"] = function()
+    return { parse = function() return nil end, stringify = function() return nil end }
+end
 
 local pt = require("pt-subs-lib")
 
@@ -181,11 +184,12 @@ describe("parse_subscription_raw", function()
 end)
 
 describe("rotate_log", function()
-    it("trims log to max_lines", function()
+    it("trims log to max events", function()
         local tmp = os.tmpname()
         local fd = io.open(tmp, "w")
-        for i = 1, 10 do
-            fd:write("line " .. i .. "\n")
+        for i = 1, 5 do
+            fd:write("event " .. i .. "|manual|updated=0|unchanged=0|failed=0\n")
+            fd:write("  section:\n    slot 1 server: updated\n")
         end
         fd:close()
 
@@ -193,80 +197,90 @@ describe("rotate_log", function()
 
         fd = io.open(tmp, "r")
         local lines = {}
-        for line in fd:lines() do
-            table.insert(lines, line)
-        end
+        for line in fd:lines() do lines[#lines + 1] = line end
         fd:close()
         os.remove(tmp)
 
-        assert.equal(3, #lines)
-        assert.equal("line 8", lines[1])
-        assert.equal("line 9", lines[2])
-        assert.equal("line 10", lines[3])
+        local events = 0
+        for _, l in ipairs(lines) do
+            if not l:match("^%s") then events = events + 1 end
+        end
+        assert.equal(3, events)
+        assert.equal("event 3|manual|updated=0|unchanged=0|failed=0", lines[1])
     end)
 
     it("does not trim short log", function()
         local tmp = os.tmpname()
         local fd = io.open(tmp, "w")
-        fd:write("line 1\n")
-        fd:write("line 2\n")
+        fd:write("event 1|auto|updated=1|unchanged=0|failed=0\n")
         fd:close()
 
         pt.rotate_log(tmp, 5)
 
         fd = io.open(tmp, "r")
         local lines = {}
-        for line in fd:lines() do
-            table.insert(lines, line)
-        end
-        fd:close()
-        os.remove(tmp)
-
-        assert.equal(2, #lines)
-    end)
-end)
-
-describe("append_log", function()
-    it("appends line to empty file", function()
-        local tmp = os.tmpname()
-        local fd = io.open(tmp, "w")
-        fd:close()
-
-        pt.append_log(tmp, 5, "first entry")
-
-        fd = io.open(tmp, "r")
-        local lines = {}
-        for line in fd:lines() do
-            table.insert(lines, line)
-        end
+        for line in fd:lines() do lines[#lines + 1] = line end
         fd:close()
         os.remove(tmp)
 
         assert.equal(1, #lines)
-        assert.equal("first entry", lines[1])
     end)
+end)
 
-    it("rotates before appending when at max", function()
+describe("append_log", function()
+    it("appends text to empty file", function()
         local tmp = os.tmpname()
         local fd = io.open(tmp, "w")
-        for i = 1, 3 do
-            fd:write("old " .. i .. "\n")
-        end
         fd:close()
 
-        pt.append_log(tmp, 3, "new entry")
+        pt.append_log(tmp, 5, "12:00 30.05.2026|manual|updated=1|unchanged=0|failed=0")
 
         fd = io.open(tmp, "r")
         local lines = {}
-        for line in fd:lines() do
-            table.insert(lines, line)
-        end
+        for line in fd:lines() do lines[#lines + 1] = line end
+        fd:close()
+        os.remove(tmp)
+
+        assert.equal(1, #lines)
+        assert.equal("12:00 30.05.2026|manual|updated=1|unchanged=0|failed=0", lines[1])
+    end)
+
+    it("appends multiline text with details", function()
+        local tmp = os.tmpname()
+        local fd = io.open(tmp, "w")
+        fd:close()
+
+        local text = "12:00 30.05.2026|manual|updated=1|unchanged=0|failed=0\n  proxy_group:\n    server: updated"
+        pt.append_log(tmp, 5, text)
+
+        fd = io.open(tmp, "r")
+        local lines = {}
+        for line in fd:lines() do lines[#lines + 1] = line end
         fd:close()
         os.remove(tmp)
 
         assert.equal(3, #lines)
-        assert.equal("old 2", lines[1])
-        assert.equal("old 3", lines[2])
-        assert.equal("new entry", lines[3])
+        assert.equal("12:00 30.05.2026|manual|updated=1|unchanged=0|failed=0", lines[1])
+        assert.equal("  proxy_group:", lines[2])
+        assert.equal("    server: updated", lines[3])
+    end)
+
+    it("rotates when exceeding max_events", function()
+        local tmp = os.tmpname()
+        local fd = io.open(tmp, "w")
+        fd:close()
+
+        for i = 1, 4 do
+            pt.append_log(tmp, 3, "event " .. i .. "|auto|updated=0|unchanged=0|failed=0")
+        end
+
+        fd = io.open(tmp, "r")
+        local lines = {}
+        for line in fd:lines() do lines[#lines + 1] = line end
+        fd:close()
+        os.remove(tmp)
+
+        assert.equal(3, #lines)
+        assert.equal("event 2|auto|updated=0|unchanged=0|failed=0", lines[1])
     end)
 end)

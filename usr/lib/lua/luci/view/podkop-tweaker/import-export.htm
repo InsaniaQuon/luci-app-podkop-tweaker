@@ -15,6 +15,11 @@ Author: InsaniaQuon
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Local Update</a></li>
     </ul>
 
+    <div class="ps-stale-banner" id="ps-stale-banner">
+        <span>Page shows cached version. Updated version available.</span>
+        <button class="btn cbi-button" onclick="window.location.reload(true)">Reload</button>
+    </div>
+
     <div class="cbi-section ps-ie-status-section">
         <div class="ps-service-status" id="ps-service-status">
             <span class="ps-status-dot checking" id="ps-status-dot"></span>
@@ -142,6 +147,7 @@ Author: InsaniaQuon
 
 <script>
 (function() {
+    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
     var CSRF = '<%= token or csrf_token or "" %>';
     var URLS = {
         importCfg: '<%=url("admin/services/podkop-tweaker/api/import_config")%>',

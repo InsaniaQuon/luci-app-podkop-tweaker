@@ -292,31 +292,37 @@ function M.update_subs_timestamp(subs_file, section_name, slot_index, mode)
     M.write_subs(subs, subs_file)
 end
 
-function M.rotate_log(log_file, max_lines)
+function M.rotate_log(log_file, max_events)
     local fd = io.open(log_file, "r")
     if not fd then return end
-    local lines = {}
+    local all_lines = {}
     for line in fd:lines() do
-        table.insert(lines, line)
+        all_lines[#all_lines + 1] = line
     end
     fd:close()
 
-    if #lines <= max_lines then return end
-
-    local start = #lines - max_lines + 1
-    local wfd = io.open(log_file, "w")
-    if not wfd then return end
-    for i = start, #lines do
-        wfd:write(lines[i] .. "\n")
+    local event_count = 0
+    for i = #all_lines, 1, -1 do
+        if not all_lines[i]:match("^%s") then
+            event_count = event_count + 1
+            if event_count == max_events then
+                local wfd = io.open(log_file, "w")
+                if not wfd then return end
+                for j = i, #all_lines do
+                    wfd:write(all_lines[j] .. "\n")
+                end
+                wfd:close()
+                return
+            end
+        end
     end
-    wfd:close()
 end
 
-function M.append_log(log_file, max_lines, line)
-    M.rotate_log(log_file, max_lines - 1)
+function M.append_log(log_file, max_events, text)
+    M.rotate_log(log_file, max_events - 1)
     local fd = io.open(log_file, "a")
     if not fd then return end
-    fd:write(line .. "\n")
+    fd:write(text .. "\n")
     fd:close()
 end
 
