@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v2.3.5 | 29.05.2026 | GitHub icon, shared subs module, standalone auto-update
+-- Podkop Tweaker | v2.4.0 | 30.05.2026 | no-cache headers, clear LuCI cache endpoint
 
-local APP_VERSION = "2.3.5"
+local APP_VERSION = "2.4.0"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -12,6 +12,13 @@ local UPDATE_LOG_FILE = "/etc/config/pt-update.log"
 local UPDATE_LOG_MAX = 25
 
 local S = require("pt-subs-lib")
+
+local function set_no_cache_headers()
+    local http = require("luci.http")
+    http.header("Cache-Control", "no-cache, no-store, must-revalidate")
+    http.header("Pragma", "no-cache")
+    http.header("Expires", "0")
+end
 
 local function sanitize_section_name(name)
     if not name or name == "" then return nil end
@@ -103,6 +110,9 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "tweaker_git_update"},
         call("api_tweaker_git_update")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "clear_cache"},
+        call("api_clear_cache")).leaf = true
 end
 
 local function render_page(template_name, extra)
@@ -240,6 +250,7 @@ function api_system_info()
     local sys = require("luci.sys")
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local raw = sys.exec("podkop get_system_info 2>/dev/null")
 
@@ -314,6 +325,7 @@ function api_update_start()
     local sys = require("luci.sys")
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     if not backup_config() then
         http.write_json({ error = "Cannot create backup before update" })
@@ -340,6 +352,7 @@ end
 function api_subscription_state()
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local sections = S.get_proxy_sections()
     local subs = S.read_subs(SUBS_FILE)
@@ -370,6 +383,7 @@ function api_subscription_fetch()
     if not verify_csrf() then return end
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local ok, err = pcall(function()
         local sys = require("luci.sys")
@@ -416,6 +430,7 @@ function api_subscription_attach()
     if not verify_csrf() then return end
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local ok, err = pcall(function()
         local sys = require("luci.sys")
@@ -485,11 +500,6 @@ function api_subscription_attach()
             if bfd then bfd:write(config_data); bfd:close() end
         end
 
-        if not backup_config() then
-            http.write_json({ error = "Cannot create backup" })
-            return
-        end
-
         local ok2, err2 = S.replace_proxy_link(section_name, proxy_type, slot_index, new_link)
         if not ok2 then
             http.write_json({ error = err2 })
@@ -525,6 +535,7 @@ function api_subscription_detach()
     if not verify_csrf() then return end
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local ok, err = pcall(function()
         local section_name = http.formvalue("section") or ""
@@ -574,6 +585,7 @@ function api_save_config()
     if not verify_csrf() then return end
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
     local content = http.formvalue("content") or ""
     local ok, err = validate_config(content)
     if not ok then
@@ -633,6 +645,7 @@ function api_import_config()
     if not verify_csrf() then return end
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
     local upload_content = http.formvalue("content") or ""
     if upload_content == "" then
         local fdupload = http.formvalue("file")
@@ -659,6 +672,7 @@ function api_service_status()
     local sys = require("luci.sys")
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
     local pid = sys.exec("pgrep -f 'sing-box' 2>/dev/null"):match("(%d+)")
 
     http.write_json({
@@ -672,6 +686,7 @@ function api_rollback()
     local nixio = require("nixio")
     local sys = require("luci.sys")
     http.prepare_content("application/json")
+    set_no_cache_headers()
     local config_path = "/etc/config/podkop"
     local backup_path = "/etc/config/podkop.auto-backup"
     if not nixio.fs.stat(backup_path) then
@@ -756,6 +771,7 @@ end
 function api_settings_read()
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local subs = S.read_subs(SUBS_FILE)
     local settings = subs.settings or {}
@@ -771,6 +787,7 @@ function api_settings_save()
     if not verify_csrf() then return end
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local ok, err = pcall(function()
         local interval = tonumber(http.formvalue("auto_update_interval") or "0") or 0
@@ -825,6 +842,7 @@ end
 function api_update_all_subs()
     local http = require("luci.http")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local is_local = (http.getenv("REMOTE_ADDR") or ""):match("^127%.") or
         (http.getenv("REMOTE_ADDR") or "") == "::1" or
@@ -859,7 +877,6 @@ function api_update_all_subs()
                                     local bfd = io.open("/etc/config/podkop.sub-backup", "w")
                                     if bfd then bfd:write(config_data); bfd:close() end
                                 end
-                                backup_config()
                             end
                             local rok, _ = S.replace_proxy_link(sec.name, sec.proxy_config_type, i - 1, proxy.link)
                             if rok then
@@ -990,6 +1007,7 @@ function api_upload_update()
     local http = require("luci.http")
     local sys = require("luci.sys")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local ok, err = pcall(function()
         local file_data_b64 = http.formvalue("file_data") or ""
@@ -1080,6 +1098,7 @@ function api_apply_update()
     local sys = require("luci.sys")
     local nixio = require("nixio")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local ok, err = pcall(function()
         local tmp_dir = "/tmp/pt-update"
@@ -1143,11 +1162,27 @@ function api_apply_update()
          })
      end)
 
-     if not ok then
-         http.prepare_content("application/json")
-         http.write_json({ error = "Internal error" })
-     end
- end
+    if not ok then
+        http.prepare_content("application/json")
+        http.write_json({ error = "Internal error" })
+    end
+end
+
+function api_clear_cache()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+
+    os.execute("rm -f /tmp/luci-indexcache* 2>/dev/null")
+    os.execute("rm -rf /tmp/luci-modulecache* 2>/dev/null")
+    os.execute("rm -rf /tmp/luci-template-* 2>/dev/null")
+
+    sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
+
+    http.write_json({ success = true })
+end
 
 -- === Git Update (GitHub Releases API) ===
 
@@ -1155,6 +1190,7 @@ function api_tweaker_check_update()
     local http = require("luci.http")
     local sys = require("luci.sys")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local cache_fd = io.open(CHECK_CACHE_FILE, "r")
     if cache_fd then
@@ -1234,6 +1270,7 @@ function api_tweaker_git_update()
     local http = require("luci.http")
     local sys = require("luci.sys")
     http.prepare_content("application/json")
+    set_no_cache_headers()
 
     local ok, err = pcall(function()
         local download_url = http.formvalue("download_url") or ""

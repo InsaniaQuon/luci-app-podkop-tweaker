@@ -58,6 +58,9 @@ Author: InsaniaQuon
             <button class="btn cbi-button cbi-button-apply" id="ps-update-podkop" style="display:none;">
                 Update Podkop
             </button>
+            <button class="btn cbi-button" id="ps-clear-cache" style="display:none;">
+                Clear LuCI Cache
+            </button>
             <span class="ps-latest-info" id="ps-latest-info" style="display:none;"></span>
             <span class="ps-sysinfo-status" id="ps-update-status"></span>
         </div>
@@ -67,6 +70,7 @@ Author: InsaniaQuon
             <ul style="margin:6px 0 0;padding-left:20px;">
                 <li><strong>Podkop:</strong> Opens a terminal window (ttyd) for interactive update. Backup is created automatically. Click Refresh after completion.</li>
                 <li><strong>Podkop Tweaker:</strong> LuCI will restart during update. Page reloads automatically. Do not power off the router.</li>
+                <li><strong>Clear Cache:</strong> Clears LuCI internal cache and restarts the web interface. Use if the page shows outdated information after an update.</li>
             </ul>
         </div>
     </div>
@@ -85,7 +89,8 @@ Author: InsaniaQuon
         systemInfo: '<%=url("admin/services/podkop-tweaker/api/system_info")%>',
         updateStart: '<%=url("admin/services/podkop-tweaker/api/update_start")%>',
         tweakerCheck: '<%=url("admin/services/podkop-tweaker/api/tweaker_check_update")%>',
-        tweakerUpdate: '<%=url("admin/services/podkop-tweaker/api/tweaker_git_update")%>'
+        tweakerUpdate: '<%=url("admin/services/podkop-tweaker/api/tweaker_git_update")%>',
+        clearCache: '<%=url("admin/services/podkop-tweaker/api/clear_cache")%>'
     };
 
     var loadingEl = document.getElementById('ps-sysinfo-loading');
@@ -93,6 +98,7 @@ Author: InsaniaQuon
     var errorEl = document.getElementById('ps-sysinfo-error');
     var actionsEl = document.getElementById('ps-sysinfo-actions');
     var updatePodkopBtn = document.getElementById('ps-update-podkop');
+    var clearCacheBtn = document.getElementById('ps-clear-cache');
     var latestInfo = document.getElementById('ps-latest-info');
     var updateStatus = document.getElementById('ps-update-status');
     var refreshBtn = document.getElementById('ps-refresh-info');
@@ -115,6 +121,7 @@ Author: InsaniaQuon
         errorEl.style.display = 'none';
         tableEl.style.display = '';
         actionsEl.style.display = '';
+        clearCacheBtn.style.display = 'inline-block';
 
         var podkopCell = document.getElementById('ps-info-podkop');
         var currentVer = escapeHtml(data.podkop_version);
@@ -384,6 +391,22 @@ Author: InsaniaQuon
         if (isDowngrade) body += '&force=1';
         xhr.send(body);
     }
+
+    clearCacheBtn.addEventListener('click', function() {
+        if (!confirm('Clear LuCI cache and restart web interface?\n\nThe page will become unavailable for a few seconds, then reload automatically.')) return;
+        clearCacheBtn.disabled = true;
+        setUpdateStatus('Clearing cache, restarting...', '#2196f3');
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', URLS.clearCache);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            setTimeout(function() { window.location.reload(true); }, 4000);
+        };
+        xhr.onerror = function() {
+            setTimeout(function() { window.location.reload(true); }, 4000);
+        };
+        xhr.send('token=' + encodeURIComponent(CSRF));
+    });
 
     updatePodkopBtn.addEventListener('click', doUpdatePodkop);
 

@@ -30,7 +30,6 @@ for _, sec in ipairs(sections) do
                                 if bfd then bfd:write(config_data); bfd:close() end
                             end
                         end
-                        M.backup_config()
                     end
                     local rok, _ = M.replace_proxy_link(sec.name, sec.proxy_config_type, i - 1, proxy.link)
                     if rok then
