@@ -1,5 +1,12 @@
 local M = {}
 
+local SUBS_VERSION = 1
+
+local _json_ok, _json = pcall(require, "luci.jsonc")
+if not _json_ok then
+    error("pt-subs-lib requires luci.jsonc")
+end
+
 local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 local b64lut = {}
 for i = 1, #B64 do b64lut[B64:sub(i, i)] = i - 1 end
@@ -97,19 +104,13 @@ end
 
 function M.json_parse(str)
     if not str or str == "" then return nil end
-    local ok, result = pcall(function()
-        local json = require("luci.jsonc")
-        return json.parse(str)
-    end)
+    local ok, result = pcall(_json.parse, str)
     if ok and result then return result end
     return nil
 end
 
 function M.json_stringify(data)
-    local ok, result = pcall(function()
-        local json = require("luci.jsonc")
-        return json.stringify(data)
-    end)
+    local ok, result = pcall(_json.stringify, data)
     if ok then return result end
     return nil
 end
@@ -121,11 +122,14 @@ function M.read_subs(subs_file)
     fd:close()
     local subs = M.json_parse(data)
     if type(subs) ~= "table" then subs = {} end
+    subs.version = nil
     return subs
 end
 
 function M.write_subs(subs, subs_file)
+    subs.version = SUBS_VERSION
     local str = M.json_stringify(subs)
+    subs.version = nil
     if not str then return false end
     local fd = io.open(subs_file, "w")
     if not fd then return false end
@@ -324,6 +328,144 @@ function M.append_log(log_file, max_events, text)
     if not fd then return end
     fd:write(text .. "\n")
     fd:close()
+end
+
+function M.write_sub_backup()
+    local config_path = "/etc/config/podkop"
+    local backup_path = "/etc/config/podkop.sub-backup"
+    local rfd = io.open(config_path, "r")
+    if not rfd then return false end
+    local data = rfd:read("*a")
+    rfd:close()
+    if not data then return false end
+    local wfd = io.open(backup_path, "w")
+    if not wfd then return false end
+    wfd:write(data)
+    wfd:close()
+    return true
+end
+
+function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
+    local sections = M.get_proxy_sections()
+    local subs = M.read_subs(subs_file)
+    local updated, unchanged, failed = 0, 0, 0
+    local need_restart = false
+    local need_backup = true
+    local details = {}
+
+    for _, sec in ipairs(sections) do
+        local sec_subs = subs[sec.name] or {}
+        for i, link in ipairs(sec.proxy_links) do
+            local sub_entry = sec_subs[i]
+            if sub_entry and type(sub_entry) == "table"
+                and sub_entry.subscription_url and sub_entry.subscription_url ~= "" then
+                local proxy, _ = M.do_update_subscription(
+                    sec.name, i - 1, sub_entry.subscription_url, sub_entry.proxy_name)
+                local pname = sub_entry.proxy_name or ""
+                if proxy and proxy.link then
+                    local current_link = link or ""
+                    if current_link ~= proxy.link then
+                        if need_backup then
+                            M.write_sub_backup()
+                            need_backup = false
+                        end
+                        local rok, _ = M.replace_proxy_link(sec.name, sec.proxy_config_type, i - 1, proxy.link)
+                        if rok then
+                            updated = updated + 1
+                            need_restart = true
+                            table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "updated"})
+                        else
+                            failed = failed + 1
+                            table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "failed"})
+                        end
+                    else
+                        unchanged = unchanged + 1
+                        table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "unchanged"})
+                    end
+                    M.update_subs_timestamp(subs_file, sec.name, i - 1, mode)
+                else
+                    failed = failed + 1
+                    table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "failed"})
+                end
+            end
+        end
+    end
+
+    local log_text = os.date("%H:%M %d.%m.%Y") .. "|" .. mode .. "|updated=" .. updated
+        .. "|unchanged=" .. unchanged .. "|failed=" .. failed
+    local by_section = {}
+    for _, d in ipairs(details) do
+        if not by_section[d.section] then by_section[d.section] = {} end
+        by_section[d.section][#by_section[d.section] + 1] = d
+    end
+    local sec_names = {}
+    for k, _ in pairs(by_section) do sec_names[#sec_names + 1] = k end
+    table.sort(sec_names)
+    for _, sname in ipairs(sec_names) do
+        log_text = log_text .. "\n  " .. sname .. ":"
+        for _, d in ipairs(by_section[sname]) do
+            log_text = log_text .. "\n    " .. d.proxy .. ": " .. d.status
+        end
+    end
+    M.append_log(log_file, log_max, log_text)
+
+    return {
+        updated = updated,
+        unchanged = unchanged,
+        failed = failed,
+        need_restart = need_restart,
+        details = details
+    }
+end
+
+function M.apply_files_from_dir(extract_dir, relaxed)
+    local sys = require("luci.sys")
+    local find_cmd = "find '" .. extract_dir .. "' -type f \\! -type l 2>/dev/null"
+    local raw = sys.exec(find_cmd)
+    local prefix_len = #extract_dir + 1
+    local copied = 0
+
+    for line in raw:gmatch("[^\r\n]+") do
+        line = line:match("^%s*(.-)%s*$")
+        if line ~= "" then
+            local rel = line:sub(prefix_len):match("^/?(.*)")
+            if rel ~= "" and M._is_valid_update_path(rel, relaxed) then
+                local dest = "/" .. rel
+                local dest_dir = dest:match("^(.+)/[^/]+$")
+                if dest_dir then
+                    sys.exec("mkdir -p '" .. dest_dir .. "' 2>/dev/null")
+                end
+                local src_fd = io.open(line, "rb")
+                if src_fd then
+                    local data = src_fd:read("*a")
+                    src_fd:close()
+                    local dst_fd = io.open(dest, "wb")
+                    if dst_fd then
+                        dst_fd:write(data)
+                        dst_fd:close()
+                        copied = copied + 1
+                    end
+                end
+            end
+        end
+    end
+
+    return copied
+end
+
+function M._is_valid_update_path(rel_path, relaxed)
+    if rel_path:find("..", 1, true) then return false end
+    if relaxed then
+        if rel_path:match("^usr/lib/lua/") then return true end
+        if rel_path:match("^usr/share/luci/") then return true end
+        if rel_path:match("^usr/share/rpcd/") then return true end
+        return false
+    end
+    if rel_path:match("^usr/lib/lua/.*%.lua$") then return true end
+    if rel_path:match("^usr/lib/lua/luci/view/podkop%-tweaker/[%w_%-]+%.htm$") then return true end
+    if rel_path:match("^usr/share/luci/menu%.d/[%w_%-]+%.json$") then return true end
+    if rel_path:match("^usr/share/rpcd/acl%.d/[%w_%-]+%.json$") then return true end
+    return false
 end
 
 return M

@@ -371,7 +371,8 @@ Author: InsaniaQuon
                     if (resp.success && resp.proxies) {
                         fetchedProxies = resp.proxies;
                         renderProxyList();
-                        setFetchStatus(resp.proxies.length + ' proxy(ies) found', '#4caf50');
+                        var warn = resp.http_warning ? ' (HTTP - not encrypted)' : '';
+                        setFetchStatus(resp.proxies.length + ' proxy(ies) found' + warn, resp.http_warning ? '#e67e22' : '#4caf50');
                     } else {
                         setFetchStatus(resp.error || 'Unknown error', '#f44336');
                     }
@@ -499,6 +500,7 @@ Author: InsaniaQuon
                         }
                         if (!found && resp.proxies.length === 1) found = resp.proxies[0];
                         if (found) {
+                            if (resp.http_warning) setSlotStatus(section, index, 'HTTP subscription - not encrypted', '#e67e22');
                             doAttachDirect(section, index, subUrl, found);
                         } else {
                             openModal(section, index, subUrl);

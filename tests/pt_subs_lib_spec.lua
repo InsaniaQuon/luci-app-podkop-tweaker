@@ -284,3 +284,43 @@ describe("append_log", function()
         assert.equal("event 2|auto|updated=0|unchanged=0|failed=0", lines[1])
     end)
 end)
+
+describe("_is_valid_update_path", function()
+    it("rejects path traversal", function()
+        assert.is_false(pt._is_valid_update_path("../../etc/passwd", false))
+        assert.is_false(pt._is_valid_update_path("../../etc/passwd", true))
+    end)
+
+    it("accepts lua files in strict mode", function()
+        assert.is_true(pt._is_valid_update_path("usr/lib/lua/luci/controller/podkop-tweaker.lua", false))
+        assert.is_true(pt._is_valid_update_path("usr/lib/lua/pt-subs-lib.lua", false))
+    end)
+
+    it("accepts htm templates in strict mode", function()
+        assert.is_true(pt._is_valid_update_path("usr/lib/lua/luci/view/podkop-tweaker/config.htm", false))
+    end)
+
+    it("accepts json menu and acl in strict mode", function()
+        assert.is_true(pt._is_valid_update_path("usr/share/luci/menu.d/luci-app-podkop-tweaker.json", false))
+        assert.is_true(pt._is_valid_update_path("usr/share/rpcd/acl.d/luci-app-podkop-tweaker.json", false))
+    end)
+
+    it("rejects unknown paths in strict mode", function()
+        assert.is_false(pt._is_valid_update_path("usr/lib/lua/some/dir/file.txt", false))
+        assert.is_false(pt._is_valid_update_path("etc/config/podkop", false))
+    end)
+
+    it("accepts any path under usr/lib/lua in relaxed mode", function()
+        assert.is_true(pt._is_valid_update_path("usr/lib/lua/some/new/file.lua", true))
+    end)
+
+    it("accepts usr/share paths in relaxed mode", function()
+        assert.is_true(pt._is_valid_update_path("usr/share/luci/menu.d/something.json", true))
+        assert.is_true(pt._is_valid_update_path("usr/share/rpcd/acl.d/something.json", true))
+    end)
+
+    it("rejects paths outside allowed dirs in relaxed mode", function()
+        assert.is_false(pt._is_valid_update_path("etc/config/podkop", true))
+        assert.is_false(pt._is_valid_update_path("tmp/evil.sh", true))
+    end)
+end)
