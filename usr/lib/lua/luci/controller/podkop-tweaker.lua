@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
 -- Podkop Tweaker | v2.5.2 | 30.05.2026 | About tab with disclaimer, footer removed from other tabs
 
-local APP_VERSION = "2.6.0"
+local APP_VERSION = "2.6.2"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -359,8 +359,11 @@ function api_system_info()
             local json = require("luci.jsonc")
             tweaker_cache = json.parse(raw_cache)
         end)
-        if tweaker_cache and tweaker_cache.latest_version then
-            tweaker_latest = tweaker_cache.latest_version
+        if tweaker_cache and tweaker_cache.latest_version and tweaker_cache.cached_at then
+            local elapsed = os.time() - tweaker_cache.cached_at
+            if elapsed < CHECK_CACHE_TTL then
+                tweaker_latest = tweaker_cache.latest_version
+            end
         end
     end
 
@@ -1153,6 +1156,7 @@ function api_clear_cache()
     os.execute("rm -f /tmp/luci-indexcache* 2>/dev/null")
     os.execute("rm -rf /tmp/luci-modulecache* 2>/dev/null")
     os.execute("rm -rf /tmp/luci-template-* 2>/dev/null")
+    os.remove(CHECK_CACHE_FILE)
 
     sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
 

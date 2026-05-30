@@ -131,10 +131,12 @@ function M.write_subs(subs, subs_file)
     local str = M.json_stringify(subs)
     subs.version = nil
     if not str then return false end
-    local fd = io.open(subs_file, "w")
+    local tmp = subs_file .. ".tmp"
+    local fd = io.open(tmp, "w")
     if not fd then return false end
     fd:write(str)
     fd:close()
+    os.rename(tmp, subs_file)
     return true
 end
 
@@ -284,16 +286,17 @@ end
 function M.update_subs_timestamp(subs_file, section_name, slot_index, mode)
     local subs = M.read_subs(subs_file)
     if not subs[section_name] then subs[section_name] = {} end
-    while #subs[section_name] < slot_index + 1 do
-        table.insert(subs[section_name], false)
-    end
     local existing = subs[section_name][slot_index + 1]
+    if not existing or type(existing) ~= "table" or not existing.subscription_url then
+        return false
+    end
     subs[section_name][slot_index + 1] = {
-        subscription_url = (type(existing) == "table") and existing.subscription_url or "",
-        proxy_name = (type(existing) == "table") and existing.proxy_name or "",
+        subscription_url = existing.subscription_url,
+        proxy_name = existing.proxy_name or "",
         last_updated = os.date("%H:%M %d.%m.%Y") .. " (" .. mode .. ")"
     }
     M.write_subs(subs, subs_file)
+    return true
 end
 
 function M.rotate_log(log_file, max_events)
