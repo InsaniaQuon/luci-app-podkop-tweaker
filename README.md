@@ -27,6 +27,12 @@ tar -xzf luci-app-podkop-tweaker-vX.Y.Z.tar.gz -C /
 
 No ipk package build required — files are copied as-is.
 
+## Disclaimer
+
+Podkop Tweaker is an independent third-party tool and is not affiliated with, endorsed by, or officially connected to the Podkop project or its maintainers.
+
+"Podkop" is a trademark of the Podkop project. All references to Podkop in this application are for descriptive purposes only — to indicate compatibility and the intended use of this tool.
+
 ## License
 
 [Apache-2.0](LICENSE)

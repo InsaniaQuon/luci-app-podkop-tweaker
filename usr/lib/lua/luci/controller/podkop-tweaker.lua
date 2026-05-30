@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v2.5.1 | 30.05.2026 | text-based update log with details, improved fonts, log display settings
+-- Podkop Tweaker | v2.5.2 | 30.05.2026 | About tab with disclaimer, footer removed from other tabs
 
-local APP_VERSION = "2.5.1"
+local APP_VERSION = "2.5.2"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -47,6 +47,9 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "update"},
         call("action_update"), nil, 50)
+
+    entry({"admin", "services", "podkop-tweaker", "about"},
+        call("action_about"), nil, 60)
 
     entry({"admin", "services", "podkop-tweaker", "api", "read_config"},
         call("api_read_config")).leaf = true
@@ -159,6 +162,10 @@ end
 
 function action_update()
     render_page("update")
+end
+
+function action_about()
+    render_page("about")
 end
 
 local function verify_csrf()
