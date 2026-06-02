@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v2.5.2 | 30.05.2026 | About tab with disclaimer, footer removed from other tabs
+-- Podkop Tweaker | v3.0.0 | 02.06.2026 | Stubby Config tab, export restructure, stubby backup
 
-local APP_VERSION = "2.6.2"
+local APP_VERSION = "3.0.0"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -46,6 +46,9 @@ function index()
     entry({"admin", "services", "podkop-tweaker", "config"},
         call("action_config"), nil, 10)
 
+    entry({"admin", "services", "podkop-tweaker", "stubby"},
+        call("action_stubby"), nil, 15)
+
     entry({"admin", "services", "podkop-tweaker", "import-export"},
         call("action_import_export"), nil, 20)
 
@@ -66,6 +69,24 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "save_config"},
         call("api_save_config")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "read_stubby_config"},
+        call("api_read_stubby_config")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "save_stubby_config"},
+        call("api_save_stubby_config")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "stubby_service_status"},
+        call("api_stubby_service_status")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "rollback_stubby"},
+        call("api_rollback_stubby")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "export_stubby_config"},
+        call("api_export_stubby_config")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "download_stubby_backup"},
+        call("api_download_stubby_backup")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "export_config"},
         call("api_export_config")).leaf = true
@@ -148,6 +169,10 @@ function action_config()
     render_page("config")
 end
 
+function action_stubby()
+    render_page("stubby")
+end
+
 function action_import_export()
     local nixio = require("nixio")
     local auto_backup_attr = nixio.fs.stat("/etc/config/podkop.auto-backup")
@@ -156,9 +181,13 @@ function action_import_export()
     local sub_backup_attr = nixio.fs.stat("/etc/config/podkop.sub-backup")
     local auto_sub_backup_time = sub_backup_attr
         and os.date("%d-%m-%Y %H:%M", sub_backup_attr.mtime) or nil
+    local stubby_backup_attr = nixio.fs.stat("/etc/config/stubby.auto-backup")
+    local stubby_backup_time = stubby_backup_attr
+        and os.date("%d-%m-%Y %H:%M", stubby_backup_attr.mtime) or nil
     render_page("import-export", {
         auto_backup_time = auto_backup_time,
-        auto_sub_backup_time = auto_sub_backup_time
+        auto_sub_backup_time = auto_sub_backup_time,
+        stubby_backup_time = stubby_backup_time
     })
 end
 
@@ -367,10 +396,13 @@ function api_system_info()
         end
     end
 
+    local stubby_ver = sys.exec("stubby -V 2>/dev/null"):match("Stubby%s+(%S+)") or "not installed"
+
     http.write_json({
         podkop_version = info.podkop_version or "unknown",
         podkop_latest_version = info.podkop_latest_version or "unknown",
         luci_app_version = info.luci_app_version or "unknown",
+        stubby_version = stubby_ver,
         sing_box_version = info.sing_box_version or "unknown",
         openwrt_version = info.openwrt_version or "unknown",
         device_model = info.device_model or "unknown",
@@ -774,6 +806,178 @@ function api_rollback()
     fd:close()
     sys.exec("/etc/init.d/podkop restart 2>&1")
     http.write_json({ success = true, restarting = true })
+end
+
+-- === Stubby Config ===
+
+local function validate_stubby_config(content)
+    if not content or content == "" then
+        return false, "Configuration is empty"
+    end
+    if #content > 1048576 then
+        return false, "Config too large (max 1MB)"
+    end
+    if not content:match("config%s+") then
+        return false, "Invalid UCI format: no 'config' declarations found"
+    end
+    if content:find("\0", 1, true) then
+        return false, "Invalid content: contains null bytes"
+    end
+    local line_no = 0
+    for line in content:gmatch("[^\r\n]+") do
+        line_no = line_no + 1
+        local trimmed = line:match("^%s*(.-)%s*$")
+        if trimmed ~= "" and not trimmed:match("^#") then
+            if not trimmed:match("^config%s")
+                and not trimmed:match("^option%s")
+                and not trimmed:match("^list%s") then
+                return false, "Invalid UCI syntax at line " .. line_no .. ": unexpected token"
+            end
+        end
+        local dq = 0
+        for ci = 1, #line do
+            local b = line:byte(ci)
+            if b < 9 or (b > 13 and b < 32) then
+                return false, "Invalid character at line " .. line_no .. ", column " .. ci
+            end
+            local c = line:sub(ci, ci)
+            if c == '"' then dq = dq + 1 end
+        end
+        if dq % 2 ~= 0 then
+            return false, "Unmatched double quote at line " .. line_no
+        end
+    end
+    return true
+end
+
+function api_read_stubby_config()
+    local http = require("luci.http")
+    http.prepare_content("text/plain")
+    set_no_cache_headers()
+    local fd = io.open("/etc/config/stubby", "r")
+    if fd then
+        local content = fd:read("*a")
+        fd:close()
+        http.write(content)
+    else
+        http.write("")
+    end
+end
+
+function api_save_stubby_config()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local content = http.formvalue("content") or ""
+    local ok, err = validate_stubby_config(content)
+    if not ok then
+        http.write_json({ error = err })
+        return
+    end
+    local config_path = "/etc/config/stubby"
+    local backup_path = "/etc/config/stubby.auto-backup"
+    local rfd = io.open(config_path, "r")
+    if rfd then
+        local orig = rfd:read("*a")
+        rfd:close()
+        if orig == content then
+            http.write_json({ success = true, unchanged = true })
+            return
+        end
+        local bfd = io.open(backup_path, "w")
+        if bfd then
+            bfd:write(orig)
+            bfd:close()
+        end
+    end
+    local tmp_path = config_path .. ".tmp-write"
+    local tmpfd = io.open(tmp_path, "w")
+    if not tmpfd then
+        http.write_json({ error = "Cannot write temporary file" })
+        return
+    end
+    tmpfd:write(content)
+    tmpfd:close()
+    os.rename(tmp_path, config_path)
+    sys.exec("/etc/init.d/stubby restart 2>&1")
+    http.write_json({ success = true, restarting = true })
+end
+
+function api_stubby_service_status()
+    local sys = require("luci.sys")
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local pid = sys.exec("pgrep -f '/usr/sbin/stubby' 2>/dev/null"):match("(%d+)")
+    http.write_json({
+        running = (pid ~= nil)
+    })
+end
+
+function api_rollback_stubby()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local nixio = require("nixio")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local config_path = "/etc/config/stubby"
+    local backup_path = "/etc/config/stubby.auto-backup"
+    if not nixio.fs.stat(backup_path) then
+        http.write_json({ error = "Backup file not found" })
+        return
+    end
+    local data = nixio.fs.readfile(backup_path)
+    if not data then
+        http.write_json({ error = "Cannot read backup" })
+        return
+    end
+    local fd = io.open(config_path, "w")
+    if not fd then
+        http.write_json({ error = "Cannot write config" })
+        return
+    end
+    fd:write(data)
+    fd:close()
+    sys.exec("/etc/init.d/stubby restart 2>&1")
+    http.write_json({ success = true, restarting = true })
+end
+
+function api_export_stubby_config()
+    local http = require("luci.http")
+    http.prepare_content("text/plain")
+    set_no_cache_headers()
+    http.header("Content-Disposition", 'attachment; filename="stubby-config.txt"')
+    local fd = io.open("/etc/config/stubby", "r")
+    if fd then
+        local content = fd:read("*a")
+        fd:close()
+        http.write(content)
+    else
+        http.write("")
+    end
+end
+
+function api_download_stubby_backup()
+    local http = require("luci.http")
+    local nixio = require("nixio")
+    http.prepare_content("text/plain")
+    set_no_cache_headers()
+    local backup_path = "/etc/config/stubby.auto-backup"
+    if not nixio.fs.stat(backup_path) then
+        http.status(404, "Not Found")
+        http.write_json({ error = "No stubby backup found" })
+        return
+    end
+    http.header("Content-Disposition", 'attachment; filename="stubby-backup.txt"')
+    local data = nixio.fs.readfile(backup_path)
+    if data then
+        http.write(data)
+    else
+        http.write("")
+    end
 end
 
 -- === Settings & Auto-Update ===

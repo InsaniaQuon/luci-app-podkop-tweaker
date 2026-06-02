@@ -324,3 +324,32 @@ describe("_is_valid_update_path", function()
         assert.is_false(pt._is_valid_update_path("tmp/evil.sh", true))
     end)
 end)
+
+describe("backup_stubby_config", function()
+    local test_dir = "/tmp/pt-test-stubby-" .. tostring(os.time())
+    local config_path = test_dir .. "/stubby"
+    local backup_path = test_dir .. "/stubby.auto-backup"
+
+    before_each(function()
+        os.execute("mkdir -p " .. test_dir .. " 2>/dev/null")
+    end)
+
+    after_each(function()
+        os.execute("rm -rf " .. test_dir .. " 2>/dev/null")
+    end)
+
+    it("returns false when config file does not exist", function()
+        assert.is_false(pt.backup_stubby_config())
+    end)
+
+    it("creates backup of stubby config", function()
+        local fd = io.open("/etc/config/stubby", "r")
+        if not fd then return end
+        fd:close()
+        assert.is_true(pt.backup_stubby_config())
+        local bfd = io.open("/etc/config/stubby.auto-backup", "r")
+        assert.is_not_nil(bfd)
+        if bfd then bfd:close() end
+        os.remove("/etc/config/stubby.auto-backup")
+    end)
+end)

@@ -250,6 +250,22 @@ function M.backup_config()
     return true
 end
 
+function M.backup_stubby_config()
+    local config_path = "/etc/config/stubby"
+    local backup_path = "/etc/config/stubby.auto-backup"
+    local rfd = io.open(config_path, "r")
+    if not rfd then return false end
+    local data = rfd:read("*a")
+    rfd:close()
+    if not data then return false end
+    os.remove(backup_path)
+    local fd = io.open(backup_path, "w")
+    if not fd then return false end
+    fd:write(data)
+    fd:close()
+    return true
+end
+
 function M.do_update_subscription(section_name, slot_index, sub_url, proxy_name)
     if not section_name or not section_name:match("^[a-zA-Z0-9_%-]+$") then
         return nil, "invalid section name"

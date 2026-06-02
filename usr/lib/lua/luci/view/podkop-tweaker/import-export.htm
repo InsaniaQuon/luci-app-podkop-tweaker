@@ -9,6 +9,7 @@ Author: InsaniaQuon
 
     <ul class="cbi-tabmenu">
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/stubby")%>">Stubby Config</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
         <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
@@ -32,57 +33,85 @@ Author: InsaniaQuon
         <h3>Export</h3>
 
         <div class="ps-ie-block">
+            <div class="ps-ie-actions">
+                <button class="btn cbi-button cbi-button-apply" data-action="export">
+                    Download Podkop Config
+                </button>
+            </div>
             <div class="ps-ie-desc">
                 <p>Download the current Podkop configuration file (<code>/etc/config/podkop</code>).</p>
                 <div class="ps-warning-box">
                     <strong>&#9888; Warning:</strong> This file contains proxy credentials (UUIDs, passwords). Do not share it with third parties.
                 </div>
             </div>
-            <div class="ps-ie-actions">
-                <button class="btn cbi-button cbi-button-apply" data-action="export">
-                    Download Podkop Config
-                </button>
-            </div>
         </div>
 
         <div class="ps-ie-block">
-            <h4>Auto Backup</h4>
+            <div class="ps-ie-actions">
+                <button class="btn cbi-button cbi-button-apply" data-action="export-stubby">
+                    Download Stubby Config
+                </button>
+            </div>
             <div class="ps-ie-desc">
-                <p>Auto config backup — created before imports and config edits. Auto sub backup — created before subscription updates.</p>
-                <table class="ps-ie-backup-table">
-                    <tr>
-                        <td>Auto config backup</td>
-                        <td>
-                            <% if auto_backup_time then %>
-                                <span class="ps-status-ok"><%=auto_backup_time%></span>
-                            <% else %>
-                                <span class="ps-status-none">Not found</span>
-                            <% end %>
-                        </td>
-                        <td>
-                            <% if auto_backup_time then %>
-                                <button class="btn cbi-button" data-action="backup-auto">Download</button>
-                            <% end %>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>Auto sub backup</td>
-                        <td>
-                            <% if auto_sub_backup_time then %>
-                                <span class="ps-status-ok"><%=auto_sub_backup_time%></span>
-                            <% else %>
-                                <span class="ps-status-none">Not found</span>
-                            <% end %>
-                        </td>
-                        <td>
-                            <% if auto_sub_backup_time then %>
-                                <button class="btn cbi-button" data-action="backup-sub">Download</button>
-                            <% end %>
-                        </td>
-                    </tr>
-                </table>
+                <p>Download the current Stubby configuration file (<code>/etc/config/stubby</code>).</p>
             </div>
         </div>
+    </div>
+
+    <div class="cbi-section">
+        <h3>Auto Backup</h3>
+
+        <div class="ps-ie-desc" style="margin-bottom:12px;">
+            <p>Auto backup files created before changes. Each backup replaces the previous one.</p>
+        </div>
+
+        <table class="ps-ie-backup-table">
+            <tr>
+                <td>Podkop &mdash; before config edit</td>
+                <td>
+                    <% if auto_backup_time then %>
+                        <span class="ps-status-ok"><%=auto_backup_time%></span>
+                    <% else %>
+                        <span class="ps-status-none">Not found</span>
+                    <% end %>
+                </td>
+                <td>
+                    <% if auto_backup_time then %>
+                        <button class="btn cbi-button" data-action="backup-auto">Download</button>
+                    <% end %>
+                </td>
+            </tr>
+            <tr>
+                <td>Podkop &mdash; before sub update</td>
+                <td>
+                    <% if auto_sub_backup_time then %>
+                        <span class="ps-status-ok"><%=auto_sub_backup_time%></span>
+                    <% else %>
+                        <span class="ps-status-none">Not found</span>
+                    <% end %>
+                </td>
+                <td>
+                    <% if auto_sub_backup_time then %>
+                        <button class="btn cbi-button" data-action="backup-sub">Download</button>
+                    <% end %>
+                </td>
+            </tr>
+            <tr>
+                <td>Stubby &mdash; before config edit</td>
+                <td>
+                    <% if stubby_backup_time then %>
+                        <span class="ps-status-ok"><%=stubby_backup_time%></span>
+                    <% else %>
+                        <span class="ps-status-none">Not found</span>
+                    <% end %>
+                </td>
+                <td>
+                    <% if stubby_backup_time then %>
+                        <button class="btn cbi-button" data-action="backup-stubby">Download</button>
+                    <% end %>
+                </td>
+            </tr>
+        </table>
     </div>
 
     <div class="cbi-section">
@@ -151,8 +180,10 @@ Author: InsaniaQuon
     var URLS = {
         importCfg: '<%=url("admin/services/podkop-tweaker/api/import_config")%>',
         exportCfg: '<%=url("admin/services/podkop-tweaker/api/export_config")%>',
+        exportStubby: '<%=url("admin/services/podkop-tweaker/api/export_stubby_config")%>',
         backup: '<%=url("admin/services/podkop-tweaker/api/download_backup")%>',
         backupSub: '<%=url("admin/services/podkop-tweaker/api/download_sub_backup")%>',
+        backupStubby: '<%=url("admin/services/podkop-tweaker/api/download_stubby_backup")%>',
         status: '<%=url("admin/services/podkop-tweaker/api/service_status")%>',
         rollback: '<%=url("admin/services/podkop-tweaker/api/rollback")%>'
     };
@@ -369,8 +400,10 @@ Author: InsaniaQuon
             var action = btn.getAttribute('data-action');
             switch (action) {
                 case 'export': doExport(); break;
+                case 'export-stubby': window.location.href = URLS.exportStubby; break;
                 case 'backup-auto': doDownloadBackup(); break;
                 case 'backup-sub': window.location.href = URLS.backupSub; break;
+                case 'backup-stubby': window.location.href = URLS.backupStubby; break;
             }
         });
     });

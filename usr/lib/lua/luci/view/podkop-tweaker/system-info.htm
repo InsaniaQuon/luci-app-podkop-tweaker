@@ -9,6 +9,7 @@ Author: InsaniaQuon
 
     <ul class="cbi-tabmenu">
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/stubby")%>">Stubby Config</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
         <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
@@ -38,6 +39,10 @@ Author: InsaniaQuon
                 <tr>
                     <td class="ps-sysinfo-label">Luci App</td>
                     <td class="ps-sysinfo-value" id="ps-info-luci">—</td>
+                </tr>
+                <tr>
+                    <td class="ps-sysinfo-label">Stubby</td>
+                    <td class="ps-sysinfo-value" id="ps-info-stubby">—</td>
                 </tr>
                 <tr>
                     <td class="ps-sysinfo-label">Podkop Tweaker</td>
@@ -148,6 +153,7 @@ Author: InsaniaQuon
         }
 
         document.getElementById('ps-info-luci').textContent = data.luci_app_version || 'unknown';
+        document.getElementById('ps-info-stubby').textContent = data.stubby_version || 'unknown';
         document.getElementById('ps-info-singbox').textContent = data.sing_box_version || 'unknown';
         document.getElementById('ps-info-os').textContent = data.openwrt_version || 'unknown';
         document.getElementById('ps-info-device').textContent = data.device_model || 'unknown';
