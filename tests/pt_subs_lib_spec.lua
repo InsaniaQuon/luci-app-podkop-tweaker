@@ -325,10 +325,8 @@ describe("_is_valid_update_path", function()
     end)
 end)
 
-describe("backup_stubby_config", function()
-    local test_dir = "/tmp/pt-test-stubby-" .. tostring(os.time())
-    local config_path = test_dir .. "/stubby"
-    local backup_path = test_dir .. "/stubby.auto-backup"
+describe("backup_file", function()
+    local test_dir = "/tmp/pt-test-backup-" .. tostring(os.time())
 
     before_each(function()
         os.execute("mkdir -p " .. test_dir .. " 2>/dev/null")
@@ -338,18 +336,67 @@ describe("backup_stubby_config", function()
         os.execute("rm -rf " .. test_dir .. " 2>/dev/null")
     end)
 
-    it("returns false when config file does not exist", function()
-        assert.is_false(pt.backup_stubby_config())
+    it("returns false when source does not exist", function()
+        assert.is_false(pt.backup_file(test_dir .. "/nonexistent", test_dir .. "/backup"))
     end)
 
-    it("creates backup of stubby config", function()
-        local fd = io.open("/etc/config/stubby", "r")
-        if not fd then return end
+    it("creates backup from source to destination", function()
+        local src = test_dir .. "/source.conf"
+        local dst = test_dir .. "/backup.conf"
+        local fd = io.open(src, "w")
+        fd:write("config stubby 'global'\n\toption manual '0'\n")
         fd:close()
-        assert.is_true(pt.backup_stubby_config())
-        local bfd = io.open("/etc/config/stubby.auto-backup", "r")
+
+        assert.is_true(pt.backup_file(src, dst))
+
+        local bfd = io.open(dst, "r")
         assert.is_not_nil(bfd)
-        if bfd then bfd:close() end
-        os.remove("/etc/config/stubby.auto-backup")
+        local content = bfd:read("*a")
+        bfd:close()
+        assert.equal("config stubby 'global'\n\toption manual '0'\n", content)
+    end)
+
+    it("overwrites existing backup", function()
+        local src = test_dir .. "/source.conf"
+        local dst = test_dir .. "/backup.conf"
+
+        local fd = io.open(dst, "w")
+        fd:write("old content")
+        fd:close()
+
+        fd = io.open(src, "w")
+        fd:write("new content")
+        fd:close()
+
+        pt.backup_file(src, dst)
+
+        local bfd = io.open(dst, "r")
+        assert.is_not_nil(bfd)
+        local content = bfd:read("*a")
+        bfd:close()
+        assert.equal("new content", content)
+    end)
+
+    it("does not leave .tmp file on success", function()
+        local src = test_dir .. "/source.conf"
+        local dst = test_dir .. "/backup.conf"
+
+        local fd = io.open(src, "w")
+        fd:write("data")
+        fd:close()
+
+        pt.backup_file(src, dst)
+
+        local tmpfd = io.open(dst .. ".tmp", "r")
+        assert.is_nil(tmpfd)
+    end)
+
+    it("returns false when destination dir is not writable", function()
+        local src = test_dir .. "/source.conf"
+        local fd = io.open(src, "w")
+        fd:write("data")
+        fd:close()
+
+        assert.is_false(pt.backup_file(src, "/nonexistent_dir/backup.conf"))
     end)
 end)

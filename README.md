@@ -5,6 +5,7 @@ LuCI web interface for managing [Podkop](https://github.com/itdoginfo/podkop) pr
 ## Features
 
 - **Config Editor** — web-based Podkop configuration editor with syntax highlighting
+- **Stubby Config** — Stubby DNS-over-TLS configuration editor with DNS chain visualization, init script fix, and service start/stop
 - **Import/Export** — config file import/export with automatic backup and one-click rollback
 - **System Information** — Podkop and system version info with update via ttyd terminal
 - **Subscriptions** — proxy subscription manager (vless/vmess/ss/trojan) with auto-update scheduling

@@ -28,7 +28,14 @@ Author: InsaniaQuon
             <div class="ps-service-status" id="ps-service-status">
                 <span class="ps-status-dot checking" id="ps-status-dot"></span>
                 <span class="ps-status-text" id="ps-status-text">Checking...</span>
+                <button class="btn cbi-button" id="ps-toggle-btn" style="display:none;margin-left:6px;font-size:11px;padding:2px 8px;"></button>
             </div>
+        </div>
+        <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <button class="btn cbi-button" id="ps-params-btn">Parameters</button>
+            <button class="btn cbi-button" id="ps-chain-btn">DNS Chain</button>
+            <button class="btn cbi-button" id="ps-initfix-btn">Fix Init Script</button>
+            <span id="ps-initfix-status" style="font-size:12px;font-weight:600;"></span>
         </div>
 
         <div class="ps-editor-wrap">
@@ -82,6 +89,71 @@ Author: InsaniaQuon
     </div>
 </div>
 
+<div class="ps-modal" id="ps-params-modal" style="display:none;">
+    <div class="ps-modal-content ps-modal-wide">
+        <h3>Stubby Parameters Reference</h3>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+                <tr style="border-bottom:2px solid var(--ps-border,#ccc);">
+                    <th style="text-align:left;padding:6px 8px;white-space:nowrap;">Parameter</th>
+                    <th style="text-align:left;padding:6px 8px;">Value</th>
+                    <th style="text-align:left;padding:6px 8px;">Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">manual '0'</td><td style="padding:4px 8px;">UCI mode</td><td style="padding:4px 8px;">Management via /etc/config/stubby</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">trigger 'wan'</td><td style="padding:4px 8px;">Start on WAN up</td><td style="padding:4px 8px;">Stubby does not start before network</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">triggerdelay '5'</td><td style="padding:4px 8px;">5 sec delay after WAN up</td><td style="padding:4px 8px;">Gives WAN time to fully come up</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">dns_transport</td><td style="padding:4px 8px;">TLS only</td><td style="padding:4px 8px;">No fallback to UDP/TCP</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">tls_authentication '1'</td><td style="padding:4px 8px;">Mandatory TLS auth</td><td style="padding:4px 8px;">ISP cannot intercept</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">tls_query_padding_blocksize '128'</td><td style="padding:4px 8px;">Pad queries to 128 bytes</td><td style="padding:4px 8px;">Hides DNS query size</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">tls_min_version '1.3'</td><td style="padding:4px 8px;">TLS 1.3 only</td><td style="padding:4px 8px;">Maximum security</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">tls_ciphersuites</td><td style="padding:4px 8px;">TLS_AES_256_GCM_SHA384<br>CHACHA20_POLY1305_SHA256<br>TLS_AES_128_GCM_SHA256</td><td style="padding:4px 8px;">TLS 1.3 ciphers only</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">idle_timeout '30000'</td><td style="padding:4px 8px;">30 sec TLS hold</td><td style="padding:4px 8px;">Balance between latency and resources</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">round_robin_upstreams '1'</td><td style="padding:4px 8px;">Distribute queries</td><td style="padding:4px 8px;">Load across both DNS providers</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">dnssec_return_status '0'</td><td style="padding:4px 8px;">DNSSEC off</td><td style="padding:4px 8px;">Podkop/FakeIP incompatible with DNSSEC</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">listen_address</td><td style="padding:4px 8px;">127.0.0.53@53</td><td style="padding:4px 8px;">Loopback port 53</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border,#eee);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">tls_auth_name</td><td style="padding:4px 8px;">Certificate hostname</td><td style="padding:4px 8px;">MITM protection</td></tr>
+                <tr><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">edns_client_subnet_private '1'</td><td style="padding:4px 8px;">Hide client subnet</td><td style="padding:4px 8px;">Do not send ECS data upstream</td></tr>
+            </tbody>
+        </table>
+        <div class="ps-modal-footer" style="margin-top:12px;">
+            <button class="btn cbi-button" id="ps-params-close">Close</button>
+        </div>
+    </div>
+</div>
+
+<div class="ps-modal" id="ps-chain-modal" style="display:none;">
+    <div class="ps-modal-content ps-modal-wide">
+        <h3>DNS Resolution Chain</h3>
+        <pre id="ps-chain-content" style="font-size:13px;line-height:1.5;background:var(--ps-bg-alt,#f5f5f5);padding:16px;border-radius:6px;overflow-x:auto;"></pre>
+        <div class="ps-modal-footer" style="margin-top:12px;">
+            <button class="btn cbi-button" id="ps-chain-close">Close</button>
+        </div>
+    </div>
+</div>
+
+<div class="ps-modal" id="ps-initfix-modal" style="display:none;">
+    <div class="ps-modal-content">
+        <h3>Fix Init Script</h3>
+        <div style="font-size:13px;line-height:1.6;">
+            <p><strong>Problem:</strong></p>
+            <p>The init script <code>/etc/init.d/stubby</code> runs the process as user <code>stubby</code>, which lacks write permissions for <code>/var/lib/stubby/</code> and cannot bind to privileged port 53.</p>
+            <p><strong>One of the solutions:</strong></p>
+            <p>Replace the user with <code>root</code> in the init script:</p>
+            <pre id="ps-initfix-cmd" style="background:var(--ps-bg-alt,#f5f5f5);padding:10px;border-radius:4px;font-size:12px;overflow-x:auto;">sed -i 's/procd_set_param user stubby/procd_set_param user root/' /etc/init.d/stubby</pre>
+            <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+                <button class="btn cbi-button" id="ps-initfix-copy">Copy Command</button>
+                <button class="btn cbi-button cbi-button-apply" id="ps-initfix-apply">Apply Fix</button>
+                <span id="ps-initfix-apply-status" style="font-size:12px;"></span>
+            </div>
+        </div>
+        <div class="ps-modal-footer" style="margin-top:12px;">
+            <button class="btn cbi-button" id="ps-initfix-close">Close</button>
+        </div>
+    </div>
+</div>
+
 <style>
 <% include("podkop-tweaker/podkop-tweaker-css") %>
 </style>
@@ -94,6 +166,7 @@ Author: InsaniaQuon
         read: '<%=url("admin/services/podkop-tweaker/api/read_stubby_config")%>',
         save: '<%=url("admin/services/podkop-tweaker/api/save_stubby_config")%>',
         status: '<%=url("admin/services/podkop-tweaker/api/stubby_service_status")%>',
+        toggle: '<%=url("admin/services/podkop-tweaker/api/stubby_service_toggle")%>',
         rollback: '<%=url("admin/services/podkop-tweaker/api/rollback_stubby")%>'
     };
 
@@ -185,11 +258,29 @@ Author: InsaniaQuon
         xhr.send();
     }
 
+    var toggleBtn = document.getElementById('ps-toggle-btn');
+
     function updateStatusUI(running, pid) {
         statusDot.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
         statusText.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
         statusText.style.color = running ? '#4caf50' : '#f44336';
+        toggleBtn.textContent = running ? 'Stop' : 'Start';
+        toggleBtn.style.display = 'inline-block';
+        toggleBtn.disabled = false;
     }
+
+    toggleBtn.addEventListener('click', function() {
+        var action = toggleBtn.textContent.toLowerCase();
+        toggleBtn.disabled = true;
+        toggleBtn.textContent = action === 'stop' ? 'Stopping...' : 'Starting...';
+        xhrPost(URLS.toggle, 'action=' + action, function(xhr) {
+            if (!xhr) {
+                checkStatus(updateStatusUI);
+                return;
+            }
+            setTimeout(function() { checkStatus(updateStatusUI); }, 1000);
+        });
+    });
 
     function pollStatus(onSuccess, onTimeout, attempts) {
         if (_pollTimer) clearTimeout(_pollTimer);
@@ -290,6 +381,7 @@ Author: InsaniaQuon
                             isDirty = false;
                             diffBtn.disabled = true;
                             setStatus('Config saved. Stubby restarted.', '#4caf50');
+                            refreshChainIfOpen();
                         },
                         function() {
                             setStatus('Stubby did not start after save.', '#f44336');
@@ -418,6 +510,177 @@ Author: InsaniaQuon
         if (isDirty) { e.preventDefault(); e.returnValue = ''; }
     });
 
+    // === Parameters modal ===
+    var paramsModal = document.getElementById('ps-params-modal');
+    var paramsBtn = document.getElementById('ps-params-btn');
+    var paramsClose = document.getElementById('ps-params-close');
+    paramsBtn.addEventListener('click', function() { paramsModal.style.display = 'flex'; });
+    paramsClose.addEventListener('click', function() { paramsModal.style.display = 'none'; });
+    paramsModal.addEventListener('click', function(e) { if (e.target === paramsModal) paramsModal.style.display = 'none'; });
+
+    // === DNS Chain modal ===
+    var chainModal = document.getElementById('ps-chain-modal');
+    var chainBtn = document.getElementById('ps-chain-btn');
+    var chainClose = document.getElementById('ps-chain-close');
+    var chainContent = document.getElementById('ps-chain-content');
+
+    function loadChainData(cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '<%=url("admin/services/podkop-tweaker/api/stubby_chain_info")%>');
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var data = JSON.parse(xhr.responseText);
+                    cb(buildChainDiagram(data));
+                    return;
+                } catch (e) {}
+            }
+            cb(null);
+        };
+        xhr.onerror = function() { cb(null); };
+        xhr.send();
+    }
+
+    function refreshChainIfOpen() {
+        if (chainModal.style.display !== 'flex') return;
+        loadChainData(function(text) {
+            if (text) chainContent.textContent = text;
+        });
+    }
+
+    function buildChainDiagram(data) {
+        var stubbyListen = data.stubby_listen || '127.0.0.53@53';
+        var podkopDns = data.podkop_dns || '127.0.0.53';
+        var resolvers = data.resolvers || [];
+
+        var grouped = {};
+        for (var i = 0; i < resolvers.length; i++) {
+            var r = resolvers[i];
+            var name = r.tls_auth_name || r.address;
+            if (!grouped[name]) grouped[name] = [];
+            grouped[name].push(r.address + ':' + (r.tls_port || '853'));
+        }
+
+        var lines = [];
+        lines.push('Client -> dnsmasq (:53)');
+        lines.push('              |');
+        lines.push('              v');
+        lines.push('         sing-box (' + podkopDns + ', FakeIP)');
+        lines.push('              |');
+        lines.push('              +-- domain in list -> FakeIP (instant, no real DNS)');
+        lines.push('              |');
+        lines.push('              +-- direct domain / bootstrap');
+        lines.push('                     |');
+        lines.push('                     v');
+        lines.push('              stubby (' + stubbyListen + ', DoT)');
+        lines.push('                     |');
+
+        var names = [];
+        for (var k in grouped) { if (grouped.hasOwnProperty(k)) names.push(k); }
+        for (var j = 0; j < names.length; j++) {
+            var n = names[j];
+            var addrs = grouped[n].join('; ');
+            var prefix = (j < names.length - 1) ? '              +-- ' : '              \\-- ';
+            lines.push(prefix + n + ' (' + addrs + ')');
+        }
+
+        return lines.join('\n');
+    }
+
+    chainBtn.addEventListener('click', function() {
+        loadChainData(function(text) {
+            chainContent.textContent = text || 'Failed to load chain info';
+            chainModal.style.display = 'flex';
+        });
+    });
+    chainClose.addEventListener('click', function() { chainModal.style.display = 'none'; });
+    chainModal.addEventListener('click', function(e) { if (e.target === chainModal) chainModal.style.display = 'none'; });
+
+    // === Fix Init Script ===
+    var initfixBtn = document.getElementById('ps-initfix-btn');
+    var initfixStatus = document.getElementById('ps-initfix-status');
+    var initfixModal = document.getElementById('ps-initfix-modal');
+    var initfixClose = document.getElementById('ps-initfix-close');
+    var initfixCopy = document.getElementById('ps-initfix-copy');
+    var initfixApply = document.getElementById('ps-initfix-apply');
+    var initfixApplyStatus = document.getElementById('ps-initfix-apply-status');
+
+    function checkInitFix() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '<%=url("admin/services/podkop-tweaker/api/stubby_init_check")%>');
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var r = JSON.parse(xhr.responseText);
+                    if (r.status === 'fixed') {
+                        initfixStatus.textContent = 'Running as root';
+                        initfixStatus.style.color = '#4caf50';
+                    } else if (r.status === 'needs_fix') {
+                        initfixStatus.textContent = 'Needs fix';
+                        initfixStatus.style.color = '#f44336';
+                    } else {
+                        initfixStatus.textContent = 'Not installed';
+                        initfixStatus.style.color = '#888';
+                    }
+                } catch (e) {}
+            }
+        };
+        xhr.send();
+    }
+
+    initfixBtn.addEventListener('click', function() {
+        initfixApplyStatus.textContent = '';
+        initfixModal.style.display = 'flex';
+    });
+    initfixClose.addEventListener('click', function() { initfixModal.style.display = 'none'; });
+    initfixModal.addEventListener('click', function(e) { if (e.target === initfixModal) initfixModal.style.display = 'none'; });
+
+    initfixCopy.addEventListener('click', function() {
+        var cmd = document.getElementById('ps-initfix-cmd').textContent;
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(cmd).then(function() {
+                initfixCopy.textContent = 'Copied!';
+                setTimeout(function() { initfixCopy.textContent = 'Copy Command'; }, 2000);
+            });
+        }
+    });
+
+    initfixApply.addEventListener('click', function() {
+        initfixApply.disabled = true;
+        initfixApply.textContent = 'Applying...';
+        initfixApplyStatus.textContent = '';
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '<%=url("admin/services/podkop-tweaker/api/stubby_init_fix")%>');
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() {
+            initfixApply.disabled = false;
+            initfixApply.textContent = 'Apply Fix';
+            try {
+                var r = JSON.parse(xhr.responseText);
+                if (r.success) {
+                    initfixApplyStatus.textContent = 'Fix applied. Stubby restarted.';
+                    initfixApplyStatus.style.color = '#4caf50';
+                    checkInitFix();
+                    checkStatus(updateStatusUI);
+                } else {
+                    initfixApplyStatus.textContent = r.error || 'Failed';
+                    initfixApplyStatus.style.color = '#f44336';
+                }
+            } catch (e) {
+                initfixApplyStatus.textContent = 'Invalid response';
+                initfixApplyStatus.style.color = '#f44336';
+            }
+        };
+        xhr.onerror = function() {
+            initfixApply.disabled = false;
+            initfixApply.textContent = 'Apply Fix';
+            initfixApplyStatus.textContent = 'Network error';
+            initfixApplyStatus.style.color = '#f44336';
+        };
+        xhr.send('token=' + encodeURIComponent(CSRF));
+    });
+
+    checkInitFix();
     checkStatus(updateStatusUI);
     loadConfig();
 })();

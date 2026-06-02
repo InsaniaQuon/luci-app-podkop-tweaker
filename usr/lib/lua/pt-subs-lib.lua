@@ -234,36 +234,27 @@ function M.replace_proxy_link(section_name, proxy_type, slot_index, new_link)
     return true
 end
 
-function M.backup_config()
-    local config_path = "/etc/config/podkop"
-    local backup_path = "/etc/config/podkop.auto-backup"
-    local rfd = io.open(config_path, "r")
+function M.backup_file(src, dst)
+    local rfd = io.open(src, "r")
     if not rfd then return false end
     local data = rfd:read("*a")
     rfd:close()
     if not data then return false end
-    os.remove(backup_path)
-    local fd = io.open(backup_path, "w")
+    local tmp = dst .. ".tmp"
+    local fd = io.open(tmp, "w")
     if not fd then return false end
     fd:write(data)
     fd:close()
+    os.rename(tmp, dst)
     return true
 end
 
+function M.backup_config()
+    return M.backup_file("/etc/config/podkop", "/etc/config/podkop.auto-backup")
+end
+
 function M.backup_stubby_config()
-    local config_path = "/etc/config/stubby"
-    local backup_path = "/etc/config/stubby.auto-backup"
-    local rfd = io.open(config_path, "r")
-    if not rfd then return false end
-    local data = rfd:read("*a")
-    rfd:close()
-    if not data then return false end
-    os.remove(backup_path)
-    local fd = io.open(backup_path, "w")
-    if not fd then return false end
-    fd:write(data)
-    fd:close()
-    return true
+    return M.backup_file("/etc/config/stubby", "/etc/config/stubby.auto-backup")
 end
 
 function M.do_update_subscription(section_name, slot_index, sub_url, proxy_name)
@@ -350,18 +341,7 @@ function M.append_log(log_file, max_events, text)
 end
 
 function M.write_sub_backup()
-    local config_path = "/etc/config/podkop"
-    local backup_path = "/etc/config/podkop.sub-backup"
-    local rfd = io.open(config_path, "r")
-    if not rfd then return false end
-    local data = rfd:read("*a")
-    rfd:close()
-    if not data then return false end
-    local wfd = io.open(backup_path, "w")
-    if not wfd then return false end
-    wfd:write(data)
-    wfd:close()
-    return true
+    return M.backup_file("/etc/config/podkop", "/etc/config/podkop.sub-backup")
 end
 
 function M.update_all_subscriptions(subs_file, log_file, log_max, mode)

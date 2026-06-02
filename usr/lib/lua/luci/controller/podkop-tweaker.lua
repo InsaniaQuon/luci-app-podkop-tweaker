@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.0.0 | 02.06.2026 | Stubby Config tab, export restructure, stubby backup
+-- Podkop Tweaker | v3.1.0 | 02.06.2026 | Security audit, refactoring, Stubby start/stop
 
-local APP_VERSION = "3.0.0"
+local APP_VERSION = "3.1.0"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -79,6 +79,9 @@ function index()
     entry({"admin", "services", "podkop-tweaker", "api", "stubby_service_status"},
         call("api_stubby_service_status")).leaf = true
 
+    entry({"admin", "services", "podkop-tweaker", "api", "stubby_service_toggle"},
+        call("api_stubby_service_toggle")).leaf = true
+
     entry({"admin", "services", "podkop-tweaker", "api", "rollback_stubby"},
         call("api_rollback_stubby")).leaf = true
 
@@ -87,6 +90,15 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "download_stubby_backup"},
         call("api_download_stubby_backup")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "stubby_chain_info"},
+        call("api_stubby_chain_info")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "stubby_init_check"},
+        call("api_stubby_init_check")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "stubby_init_fix"},
+        call("api_stubby_init_fix")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "export_config"},
         call("api_export_config")).leaf = true
@@ -177,13 +189,13 @@ function action_import_export()
     local nixio = require("nixio")
     local auto_backup_attr = nixio.fs.stat("/etc/config/podkop.auto-backup")
     local auto_backup_time = auto_backup_attr
-        and os.date("%d-%m-%Y %H:%M", auto_backup_attr.mtime) or nil
+        and os.date("%H:%M %d.%m.%Y", auto_backup_attr.mtime) or nil
     local sub_backup_attr = nixio.fs.stat("/etc/config/podkop.sub-backup")
     local auto_sub_backup_time = sub_backup_attr
-        and os.date("%d-%m-%Y %H:%M", sub_backup_attr.mtime) or nil
+        and os.date("%H:%M %d.%m.%Y", sub_backup_attr.mtime) or nil
     local stubby_backup_attr = nixio.fs.stat("/etc/config/stubby.auto-backup")
     local stubby_backup_time = stubby_backup_attr
-        and os.date("%d-%m-%Y %H:%M", stubby_backup_attr.mtime) or nil
+        and os.date("%H:%M %d.%m.%Y", stubby_backup_attr.mtime) or nil
     render_page("import-export", {
         auto_backup_time = auto_backup_time,
         auto_sub_backup_time = auto_sub_backup_time,
@@ -237,9 +249,14 @@ local function verify_csrf()
     return true
 end
 
-local function validate_config(content)
-    if not content or #content == 0 then
-        return false, "Empty config"
+local function get_service_pid(process_name)
+    local sys = require("luci.sys")
+    return sys.exec("pidof " .. process_name .. " 2>/dev/null"):match("(%d+)")
+end
+
+local function validate_uci_config(content)
+    if not content or content == "" then
+        return false, "Configuration is empty"
     end
     if #content > 1048576 then
         return false, "Config too large (max 1MB)"
@@ -257,8 +274,7 @@ local function validate_config(content)
         if trimmed ~= "" and not trimmed:match("^#") then
             if not trimmed:match("^config%s")
                 and not trimmed:match("^option%s")
-                and not trimmed:match("^list%s")
-                and trimmed ~= "" then
+                and not trimmed:match("^list%s") then
                 return false, "Invalid UCI syntax at line " .. line_no .. ": unexpected token"
             end
         end
@@ -684,7 +700,7 @@ function api_save_config()
     http.prepare_content("application/json")
     set_no_cache_headers()
     local content = http.formvalue("content") or ""
-    local ok, err = validate_config(content)
+    local ok, err = validate_uci_config(content)
     if not ok then
         http.write_json({ error = err })
         return
@@ -754,7 +770,7 @@ function api_import_config()
             upload_content = fdupload
         end
     end
-    local ok, err = validate_config(upload_content)
+    local ok, err = validate_uci_config(upload_content)
     if not ok then
         http.write_json({ error = err })
         return
@@ -768,12 +784,10 @@ function api_import_config()
 end
 
 function api_service_status()
-    local sys = require("luci.sys")
     local http = require("luci.http")
     http.prepare_content("application/json")
     set_no_cache_headers()
-    local pid = sys.exec("pgrep -f 'sing-box' 2>/dev/null"):match("(%d+)")
-
+    local pid = get_service_pid("sing-box")
     http.write_json({
         running = (pid ~= nil)
     })
@@ -810,46 +824,6 @@ end
 
 -- === Stubby Config ===
 
-local function validate_stubby_config(content)
-    if not content or content == "" then
-        return false, "Configuration is empty"
-    end
-    if #content > 1048576 then
-        return false, "Config too large (max 1MB)"
-    end
-    if not content:match("config%s+") then
-        return false, "Invalid UCI format: no 'config' declarations found"
-    end
-    if content:find("\0", 1, true) then
-        return false, "Invalid content: contains null bytes"
-    end
-    local line_no = 0
-    for line in content:gmatch("[^\r\n]+") do
-        line_no = line_no + 1
-        local trimmed = line:match("^%s*(.-)%s*$")
-        if trimmed ~= "" and not trimmed:match("^#") then
-            if not trimmed:match("^config%s")
-                and not trimmed:match("^option%s")
-                and not trimmed:match("^list%s") then
-                return false, "Invalid UCI syntax at line " .. line_no .. ": unexpected token"
-            end
-        end
-        local dq = 0
-        for ci = 1, #line do
-            local b = line:byte(ci)
-            if b < 9 or (b > 13 and b < 32) then
-                return false, "Invalid character at line " .. line_no .. ", column " .. ci
-            end
-            local c = line:sub(ci, ci)
-            if c == '"' then dq = dq + 1 end
-        end
-        if dq % 2 ~= 0 then
-            return false, "Unmatched double quote at line " .. line_no
-        end
-    end
-    return true
-end
-
 function api_read_stubby_config()
     local http = require("luci.http")
     http.prepare_content("text/plain")
@@ -871,7 +845,7 @@ function api_save_stubby_config()
     http.prepare_content("application/json")
     set_no_cache_headers()
     local content = http.formvalue("content") or ""
-    local ok, err = validate_stubby_config(content)
+    local ok, err = validate_uci_config(content)
     if not ok then
         http.write_json({ error = err })
         return
@@ -906,12 +880,30 @@ function api_save_stubby_config()
 end
 
 function api_stubby_service_status()
-    local sys = require("luci.sys")
     local http = require("luci.http")
     http.prepare_content("application/json")
     set_no_cache_headers()
-    local pid = sys.exec("pgrep -f '/usr/sbin/stubby' 2>/dev/null"):match("(%d+)")
+    local pid = get_service_pid("stubby")
     http.write_json({
+        running = (pid ~= nil)
+    })
+end
+
+function api_stubby_service_toggle()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local action = http.formvalue("action") or ""
+    if action ~= "start" and action ~= "stop" then
+        http.write_json({ error = "Invalid action" })
+        return
+    end
+    sys.exec("/etc/init.d/stubby " .. action .. " 2>&1")
+    local pid = get_service_pid("stubby")
+    http.write_json({
+        success = true,
         running = (pid ~= nil)
     })
 end
@@ -956,6 +948,7 @@ function api_export_stubby_config()
         fd:close()
         http.write(content)
     else
+        http.status(404, "Not Found")
         http.write("")
     end
 end
@@ -978,6 +971,103 @@ function api_download_stubby_backup()
     else
         http.write("")
     end
+end
+
+function api_stubby_chain_info()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+
+    local uci = require("luci.model.uci").cursor()
+
+    local stubby_listen = ""
+    uci:foreach("stubby", "stubby", function(s)
+        if s[".name"] == "global" then
+            local la = uci:get("stubby", "global", "listen_address")
+            if type(la) == "table" then
+                stubby_listen = table.concat(la, ", ")
+            elseif type(la) == "string" then
+                stubby_listen = la
+            end
+        end
+    end)
+
+    local resolvers = {}
+    uci:foreach("stubby", "resolver", function(s)
+        table.insert(resolvers, {
+            address = s.address or "",
+            tls_auth_name = s.tls_auth_name or "",
+            tls_port = s.tls_port or "853"
+        })
+    end)
+
+    local podkop_dns = ""
+    uci:foreach("podkop", "section", function(s)
+        if s.dns_server then
+            podkop_dns = s.dns_server
+        end
+    end)
+
+    http.write_json({
+        stubby_listen = stubby_listen,
+        resolvers = resolvers,
+        podkop_dns = podkop_dns
+    })
+end
+
+function api_stubby_init_check()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+
+    local fd = io.open("/etc/init.d/stubby", "r")
+    if not fd then
+        http.write_json({ status = "not_installed" })
+        return
+    end
+    local content = fd:read("*a")
+    fd:close()
+
+    if content:match("procd_set_param user stubby") then
+        http.write_json({ status = "needs_fix" })
+    else
+        http.write_json({ status = "fixed" })
+    end
+end
+
+function api_stubby_init_fix()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+
+    local fd = io.open("/etc/init.d/stubby", "r")
+    if not fd then
+        http.write_json({ error = "Init script not found" })
+        return
+    end
+    local content = fd:read("*a")
+    fd:close()
+
+    if not content:match("procd_set_param user stubby") then
+        http.write_json({ success = true, message = "Already fixed" })
+        return
+    end
+
+    content = content:gsub("procd_set_param user stubby", "procd_set_param user root")
+    local tmp_path = "/etc/init.d/stubby.tmp-fix"
+    local tmpfd = io.open(tmp_path, "w")
+    if not tmpfd then
+        http.write_json({ error = "Cannot write init script" })
+        return
+    end
+    tmpfd:write(content)
+    tmpfd:close()
+    sys.exec("chmod +x " .. tmp_path .. " && mv " .. tmp_path .. " /etc/init.d/stubby 2>/dev/null")
+    sys.exec("/etc/init.d/stubby restart 2>&1")
+
+    http.write_json({ success = true })
 end
 
 -- === Settings & Auto-Update ===
