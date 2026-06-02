@@ -148,7 +148,7 @@ function M.get_proxy_sections()
             local pct = s.proxy_config_type
             local links = {}
             if pct == "url" then
-                local url = uci:get("podkop", s[".name"], "url")
+                local url = uci:get("podkop", s[".name"], "proxy_string")
                 if url and url ~= "" then links = {url} end
             elseif pct == "urltest" then
                 local l = uci:get("podkop", s[".name"], "urltest_proxy_links")
@@ -203,8 +203,8 @@ function M.replace_proxy_link(section_name, proxy_type, slot_index, new_link)
         end
         if in_section and not found then
             if is_option then
-                if line:match("^%s*option%s+url%s+") then
-                    lines[i] = "\toption url '" .. safe_link .. "'"
+                if line:match("^%s*option%s+proxy_string%s+") then
+                    lines[i] = "\toption proxy_string '" .. safe_link .. "'"
                     found = true
                 end
             else
@@ -265,18 +265,46 @@ function M.do_update_subscription(section_name, slot_index, sub_url, proxy_name)
         return nil, "invalid url"
     end
     local safe_url = M.shell_escape(sub_url)
-    local tmp = (io.popen("mktemp /tmp/pt-sub-XXXXXX 2>/dev/null"):read("*l"))
-        or "/tmp/pt-sub-" .. os.time() .. "-" .. section_name
-    os.execute("curl -sL -m 15 -A 'sing-box' -o " .. tmp .. " " .. safe_url .. " 2>/dev/null")
 
-    local fd = io.open(tmp, "r")
-    if not fd then return nil, "download failed" end
-    local raw = fd:read("*a")
-    fd:close()
-    os.remove(tmp)
+    local raw = nil
+    local max_retries = 3
+    local last_err = "download failed"
+    local success_attempt = 0
+    for attempt = 1, max_retries do
+        local tmp = (io.popen("mktemp /tmp/pt-sub-XXXXXX 2>/dev/null"):read("*l"))
+            or "/tmp/pt-sub-" .. os.time() .. "-" .. section_name
+        os.execute("curl -sL -m 15 -A 'sing-box' -o " .. tmp .. " " .. safe_url .. " 2>/dev/null")
+
+        local fd = io.open(tmp, "r")
+        if fd then
+            local data = fd:read("*a")
+            fd:close()
+            os.remove(tmp)
+            if data and #data > 0 then
+                local proxies = M.parse_subscription_raw(data)
+                if #proxies > 0 then
+                    raw = data
+                    success_attempt = attempt
+                    break
+                end
+                last_err = "no proxies found"
+            else
+                last_err = "empty response"
+            end
+        else
+            last_err = "download failed"
+        end
+
+        if attempt < max_retries then
+            os.execute("sleep 10 2>/dev/null")
+        end
+    end
+
+    if not raw then
+        return nil, last_err .. " (" .. max_retries .. " retries)"
+    end
 
     local proxies = M.parse_subscription_raw(raw)
-    if #proxies == 0 then return nil, "no proxies found" end
 
     local found = nil
     if proxy_name and proxy_name ~= "" then
@@ -287,7 +315,7 @@ function M.do_update_subscription(section_name, slot_index, sub_url, proxy_name)
     if not found and #proxies == 1 then found = proxies[1] end
     if not found then return nil, "proxy not found" end
 
-    return found
+    return found, nil, success_attempt
 end
 
 function M.update_subs_timestamp(subs_file, section_name, slot_index, mode)
@@ -358,9 +386,10 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
             local sub_entry = sec_subs[i]
             if sub_entry and type(sub_entry) == "table"
                 and sub_entry.subscription_url and sub_entry.subscription_url ~= "" then
-                local proxy, _ = M.do_update_subscription(
+                local proxy, err, attempt = M.do_update_subscription(
                     sec.name, i - 1, sub_entry.subscription_url, sub_entry.proxy_name)
                 local pname = sub_entry.proxy_name or ""
+                local retry_suffix = (attempt and attempt > 1) and (" (retry " .. attempt .. ")") or ""
                 if proxy and proxy.link then
                     local current_link = link or ""
                     if current_link ~= proxy.link then
@@ -372,19 +401,21 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
                         if rok then
                             updated = updated + 1
                             need_restart = true
-                            table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "updated"})
+                            table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "updated" .. retry_suffix})
                         else
                             failed = failed + 1
                             table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "failed"})
                         end
                     else
                         unchanged = unchanged + 1
-                        table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "unchanged"})
+                        table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "unchanged" .. retry_suffix})
                     end
                     M.update_subs_timestamp(subs_file, sec.name, i - 1, mode)
                 else
                     failed = failed + 1
-                    table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "failed"})
+                    local label = "failed"
+                    if err and err:match("retries") then label = "failed (" .. err .. ")" end
+                    table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = label})
                 end
             end
         end

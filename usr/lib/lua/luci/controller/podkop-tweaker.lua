@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.1.0 | 02.06.2026 | Security audit, refactoring, Stubby start/stop
+-- Podkop Tweaker | v3.1.1 | 02.06.2026 | Various fixes
 
-local APP_VERSION = "3.1.0"
+local APP_VERSION = "3.1.1"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -268,34 +268,36 @@ local function validate_uci_config(content)
         return false, "Invalid content: contains null bytes"
     end
     local line_no = 0
+    local in_sq = false
+    local dq_total = 0
     for line in content:gmatch("[^\r\n]+") do
         line_no = line_no + 1
-        local trimmed = line:match("^%s*(.-)%s*$")
-        if trimmed ~= "" and not trimmed:match("^#") then
-            if not trimmed:match("^config%s")
-                and not trimmed:match("^option%s")
-                and not trimmed:match("^list%s") then
-                return false, "Invalid UCI syntax at line " .. line_no .. ": unexpected token"
+        if not in_sq then
+            local trimmed = line:match("^%s*(.-)%s*$")
+            if trimmed ~= "" and not trimmed:match("^#") then
+                if not trimmed:match("^config%s")
+                    and not trimmed:match("^option%s")
+                    and not trimmed:match("^list%s") then
+                    return false, "Invalid UCI syntax at line " .. line_no .. ": unexpected token"
+                end
             end
         end
-        local sq = 0
-        local dq = 0
         for ci = 1, #line do
             local b = line:byte(ci)
             if b < 9 or (b > 13 and b < 32) then
                 return false, "Invalid character at line " .. line_no .. ", column " .. ci
             end
             local c = line:sub(ci, ci)
-            if c == "'" then sq = sq + 1
-            elseif c == '"' then dq = dq + 1
+            if c == "'" then in_sq = not in_sq
+            elseif c == '"' then dq_total = dq_total + 1
             end
         end
-        if sq % 2 ~= 0 then
-            return false, "Unmatched single quote at line " .. line_no
-        end
-        if dq % 2 ~= 0 then
-            return false, "Unmatched double quote at line " .. line_no
-        end
+    end
+    if in_sq then
+        return false, "Unmatched single quote"
+    end
+    if dq_total % 2 ~= 0 then
+        return false, "Unmatched double quote"
     end
     return true
 end
@@ -1109,7 +1111,7 @@ local function setup_hotplug(enabled)
         local fd = io.open(hp_path, "w")
         if fd then
             fd:write("#!/bin/sh\n")
-            fd:write('[ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "wan" ] && /usr/bin/pt-auto-update\n')
+            fd:write('[ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "wan" ] && (sleep 30; /usr/bin/pt-auto-update) >/dev/null 2>&1 &\n')
             fd:close()
             os.execute("chmod +x " .. hp_path .. " 2>/dev/null")
         end
