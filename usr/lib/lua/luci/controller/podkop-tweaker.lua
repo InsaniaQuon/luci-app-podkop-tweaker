@@ -449,11 +449,10 @@ function api_update_start()
         host = http.getenv("SERVER_NAME") or "127.0.0.1"
     end
     local port = "7682"
-    local ttyd_pass = generate_random_password(12)
 
-    sys.exec("ttyd -p " .. port .. " -W -c podkop:" .. ttyd_pass .. " podkop-update >/dev/null 2>&1 &")
+    sys.exec("ttyd -p " .. port .. " podkop-update >/dev/null 2>&1 &")
 
-    http.write_json({ success = true, url = "http://podkop:" .. ttyd_pass .. "@" .. host .. ":" .. port })
+    http.write_json({ success = true, url = "http://" .. host .. ":" .. port })
 end
 
 -- === Subscription helpers ===
