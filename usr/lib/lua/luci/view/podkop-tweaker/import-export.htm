@@ -120,41 +120,39 @@ Author: InsaniaQuon
         <div class="ps-ie-block">
             <div class="ps-ie-desc">
                 <p>Upload a Podkop configuration file to replace the current one.</p>
-                <div class="ps-danger-box">
-                    <strong>&#10007; This will:</strong>
-                    <ul>
-                        <li>Completely replace <code>/etc/config/podkop</code></li>
-                        <li>Create an automatic backup of the current config</li>
-                        <li>Restart Podkop service</li>
-                        <li>Offer rollback if sing-box fails to start</li>
-                    </ul>
-                </div>
             </div>
+            <div class="ps-ie-actions" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <input type="file" id="ps-import-podkop" accept=".conf,.config,.txt,.bak" style="font-size:12px;" />
+                <button class="btn cbi-button cbi-button-apply" id="ps-import-podkop-btn" disabled>Import Podkop</button>
+                <span class="ps-config-status" id="ps-import-podkop-status"></span>
+            </div>
+            <div class="ps-danger-box" style="margin-top:8px;">
+                <strong>&#10007; This will:</strong> replace <code>/etc/config/podkop</code>, create backup, restart Podkop.
+            </div>
+        </div>
 
-            <div class="ps-ie-upload-area" id="ps-upload-area">
-                <div class="ps-ie-upload-content">
-                    <span class="ps-ie-upload-icon">&#128193;</span>
-                    <p>Drag and drop file here or click to browse</p>
-                    <input type="file" id="ps-import-file" accept=".conf,.config,.txt,.bak" />
-                </div>
-                <div class="ps-ie-file-info" id="ps-file-info" style="display:none;">
-                    <span id="ps-file-name"></span>
-                    <span id="ps-file-size"></span>
-                </div>
+        <div class="ps-ie-block">
+            <div class="ps-ie-desc">
+                <p>Upload a Stubby configuration file to replace the current one.</p>
             </div>
+            <div class="ps-ie-actions" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <input type="file" id="ps-import-stubby" accept=".conf,.config,.txt,.bak" style="font-size:12px;" />
+                <button class="btn cbi-button cbi-button-apply" id="ps-import-stubby-btn" disabled>Import Stubby</button>
+                <span class="ps-config-status" id="ps-import-stubby-status"></span>
+            </div>
+            <div class="ps-danger-box" style="margin-top:8px;">
+                <strong>&#10007; This will:</strong> replace <code>/etc/config/stubby</code>, create backup, restart Stubby.
+            </div>
+        </div>
 
-            <div class="ps-ie-actions">
-                <button class="btn cbi-button cbi-button-apply" id="ps-import-btn" disabled>
-                    Import Configuration
-                </button>
-                <button class="btn cbi-button ps-rollback-btn" id="ps-rollback-btn" style="display:none">
-                    Rollback
-                </button>
-                <span class="ps-config-status" id="ps-import-status"></span>
-                <button class="btn cbi-button ps-error-btn" id="ps-error-btn" style="display:none">
-                    &#9888; Error
-                </button>
-            </div>
+        <div style="margin-top:8px;">
+            <button class="btn cbi-button ps-rollback-btn" id="ps-rollback-btn" style="display:none">
+                Rollback Podkop
+            </button>
+            <span class="ps-config-status" id="ps-import-status"></span>
+            <button class="btn cbi-button ps-error-btn" id="ps-error-btn" style="display:none">
+                &#9888; Error
+            </button>
         </div>
     </div>
 </div>
@@ -179,6 +177,7 @@ Author: InsaniaQuon
     var CSRF = '<%= token or csrf_token or "" %>';
     var URLS = {
         importCfg: '<%=url("admin/services/podkop-tweaker/api/import_config")%>',
+        importStubby: '<%=url("admin/services/podkop-tweaker/api/import_stubby_config")%>',
         exportCfg: '<%=url("admin/services/podkop-tweaker/api/export_config")%>',
         exportStubby: '<%=url("admin/services/podkop-tweaker/api/export_stubby_config")%>',
         backup: '<%=url("admin/services/podkop-tweaker/api/download_backup")%>',
@@ -188,14 +187,12 @@ Author: InsaniaQuon
         rollback: '<%=url("admin/services/podkop-tweaker/api/rollback")%>'
     };
 
-    var selectedFile = null;
-    var uploadArea = document.getElementById('ps-upload-area');
-    var fileInput = document.getElementById('ps-import-file');
-    var fileInfo = document.getElementById('ps-file-info');
-    var fileName = document.getElementById('ps-file-name');
-    var fileSize = document.getElementById('ps-file-size');
-    var importBtn = document.getElementById('ps-import-btn');
-    var importStatus = document.getElementById('ps-import-status');
+    var importPodkopFile = document.getElementById('ps-import-podkop');
+    var importPodkopBtn = document.getElementById('ps-import-podkop-btn');
+    var importPodkopStatus = document.getElementById('ps-import-podkop-status');
+    var importStubbyFile = document.getElementById('ps-import-stubby');
+    var importStubbyBtn = document.getElementById('ps-import-stubby-btn');
+    var importStubbyStatus = document.getElementById('ps-import-stubby-status');
     var rollbackBtn = document.getElementById('ps-rollback-btn');
     var errorBtn = document.getElementById('ps-error-btn');
     var errorModal = document.getElementById('ps-error-modal');
@@ -208,11 +205,6 @@ Author: InsaniaQuon
     var _errorTimer = null;
     var ERROR_TTL = 600000;
     var _pollTimer = null;
-
-    function setImportStatus(text, color) {
-        importStatus.textContent = text;
-        importStatus.style.color = color || '#888';
-    }
 
     function pushError(shortMsg, fullDetails) {
         var ts = new Date();
@@ -289,105 +281,122 @@ Author: InsaniaQuon
     errorClose.addEventListener('click', function() { errorModal.style.display = 'none'; });
     errorModal.addEventListener('click', function(e) { if (e.target === errorModal) errorModal.style.display = 'none'; });
 
-    function formatSize(bytes) {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / 1048576).toFixed(1) + ' MB';
-    }
+    function doFileImport(fileInput, importBtn, statusEl, url, serviceName, pollFn) {
+        if (!fileInput.files || !fileInput.files[0]) return;
+        if (!confirm('This will replace the current ' + serviceName + ' configuration.\n\nAn automatic backup will be created.\n\nContinue?')) return;
 
-    function doExport() {
-        window.location.href = URLS.exportCfg;
-    }
-
-    function doDownloadBackup() {
-        window.location.href = URLS.backup;
-    }
-
-    function doImport() {
-        if (!selectedFile) return;
-        if (!confirm('This will replace the current Podkop configuration.\n\nAn automatic backup will be created.\n\nContinue?')) return;
+        var file = fileInput.files[0];
+        if (file.size > 1048576) {
+            statusEl.textContent = 'File too large (max 1 MB)';
+            statusEl.style.color = '#f44336';
+            return;
+        }
 
         importBtn.disabled = true;
-        rollbackBtn.style.display = 'none';
-        importBtn.textContent = 'Reading file...';
-        setImportStatus('', '');
+        importBtn.textContent = 'Importing...';
+        statusEl.textContent = 'Reading file...';
+        statusEl.style.color = '#2196f3';
 
         var reader = new FileReader();
         reader.onerror = function() {
             importBtn.disabled = false;
-            importBtn.textContent = 'Import Configuration';
-            pushError('File read failed', 'Could not read the selected file');
-            setImportStatus('File read failed', '#f44336');
+            importBtn.textContent = 'Import ' + serviceName;
+            statusEl.textContent = 'File read failed';
+            statusEl.style.color = '#f44336';
         };
         reader.onload = function() {
-            importBtn.textContent = 'Importing...';
-            setImportStatus('Importing and restarting podkop...', '#2196f3');
-
-            xhrPost(URLS.importCfg, 'content=' + encodeURIComponent(reader.result), function(xhr) {
+            statusEl.textContent = 'Importing and restarting ' + serviceName.toLowerCase() + '...';
+            xhrPost(url, 'content=' + encodeURIComponent(reader.result), function(xhr) {
                 importBtn.disabled = false;
-                importBtn.textContent = 'Import Configuration';
+                importBtn.textContent = 'Import ' + serviceName;
                 if (!xhr) {
-                    pushError('Import failed', 'Network error: failed to connect to server');
-                    setImportStatus('Network error', '#f44336');
+                    statusEl.textContent = 'Network error';
+                    statusEl.style.color = '#f44336';
                     return;
                 }
                 try {
                     var resp = JSON.parse(xhr.responseText);
                     if (resp.success && resp.restarting) {
-                        setImportStatus('Restarting podkop...', '#2196f3');
-                        pollStatus(
-                            function() {
-                                selectedFile = null;
-                                fileInfo.style.display = 'none';
-                                fileInput.value = '';
-                                importBtn.disabled = true;
-                                setImportStatus('Imported successfully. Podkop restarted.', '#4caf50');
-                            },
-                            function() {
-                                rollbackBtn.style.display = 'inline-block';
-                                setImportStatus('sing-box did not start after import.', '#f44336');
-                                pushError('Restart failed', 'sing-box did not start within 16 seconds after import.');
-                            }
-                        );
+                        statusEl.textContent = 'Restarting ' + serviceName.toLowerCase() + '...';
+                        statusEl.style.color = '#2196f3';
+                        if (pollFn) {
+                            pollFn(
+                                function() {
+                                    fileInput.value = '';
+                                    statusEl.textContent = 'Imported successfully.';
+                                    statusEl.style.color = '#4caf50';
+                                },
+                                function() {
+                                    if (serviceName === 'Podkop') rollbackBtn.style.display = 'inline-block';
+                                    statusEl.textContent = serviceName + ' did not start after import.';
+                                    statusEl.style.color = '#f44336';
+                                }
+                            );
+                        } else {
+                            fileInput.value = '';
+                            statusEl.textContent = 'Imported successfully.';
+                            statusEl.style.color = '#4caf50';
+                        }
                     } else {
-                        pushError('Import failed', resp.error || 'Unknown error');
-                        setImportStatus('Import failed', '#f44336');
+                        statusEl.textContent = resp.error || 'Import failed';
+                        statusEl.style.color = '#f44336';
                     }
                 } catch (e) {
-                    pushError('Import failed', 'Invalid server response:\n' + (xhr.responseText || '').substring(0, 500));
-                    setImportStatus('Import failed', '#f44336');
+                    statusEl.textContent = 'Import failed';
+                    statusEl.style.color = '#f44336';
                 }
             });
         };
-        reader.readAsText(selectedFile);
+        reader.readAsText(file);
     }
+
+    importPodkopFile.addEventListener('change', function() {
+        importPodkopBtn.disabled = !this.files || !this.files[0];
+    });
+    importPodkopBtn.addEventListener('click', function() {
+        doFileImport(importPodkopFile, importPodkopBtn, importPodkopStatus, URLS.importCfg, 'Podkop', pollStatus);
+    });
+
+    importStubbyFile.addEventListener('change', function() {
+        importStubbyBtn.disabled = !this.files || !this.files[0];
+    });
+    importStubbyBtn.addEventListener('click', function() {
+        doFileImport(importStubbyFile, importStubbyBtn, importStubbyStatus, URLS.importStubby, 'Stubby', null);
+    });
 
     function doRollback() {
         rollbackBtn.style.display = 'none';
-        setImportStatus('Rolling back...', '#2196f3');
+        importPodkopStatus.textContent = 'Rolling back...';
+        importPodkopStatus.style.color = '#2196f3';
 
         xhrPost(URLS.rollback, '', function(xhr) {
             if (!xhr) {
-                setImportStatus('Rollback network error', '#f44336');
+                importPodkopStatus.textContent = 'Rollback network error';
+                importPodkopStatus.style.color = '#f44336';
                 return;
             }
             try {
                 var resp = JSON.parse(xhr.responseText);
                 if (resp.success) {
-                    setImportStatus('Rolled back. Restarting...', '#2196f3');
+                    importPodkopStatus.textContent = 'Rolled back. Restarting...';
+                    importPodkopStatus.style.color = '#2196f3';
                     pollStatus(
                         function() {
-                            setImportStatus('Rolled back successfully.', '#4caf50');
+                            importPodkopStatus.textContent = 'Rolled back successfully.';
+                            importPodkopStatus.style.color = '#4caf50';
                         },
                         function() {
-                            setImportStatus('Rollback done but sing-box still not running.', '#ff9800');
+                            importPodkopStatus.textContent = 'Rollback done but sing-box still not running.';
+                            importPodkopStatus.style.color = '#ff9800';
                         }
                     );
                 } else {
-                    setImportStatus('Rollback failed: ' + (resp.error || ''), '#f44336');
+                    importPodkopStatus.textContent = 'Rollback failed: ' + (resp.error || '');
+                    importPodkopStatus.style.color = '#f44336';
                 }
             } catch (e) {
-                setImportStatus('Rollback failed', '#f44336');
+                importPodkopStatus.textContent = 'Rollback failed';
+                importPodkopStatus.style.color = '#f44336';
             }
         });
     }
@@ -399,47 +408,13 @@ Author: InsaniaQuon
             e.preventDefault();
             var action = btn.getAttribute('data-action');
             switch (action) {
-                case 'export': doExport(); break;
+                case 'export': window.location.href = URLS.exportCfg; break;
                 case 'export-stubby': window.location.href = URLS.exportStubby; break;
-                case 'backup-auto': doDownloadBackup(); break;
+                case 'backup-auto': window.location.href = URLS.backup; break;
                 case 'backup-sub': window.location.href = URLS.backupSub; break;
                 case 'backup-stubby': window.location.href = URLS.backupStubby; break;
             }
         });
-    });
-
-    function handleFile(file) {
-        if (!file) return;
-        if (file.size > 1048576) {
-            setImportStatus('File too large (max 1 MB)', '#f44336');
-            return;
-        }
-        selectedFile = file;
-        fileName.textContent = file.name;
-        fileSize.textContent = formatSize(file.size);
-        fileInfo.style.display = 'flex';
-        importBtn.disabled = false;
-    }
-
-    uploadArea.addEventListener('click', function() { fileInput.click(); });
-    fileInput.addEventListener('change', function() {
-        if (this.files && this.files[0]) handleFile(this.files[0]);
-    });
-    uploadArea.addEventListener('dragover', function(e) {
-        e.preventDefault();
-        uploadArea.classList.add('ps-ie-dragover');
-    });
-    uploadArea.addEventListener('dragleave', function() {
-        uploadArea.classList.remove('ps-ie-dragover');
-    });
-    uploadArea.addEventListener('drop', function(e) {
-        e.preventDefault();
-        uploadArea.classList.remove('ps-ie-dragover');
-        if (e.dataTransfer.files && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
-    });
-
-    importBtn.addEventListener('click', function() {
-        if (selectedFile) doImport();
     });
 
     checkStatus(updateStatusUI);

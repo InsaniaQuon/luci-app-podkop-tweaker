@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.1.1 | 02.06.2026 | Various fixes
+-- Podkop Tweaker | v3.2.2 | 04.06.2026 | Inline validation: highlight error line with arrow in config/stubby editors
 
-local APP_VERSION = "3.1.1"
+local APP_VERSION = "3.2.2"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -99,6 +99,12 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "stubby_init_fix"},
         call("api_stubby_init_fix")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "import_stubby_config"},
+        call("api_import_stubby_config")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "apply_recommended_stubby"},
+        call("api_apply_recommended_stubby")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "export_config"},
         call("api_export_config")).leaf = true
@@ -1071,6 +1077,104 @@ function api_stubby_init_fix()
     http.write_json({ success = true })
 end
 
+function api_import_stubby_config()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local content = http.formvalue("content") or ""
+    if content == "" then
+        http.write_json({ error = "Empty content" })
+        return
+    end
+    local ok, err = validate_uci_config(content)
+    if not ok then
+        http.write_json({ error = err })
+        return
+    end
+    if not S.backup_stubby_config() then
+        http.write_json({ error = "Cannot create backup" })
+        return
+    end
+    local config_path = "/etc/config/stubby"
+    local tmp_path = config_path .. ".tmp-write"
+    local tmpfd = io.open(tmp_path, "w")
+    if not tmpfd then
+        http.write_json({ error = "Cannot write config" })
+        return
+    end
+    tmpfd:write(content)
+    tmpfd:close()
+    os.rename(tmp_path, config_path)
+    sys.exec("/etc/init.d/stubby restart 2>&1")
+    http.write_json({ success = true, restarting = true })
+end
+
+local STUBBY_RECOMMENDED = [[
+config stubby 'global'
+	option manual '0'
+	option trigger 'wan'
+	option triggerdelay '5'
+	list dns_transport 'GETDNS_TRANSPORT_TLS'
+	option tls_authentication '1'
+	option tls_query_padding_blocksize '128'
+	option tls_min_version '1.3'
+	option tls_ciphersuites 'TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256'
+	option tls_connection_retries '2'
+	option tls_backoff_time '3600'
+	option timeout '5000'
+	option idle_timeout '30000'
+	option round_robin_upstreams '1'
+	option dnssec_return_status '0'
+	option edns_client_subnet_private '1'
+	list listen_address '127.0.0.53@53'
+
+config resolver
+	option address '1.1.1.1'
+	option tls_auth_name 'cloudflare-dns.com'
+	option tls_port '853'
+
+config resolver
+	option address '1.0.0.1'
+	option tls_auth_name 'cloudflare-dns.com'
+	option tls_port '853'
+
+config resolver
+	option address '9.9.9.9'
+	option tls_auth_name 'dns.quad9.net'
+	option tls_port '853'
+
+config resolver
+	option address '149.112.112.112'
+	option tls_auth_name 'dns.quad9.net'
+	option tls_port '853'
+]]
+
+function api_apply_recommended_stubby()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    if not S.backup_stubby_config() then
+        http.write_json({ error = "Cannot create backup" })
+        return
+    end
+    local config_path = "/etc/config/stubby"
+    local tmp_path = config_path .. ".tmp-write"
+    local tmpfd = io.open(tmp_path, "w")
+    if not tmpfd then
+        http.write_json({ error = "Cannot write config" })
+        return
+    end
+    tmpfd:write(STUBBY_RECOMMENDED)
+    tmpfd:close()
+    os.rename(tmp_path, config_path)
+    sys.exec("/etc/init.d/stubby restart 2>&1")
+    http.write_json({ success = true, restarting = true })
+end
+
 -- === Settings & Auto-Update ===
 
 -- interval: hours between updates (1-24)
@@ -1448,9 +1552,7 @@ function api_clear_cache()
     http.prepare_content("application/json")
     set_no_cache_headers()
 
-    os.execute("rm -f /tmp/luci-indexcache* 2>/dev/null")
-    os.execute("rm -rf /tmp/luci-modulecache* 2>/dev/null")
-    os.execute("rm -rf /tmp/luci-template-* 2>/dev/null")
+    os.execute("rm -rf /tmp/luci-* 2>/dev/null")
     os.remove(CHECK_CACHE_FILE)
 
     sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")

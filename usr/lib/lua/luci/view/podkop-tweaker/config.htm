@@ -159,11 +159,33 @@ Author: InsaniaQuon
         xhr.send('token=' + encodeURIComponent(CSRF) + (params ? '&' + params : ''));
     }
 
+    var _errorLineNo = -1;
+
     function updateLineNumbers() {
         var count = editor.value.split('\n').length;
         var nums = [];
-        for (var i = 1; i <= count; i++) nums.push(i);
-        lineNums.textContent = nums.join('\n');
+        for (var i = 1; i <= count; i++) {
+            if (i === _errorLineNo) {
+                nums.push('<span style="color:#f44336;font-weight:700;">\u25B6 ' + i + '</span>');
+            } else {
+                nums.push(i);
+            }
+        }
+        lineNums.innerHTML = nums.join('\n');
+    }
+
+    function highlightErrorLine(lineNo) {
+        _errorLineNo = lineNo;
+        updateLineNumbers();
+        var lineHeight = editor.scrollHeight / editor.value.split('\n').length;
+        editor.scrollTop = Math.max(0, (lineNo - 5) * lineHeight);
+        lineNums.scrollTop = editor.scrollTop;
+    }
+
+    function clearErrorLine() {
+        if (_errorLineNo === -1) return;
+        _errorLineNo = -1;
+        updateLineNumbers();
     }
 
     editor.addEventListener('scroll', function() {
@@ -241,6 +263,7 @@ Author: InsaniaQuon
         isDirty = (editor.value !== originalContent);
         saveBtn.disabled = !isDirty;
         diffBtn.disabled = !isDirty;
+        clearErrorLine();
         updateLineNumbers();
         setStatus(isDirty ? 'Unsaved changes' : 'Loaded', isDirty ? '#ff9800' : '#4caf50');
     });
@@ -301,6 +324,8 @@ Author: InsaniaQuon
                     saveBtn.disabled = isDirty;
                     diffBtn.disabled = !isDirty;
                     setStatus('Save failed', '#f44336');
+                    var errLine = resp.error && resp.error.match(/line (\d+)/);
+                    if (errLine) highlightErrorLine(parseInt(errLine[1]));
                     pushError('Save failed', resp.error || 'Unknown error');
                 }
             } catch (e) {

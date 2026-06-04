@@ -11,14 +11,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: leafo/gh-actions-lua@v13
-        with:
-          luaVersion: "5.1"
-
-      - uses: leafo/gh-actions-luarocks@v6
+      - name: Install Lua 5.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1 liblua5.1-dev luarocks
+          lua5.1 -v
 
       - name: Install busted
-        run: luarocks install busted
+        run: |
+          luarocks install --local busted
+          echo "$HOME/.luarocks/bin" >> $GITHUB_PATH
 
       - name: Run tests
         run: busted -o utfTerminal tests/

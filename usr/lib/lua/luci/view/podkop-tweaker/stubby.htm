@@ -32,7 +32,7 @@ Author: InsaniaQuon
             </div>
         </div>
         <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <button class="btn cbi-button" id="ps-params-btn">Parameters</button>
+            <button class="btn cbi-button" id="ps-params-btn">Template</button>
             <button class="btn cbi-button" id="ps-chain-btn">DNS Chain</button>
             <button class="btn cbi-button" id="ps-initfix-btn">Fix Init Script</button>
             <span id="ps-initfix-status" style="font-size:12px;font-weight:600;"></span>
@@ -91,7 +91,7 @@ Author: InsaniaQuon
 
 <div class="ps-modal" id="ps-params-modal" style="display:none;">
     <div class="ps-modal-content ps-modal-wide">
-        <h3>Stubby Parameters Reference</h3>
+        <h3>Stubby Recommended Template</h3>
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
             <thead>
                 <tr style="border-bottom:2px solid var(--ps-border,#ccc);">
@@ -117,7 +117,12 @@ Author: InsaniaQuon
                 <tr><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">edns_client_subnet_private '1'</td><td style="padding:4px 8px;">Hide client subnet</td><td style="padding:4px 8px;">Do not send ECS data upstream</td></tr>
             </tbody>
         </table>
-        <div class="ps-modal-footer" style="margin-top:12px;">
+        <div style="margin-top:12px;padding:8px;background:var(--ps-bg-alt,#f5f5f5);border-radius:6px;font-size:12px;">
+            <strong>Resolvers:</strong> Cloudflare (1.1.1.1, 1.0.0.1) + Quad9 (9.9.9.9, 149.112.112.112)
+        </div>
+        <div class="ps-modal-footer" style="margin-top:12px;display:flex;align-items:center;gap:8px;">
+            <button class="btn cbi-button cbi-button-apply" id="ps-apply-template-btn">Apply This Template</button>
+            <span id="ps-apply-template-status" style="font-size:12px;"></span>
             <button class="btn cbi-button" id="ps-params-close">Close</button>
         </div>
     </div>
@@ -232,11 +237,33 @@ Author: InsaniaQuon
         xhr.send('token=' + encodeURIComponent(CSRF) + (params ? '&' + params : ''));
     }
 
+    var _errorLineNo = -1;
+
     function updateLineNumbers() {
         var count = editor.value.split('\n').length;
         var nums = [];
-        for (var i = 1; i <= count; i++) nums.push(i);
-        lineNums.textContent = nums.join('\n');
+        for (var i = 1; i <= count; i++) {
+            if (i === _errorLineNo) {
+                nums.push('<span style="color:#f44336;font-weight:700;">\u25B6 ' + i + '</span>');
+            } else {
+                nums.push(i);
+            }
+        }
+        lineNums.innerHTML = nums.join('\n');
+    }
+
+    function highlightErrorLine(lineNo) {
+        _errorLineNo = lineNo;
+        updateLineNumbers();
+        var lineHeight = editor.scrollHeight / editor.value.split('\n').length;
+        editor.scrollTop = Math.max(0, (lineNo - 5) * lineHeight);
+        lineNums.scrollTop = editor.scrollTop;
+    }
+
+    function clearErrorLine() {
+        if (_errorLineNo === -1) return;
+        _errorLineNo = -1;
+        updateLineNumbers();
     }
 
     editor.addEventListener('scroll', function() {
@@ -332,6 +359,7 @@ Author: InsaniaQuon
         isDirty = (editor.value !== originalContent);
         saveBtn.disabled = !isDirty;
         diffBtn.disabled = !isDirty;
+        clearErrorLine();
         updateLineNumbers();
         setStatus(isDirty ? 'Unsaved changes' : 'Loaded', isDirty ? '#ff9800' : '#4caf50');
     });
@@ -399,6 +427,8 @@ Author: InsaniaQuon
                     saveBtn.disabled = isDirty;
                     diffBtn.disabled = !isDirty;
                     setStatus('Save failed', '#f44336');
+                    var errLine = resp.error && resp.error.match(/line (\d+)/);
+                    if (errLine) highlightErrorLine(parseInt(errLine[1]));
                     pushError('Save failed', resp.error || 'Unknown error');
                 }
             } catch (e) {
@@ -514,9 +544,45 @@ Author: InsaniaQuon
     var paramsModal = document.getElementById('ps-params-modal');
     var paramsBtn = document.getElementById('ps-params-btn');
     var paramsClose = document.getElementById('ps-params-close');
-    paramsBtn.addEventListener('click', function() { paramsModal.style.display = 'flex'; });
+    var applyTemplateBtn = document.getElementById('ps-apply-template-btn');
+    var applyTemplateStatus = document.getElementById('ps-apply-template-status');
+    paramsBtn.addEventListener('click', function() { applyTemplateStatus.textContent = ''; paramsModal.style.display = 'flex'; });
     paramsClose.addEventListener('click', function() { paramsModal.style.display = 'none'; });
     paramsModal.addEventListener('click', function(e) { if (e.target === paramsModal) paramsModal.style.display = 'none'; });
+
+    applyTemplateBtn.addEventListener('click', function() {
+        if (!confirm('This will completely replace your Stubby config with the recommended template.\n\nAn automatic backup will be created.\n\nContinue?')) return;
+        applyTemplateBtn.disabled = true;
+        applyTemplateStatus.textContent = 'Applying...';
+        applyTemplateStatus.style.color = '#2196f3';
+        xhrPost('<%=url("admin/services/podkop-tweaker/api/apply_recommended_stubby")%>', '', function(xhr) {
+            applyTemplateBtn.disabled = false;
+            if (!xhr) {
+                applyTemplateStatus.textContent = 'Network error';
+                applyTemplateStatus.style.color = '#f44336';
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                if (resp.success) {
+                    applyTemplateStatus.textContent = 'Applied. Restarting...';
+                    applyTemplateStatus.style.color = '#4caf50';
+                    setTimeout(function() {
+                        paramsModal.style.display = 'none';
+                        loadConfig();
+                        checkStatus(updateStatusUI);
+                        refreshChainIfOpen();
+                    }, 2000);
+                } else {
+                    applyTemplateStatus.textContent = resp.error || 'Failed';
+                    applyTemplateStatus.style.color = '#f44336';
+                }
+            } catch (e) {
+                applyTemplateStatus.textContent = 'Failed';
+                applyTemplateStatus.style.color = '#f44336';
+            }
+        });
+    });
 
     // === DNS Chain modal ===
     var chainModal = document.getElementById('ps-chain-modal');
