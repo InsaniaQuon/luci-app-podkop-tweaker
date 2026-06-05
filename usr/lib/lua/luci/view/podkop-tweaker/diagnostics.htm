@@ -1,0 +1,488 @@
+<%#
+LuCI Podkop Tweaker — Diagnostics Tab
+Author: InsaniaQuon
+-%>
+<%+header%>
+
+<div class="cbi-map" id="cbi-podkop-tweaker">
+    <h2 name="content">Podkop Tweaker</h2>
+
+    <ul class="cbi-tabmenu">
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/stubby")%>">Stubby Config</a></li>
+        <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/diagnostics")%>">Diagnostics</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Local Update</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/about")%>">About</a></li>
+    </ul>
+
+    <div class="ps-stale-banner" id="ps-stale-banner">
+        <span>Page shows cached version. Updated version available.</span>
+        <button class="btn cbi-button" onclick="window.location.reload(true)">Reload</button>
+    </div>
+
+    <div class="cbi-section">
+    <div style="padding:12px 16px;">
+
+        <div style="margin-bottom:16px;">
+            <button class="btn cbi-button" id="ps-run-all" style="font-size:14px;padding:8px 24px;">Run All Diagnostics</button>
+        </div>
+
+        <div style="margin-bottom:8px;">
+            <span style="font-size:15px;font-weight:700;">DNS Chain</span>
+        </div>
+        <div id="ps-chain-content" style="font-size:13px;line-height:1.5;font-family:'Consolas','Monaco','Courier New',monospace;background:var(--ps-bg-alt,#f5f5f5);padding:16px;border-radius:6px;overflow-x:auto;white-space:pre;">Loading...</div>
+
+        <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+            <span style="font-size:15px;font-weight:700;">DNS Leak Test</span>
+            <button class="btn cbi-button" id="ps-leak-run">Run Leak Test</button>
+        </div>
+        <div id="ps-leak-loading" style="display:none;color:var(--ps-text-dim,#888);">Running DNS leak test...</div>
+        <div id="ps-leak-result" style="display:none;">
+            <table class="ps-sysinfo-table">
+                <tr><td class="ps-sysinfo-label">Upstream Resolved IP</td><td class="ps-sysinfo-value" id="ps-leak-upstream">&mdash;</td></tr>
+                <tr><td class="ps-sysinfo-label">dnsmasq Resolved IP</td><td class="ps-sysinfo-value" id="ps-leak-dnsmasq">&mdash;</td></tr>
+                <tr><td class="ps-sysinfo-label">Detail</td><td class="ps-sysinfo-value" id="ps-leak-detail">&mdash;</td></tr>
+                <tr><td class="ps-sysinfo-label">Status</td><td class="ps-sysinfo-value" id="ps-leak-status">&mdash;</td></tr>
+            </table>
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+            <span style="font-size:15px;font-weight:700;">Proxy Connectivity Test</span>
+            <button class="btn cbi-button" id="ps-proxy-run">Run Proxy Test</button>
+        </div>
+        <div id="ps-proxy-loading" style="display:none;color:var(--ps-text-dim,#888);">Running proxy test...</div>
+        <table class="ps-diag-table" id="ps-proxy-table" style="display:none;">
+            <thead>
+                <tr>
+                    <th>Proxy</th>
+                    <th>HTTP Code</th>
+                    <th>Time</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="ps-proxy-body"></tbody>
+        </table>
+        <div id="ps-proxy-error" style="display:none;color:#f44336;font-size:13px;margin-top:6px;"></div>
+
+        <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+            <span style="font-size:15px;font-weight:700;">DNS Resolution Test</span>
+            <button class="btn cbi-button" id="ps-dns-run">Run DNS Test</button>
+        </div>
+        <div id="ps-dns-loading" style="display:none;color:var(--ps-text-dim,#888);">Running DNS tests...</div>
+        <table class="ps-diag-table" id="ps-dns-table" style="display:none;">
+            <thead>
+                <tr>
+                    <th>Source</th>
+                    <th>Target</th>
+                    <th>Resolved IP</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="ps-dns-body"></tbody>
+        </table>
+
+        <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+            <span style="font-size:15px;font-weight:700;">End-to-End Test</span>
+            <button class="btn cbi-button" id="ps-e2e-run">Run E2E Test</button>
+        </div>
+        <div id="ps-e2e-loading" style="display:none;color:var(--ps-text-dim,#888);">Running end-to-end test...</div>
+        <div id="ps-e2e-result" style="display:none;">
+            <table class="ps-sysinfo-table">
+                <tr><td class="ps-sysinfo-label">External IP</td><td class="ps-sysinfo-value" id="ps-e2e-ip">&mdash;</td></tr>
+                <tr><td class="ps-sysinfo-label">HTTP Status</td><td class="ps-sysinfo-value" id="ps-e2e-http">&mdash;</td></tr>
+                <tr><td class="ps-sysinfo-label">Response Time</td><td class="ps-sysinfo-value" id="ps-e2e-time">&mdash;</td></tr>
+                <tr><td class="ps-sysinfo-label">Status</td><td class="ps-sysinfo-value" id="ps-e2e-status">&mdash;</td></tr>
+            </table>
+        </div>
+
+    </div>
+    </div>
+</div>
+
+<style>
+<% include("podkop-tweaker/podkop-tweaker-css") %>
+.ps-diag-table{width:auto;border-collapse:collapse;margin:0 0 16px;font-size:13px}
+.ps-diag-table th{font-size:11px;font-weight:600;text-align:center;padding:6px 10px;border-bottom:2px solid var(--ps-border,#ddd);color:var(--ps-text-dim,#888);white-space:nowrap}
+.ps-diag-table td{padding:5px 10px;border-bottom:1px solid var(--ps-bg-alt,#f0f0f0);border-right:1px solid var(--ps-bg-alt,#f0f0f0);white-space:nowrap}
+.ps-diag-table td:last-child{border-right:none}
+.ps-diag-table tr:last-child td{border-bottom:none}
+.ps-diag-table td:first-child{font-weight:600;text-align:left}
+.ps-diag-table td:not(:first-child){text-align:center;font-family:'Consolas','Monaco',monospace;font-size:12px}
+.ps-chain-line{display:block}
+.ps-chain-ok{color:#4caf50;font-weight:600}
+.ps-chain-fail{color:#f44336;font-weight:600}
+</style>
+
+<%+footer%>
+
+<script>
+(function() {
+    var CSRF = '<%=token%>';
+    var URLS = {
+        chainInfo: '<%=url("admin/services/podkop-tweaker/api/stubby_chain_info")%>',
+        diagDns: '<%=url("admin/services/podkop-tweaker/api/diag_dns")%>',
+        diagProxy: '<%=url("admin/services/podkop-tweaker/api/diag_proxy")%>',
+        diagE2e: '<%=url("admin/services/podkop-tweaker/api/diag_e2e")%>',
+        diagLeak: '<%=url("admin/services/podkop-tweaker/api/diag_dns_leak")%>'
+    };
+
+    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
+
+    var _chainUpstreamNames = [];
+
+    function xhrPost(url, cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() { cb(xhr); };
+        xhr.onerror = function() { cb(null); };
+        xhr.send('token=' + encodeURIComponent(CSRF));
+    }
+
+    function escapeHtml(s) {
+        var d = document.createElement('div');
+        d.appendChild(document.createTextNode(s || ''));
+        return d.innerHTML;
+    }
+
+    function statusCell(status) {
+        var color = status === 'OK' ? '#4caf50' : '#f44336';
+        return '<span style="color:' + color + ';font-weight:600;">' + escapeHtml(status) + '</span>';
+    }
+
+    function span(id, text) {
+        return '<span class="ps-chain-line" id="' + id + '">' + escapeHtml(text) + '</span>';
+    }
+
+    function buildChainHtml(data) {
+        var stubbyListen = data.stubby_listen || '127.0.0.53@53';
+        var podkopDns = data.podkop_dns || '127.0.0.53';
+        var resolvers = data.resolvers || [];
+
+        var grouped = {};
+        var orderedNames = [];
+        for (var i = 0; i < resolvers.length; i++) {
+            var r = resolvers[i];
+            var name = r.tls_auth_name || r.address;
+            if (!grouped[name]) { grouped[name] = []; orderedNames.push(name); }
+            grouped[name].push(r.address + ':' + (r.tls_port || '853'));
+        }
+
+        _chainUpstreamNames = orderedNames;
+
+        var html = '';
+        html += span('chain-client', 'Client -> dnsmasq (:53)');
+        html += span('chain-sep-c1', '              |');
+        html += span('chain-sep-c2', '              v');
+        html += span('chain-singbox', '         sing-box (' + podkopDns + ', FakeIP)');
+        html += span('chain-sep-s1', '              |');
+        html += span('chain-fakeip', '              +-- domain in list -> FakeIP (instant, no real DNS)');
+        html += span('chain-sep-s2', '              |');
+        html += span('chain-direct', '              +-- direct domain / bootstrap');
+        html += span('chain-sep-d1', '                     |');
+        html += span('chain-sep-d2', '                     v');
+        html += span('chain-stubby', '              stubby (' + stubbyListen + ', DoT)');
+        html += span('chain-sep-st1', '                     |');
+
+        for (var j = 0; j < orderedNames.length; j++) {
+            var n = orderedNames[j];
+            var addrs = grouped[n].join('; ');
+            var prefix = (j < orderedNames.length - 1) ? '              +-- ' : '              \\-- ';
+            html += span('chain-upstream-' + j, prefix + n + ' (' + addrs + ')');
+        }
+
+        return html;
+    }
+
+    function loadChain() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.chainInfo);
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var data = JSON.parse(xhr.responseText);
+                    document.getElementById('ps-chain-content').innerHTML = buildChainHtml(data);
+                } catch (e) {
+                    document.getElementById('ps-chain-content').textContent = 'Failed to load chain info';
+                }
+            } else {
+                document.getElementById('ps-chain-content').textContent = 'Failed to load chain info';
+            }
+        };
+        xhr.onerror = function() {
+            document.getElementById('ps-chain-content').textContent = 'Network error';
+        };
+        xhr.send();
+    }
+
+    loadChain();
+
+    function resetChainColors() {
+        var el = document.getElementById('ps-chain-content');
+        if (!el) return;
+        var spans = el.getElementsByTagName('span');
+        for (var i = 0; i < spans.length; i++) {
+            spans[i].className = 'ps-chain-line';
+        }
+    }
+
+    function setChainColor(id, colorClass) {
+        var el = document.getElementById(id);
+        if (el) el.className = 'ps-chain-line ' + colorClass;
+    }
+
+    function setChainColorWithSep(id, sepId, colorClass) {
+        setChainColor(id, colorClass);
+        if (sepId) setChainColor(sepId, colorClass);
+    }
+
+    var _allChainMainIds = ['chain-client','chain-singbox','chain-stubby'];
+    var _allChainSepIds = ['chain-sep-c1','chain-sep-c2','chain-sep-s1','chain-sep-s2','chain-sep-d1','chain-sep-d2','chain-sep-st1'];
+
+    function highlightDns(results) {
+        for (var i = 0; i < results.length; i++) {
+            var r = results[i];
+            var colorClass = r.status === 'OK' ? 'ps-chain-ok' : 'ps-chain-fail';
+            if (r.source && r.source.indexOf('Via dnsmasq') === 0) {
+                setChainColorWithSep('chain-client', 'chain-sep-c1', colorClass);
+            } else if (r.source && r.source.indexOf('Via Stubby') === 0) {
+                setChainColorWithSep('chain-stubby', 'chain-sep-st1', colorClass);
+            } else {
+                for (var j = 0; j < _chainUpstreamNames.length; j++) {
+                    if (r.source === _chainUpstreamNames[j]) {
+                        setChainColor('chain-upstream-' + j, colorClass);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    function highlightProxy(results) {
+        if (!results || results.length === 0) return;
+        var r = results[0];
+        var colorClass = r.status === 'OK' ? 'ps-chain-ok' : 'ps-chain-fail';
+        setChainColorWithSep('chain-singbox', 'chain-sep-s1', colorClass);
+    }
+
+    function highlightLeak(leakDetected) {
+        if (!leakDetected) return;
+        setChainColorWithSep('chain-stubby', 'chain-sep-st1', 'ps-chain-fail');
+        for (var j = 0; j < _chainUpstreamNames.length; j++) {
+            setChainColor('chain-upstream-' + j, 'ps-chain-fail');
+        }
+    }
+
+    function highlightE2e(status) {
+        var colorClass = status === 'OK' ? 'ps-chain-ok' : 'ps-chain-fail';
+        var allIds = _allChainMainIds.concat(_allChainSepIds);
+        for (var i = 0; i < allIds.length; i++) {
+            setChainColor(allIds[i], colorClass);
+        }
+        for (var j = 0; j < _chainUpstreamNames.length; j++) {
+            setChainColor('chain-upstream-' + j, colorClass);
+        }
+    }
+
+    function runDnsTest(onDone) {
+        var loading = document.getElementById('ps-dns-loading');
+        var table = document.getElementById('ps-dns-table');
+        var body = document.getElementById('ps-dns-body');
+        loading.style.display = 'block';
+        table.style.display = 'none';
+        body.innerHTML = '';
+
+        xhrPost(URLS.diagDns, function(xhr) {
+            loading.style.display = 'none';
+            if (!xhr || xhr.status !== 200) {
+                body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Request failed</td></tr>';
+                table.style.display = '';
+                if (onDone) onDone(null);
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                var results = resp.results || [];
+                for (var i = 0; i < results.length; i++) {
+                    var r = results[i];
+                    var tr = document.createElement('tr');
+                    tr.innerHTML = '<td>' + escapeHtml(r.source) + '</td>' +
+                        '<td>' + escapeHtml(r.target) + '</td>' +
+                        '<td>' + escapeHtml(r.ip || '\u2014') + '</td>' +
+                        '<td>' + statusCell(r.status) + '</td>';
+                    body.appendChild(tr);
+                }
+                table.style.display = '';
+                highlightDns(results);
+                if (onDone) onDone(results);
+            } catch (e) {
+                body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Parse error</td></tr>';
+                table.style.display = '';
+                if (onDone) onDone(null);
+            }
+        });
+    }
+
+    function runProxyTest(onDone) {
+        var loading = document.getElementById('ps-proxy-loading');
+        var table = document.getElementById('ps-proxy-table');
+        var body = document.getElementById('ps-proxy-body');
+        var errorDiv = document.getElementById('ps-proxy-error');
+        loading.style.display = 'block';
+        table.style.display = 'none';
+        errorDiv.style.display = 'none';
+        body.innerHTML = '';
+
+        xhrPost(URLS.diagProxy, function(xhr) {
+            loading.style.display = 'none';
+            if (!xhr || xhr.status !== 200) {
+                body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Request failed</td></tr>';
+                table.style.display = '';
+                if (onDone) onDone(null);
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                if (resp.error) {
+                    errorDiv.textContent = resp.error;
+                    errorDiv.style.display = '';
+                    highlightProxy([{status: 'FAIL'}]);
+                    if (onDone) onDone(null);
+                    return;
+                }
+                var results = resp.results || [];
+                for (var i = 0; i < results.length; i++) {
+                    var r = results[i];
+                    var tr = document.createElement('tr');
+                    tr.innerHTML = '<td>' + escapeHtml(r.source) + '</td>' +
+                        '<td>' + (r.http_code || '\u2014') + '</td>' +
+                        '<td>' + (r.time_ms || '\u2014') + ' ms</td>' +
+                        '<td>' + statusCell(r.status) + '</td>';
+                    body.appendChild(tr);
+                }
+                table.style.display = '';
+                highlightProxy(results);
+                if (onDone) onDone(results);
+            } catch (e) {
+                body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Parse error</td></tr>';
+                table.style.display = '';
+                if (onDone) onDone(null);
+            }
+        });
+    }
+
+    function runLeakTest(onDone) {
+        var loading = document.getElementById('ps-leak-loading');
+        var result = document.getElementById('ps-leak-result');
+        loading.style.display = 'block';
+        result.style.display = 'none';
+
+        xhrPost(URLS.diagLeak, function(xhr) {
+            loading.style.display = 'none';
+            if (!xhr || xhr.status !== 200) {
+                document.getElementById('ps-leak-upstream').textContent = 'Request failed';
+                result.style.display = '';
+                if (onDone) onDone(null);
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                document.getElementById('ps-leak-upstream').textContent = resp.upstream_ip || '\u2014';
+                document.getElementById('ps-leak-dnsmasq').textContent = resp.dnsmasq_ip || '\u2014';
+                document.getElementById('ps-leak-detail').textContent = resp.detail || '\u2014';
+                var leakColor = resp.leak_detected ? '#f44336' : '#4caf50';
+                var leakText = resp.leak_detected ? 'LEAK DETECTED' : 'No leak';
+                document.getElementById('ps-leak-status').innerHTML = '<span style="color:' + leakColor + ';font-weight:700;">' + escapeHtml(leakText) + '</span>';
+                result.style.display = '';
+                highlightLeak(resp.leak_detected);
+                if (onDone) onDone(resp);
+            } catch (e) {
+                document.getElementById('ps-leak-upstream').textContent = 'Parse error';
+                result.style.display = '';
+                if (onDone) onDone(null);
+            }
+        });
+    }
+
+    function runE2eTest(onDone) {
+        var loading = document.getElementById('ps-e2e-loading');
+        var result = document.getElementById('ps-e2e-result');
+        loading.style.display = 'block';
+        result.style.display = 'none';
+
+        xhrPost(URLS.diagE2e, function(xhr) {
+            loading.style.display = 'none';
+            if (!xhr || xhr.status !== 200) {
+                document.getElementById('ps-e2e-ip').textContent = 'Request failed';
+                result.style.display = '';
+                highlightE2e('FAIL');
+                if (onDone) onDone(null);
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                document.getElementById('ps-e2e-ip').textContent = resp.external_ip || '\u2014';
+                document.getElementById('ps-e2e-http').textContent = resp.http_code || '\u2014';
+                document.getElementById('ps-e2e-time').textContent = resp.time_ms ? resp.time_ms + ' ms' : '\u2014';
+                document.getElementById('ps-e2e-status').innerHTML = statusCell(resp.status);
+                result.style.display = '';
+                highlightE2e(resp.status);
+                if (onDone) onDone(resp);
+            } catch (e) {
+                document.getElementById('ps-e2e-ip').textContent = 'Parse error';
+                result.style.display = '';
+                highlightE2e('FAIL');
+                if (onDone) onDone(null);
+            }
+        });
+    }
+
+    document.getElementById('ps-dns-run').addEventListener('click', function() {
+        runDnsTest();
+    });
+    document.getElementById('ps-proxy-run').addEventListener('click', function() {
+        runProxyTest();
+    });
+    document.getElementById('ps-leak-run').addEventListener('click', function() {
+        runLeakTest();
+    });
+    document.getElementById('ps-e2e-run').addEventListener('click', function() {
+        runE2eTest();
+    });
+
+    document.getElementById('ps-run-all').addEventListener('click', function() {
+        var btn = this;
+        btn.disabled = true;
+        btn.textContent = 'Running...';
+        resetChainColors();
+        runLeakTest(function() {
+            setTimeout(function() {
+                runProxyTest(function() {
+                    setTimeout(function() {
+                        runDnsTest(function() {
+                            setTimeout(function() {
+                                runE2eTest(function() {
+                                    btn.disabled = false;
+                                    btn.textContent = 'Run All Diagnostics';
+                                });
+                            }, 500);
+                        });
+                    }, 500);
+                });
+            }, 500);
+        });
+    });
+
+})();
+</script>

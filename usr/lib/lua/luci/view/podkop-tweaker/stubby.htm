@@ -10,6 +10,7 @@ Author: InsaniaQuon
     <ul class="cbi-tabmenu">
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
         <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/stubby")%>">Stubby Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/diagnostics")%>">Diagnostics</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
@@ -33,7 +34,6 @@ Author: InsaniaQuon
         </div>
         <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <button class="btn cbi-button" id="ps-params-btn">Template</button>
-            <button class="btn cbi-button" id="ps-chain-btn">DNS Chain</button>
             <button class="btn cbi-button" id="ps-initfix-btn">Fix Init Script</button>
             <span id="ps-initfix-status" style="font-size:12px;font-weight:600;"></span>
         </div>
@@ -124,16 +124,6 @@ Author: InsaniaQuon
             <button class="btn cbi-button cbi-button-apply" id="ps-apply-template-btn">Apply This Template</button>
             <span id="ps-apply-template-status" style="font-size:12px;"></span>
             <button class="btn cbi-button" id="ps-params-close">Close</button>
-        </div>
-    </div>
-</div>
-
-<div class="ps-modal" id="ps-chain-modal" style="display:none;">
-    <div class="ps-modal-content ps-modal-wide">
-        <h3>DNS Resolution Chain</h3>
-        <pre id="ps-chain-content" style="font-size:13px;line-height:1.5;background:var(--ps-bg-alt,#f5f5f5);padding:16px;border-radius:6px;overflow-x:auto;"></pre>
-        <div class="ps-modal-footer" style="margin-top:12px;">
-            <button class="btn cbi-button" id="ps-chain-close">Close</button>
         </div>
     </div>
 </div>
@@ -409,7 +399,6 @@ Author: InsaniaQuon
                             isDirty = false;
                             diffBtn.disabled = true;
                             setStatus('Config saved. Stubby restarted.', '#4caf50');
-                            refreshChainIfOpen();
                         },
                         function() {
                             setStatus('Stubby did not start after save.', '#f44336');
@@ -571,7 +560,6 @@ Author: InsaniaQuon
                         paramsModal.style.display = 'none';
                         loadConfig();
                         checkStatus(updateStatusUI);
-                        refreshChainIfOpen();
                     }, 2000);
                 } else {
                     applyTemplateStatus.textContent = resp.error || 'Failed';
@@ -583,84 +571,6 @@ Author: InsaniaQuon
             }
         });
     });
-
-    // === DNS Chain modal ===
-    var chainModal = document.getElementById('ps-chain-modal');
-    var chainBtn = document.getElementById('ps-chain-btn');
-    var chainClose = document.getElementById('ps-chain-close');
-    var chainContent = document.getElementById('ps-chain-content');
-
-    function loadChainData(cb) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', '<%=url("admin/services/podkop-tweaker/api/stubby_chain_info")%>');
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                try {
-                    var data = JSON.parse(xhr.responseText);
-                    cb(buildChainDiagram(data));
-                    return;
-                } catch (e) {}
-            }
-            cb(null);
-        };
-        xhr.onerror = function() { cb(null); };
-        xhr.send();
-    }
-
-    function refreshChainIfOpen() {
-        if (chainModal.style.display !== 'flex') return;
-        loadChainData(function(text) {
-            if (text) chainContent.textContent = text;
-        });
-    }
-
-    function buildChainDiagram(data) {
-        var stubbyListen = data.stubby_listen || '127.0.0.53@53';
-        var podkopDns = data.podkop_dns || '127.0.0.53';
-        var resolvers = data.resolvers || [];
-
-        var grouped = {};
-        for (var i = 0; i < resolvers.length; i++) {
-            var r = resolvers[i];
-            var name = r.tls_auth_name || r.address;
-            if (!grouped[name]) grouped[name] = [];
-            grouped[name].push(r.address + ':' + (r.tls_port || '853'));
-        }
-
-        var lines = [];
-        lines.push('Client -> dnsmasq (:53)');
-        lines.push('              |');
-        lines.push('              v');
-        lines.push('         sing-box (' + podkopDns + ', FakeIP)');
-        lines.push('              |');
-        lines.push('              +-- domain in list -> FakeIP (instant, no real DNS)');
-        lines.push('              |');
-        lines.push('              +-- direct domain / bootstrap');
-        lines.push('                     |');
-        lines.push('                     v');
-        lines.push('              stubby (' + stubbyListen + ', DoT)');
-        lines.push('                     |');
-
-        var names = [];
-        for (var k in grouped) { if (grouped.hasOwnProperty(k)) names.push(k); }
-        for (var j = 0; j < names.length; j++) {
-            var n = names[j];
-            var addrs = grouped[n].join('; ');
-            var prefix = (j < names.length - 1) ? '              +-- ' : '              \\-- ';
-            lines.push(prefix + n + ' (' + addrs + ')');
-        }
-
-        return lines.join('\n');
-    }
-
-    chainBtn.addEventListener('click', function() {
-        loadChainData(function(text) {
-            chainContent.textContent = text || 'Failed to load chain info';
-            chainModal.style.display = 'flex';
-        });
-    });
-    chainClose.addEventListener('click', function() { chainModal.style.display = 'none'; });
-    chainModal.addEventListener('click', function(e) { if (e.target === chainModal) chainModal.style.display = 'none'; });
 
     // === Fix Init Script ===
     var initfixBtn = document.getElementById('ps-initfix-btn');

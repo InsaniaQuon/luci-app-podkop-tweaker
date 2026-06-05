@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.2.2 | 04.06.2026 | Inline validation: highlight error line with arrow in config/stubby editors
+-- Podkop Tweaker | v3.3.1 | 05.06.2026 | Diagnostics: chain highlighting, deps docs, S22 fix
 
-local APP_VERSION = "3.2.2"
+local APP_VERSION = "3.3.1"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -48,6 +48,9 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "stubby"},
         call("action_stubby"), nil, 15)
+
+    entry({"admin", "services", "podkop-tweaker", "diagnostics"},
+        call("action_diagnostics"), nil, 17)
 
     entry({"admin", "services", "podkop-tweaker", "import-export"},
         call("action_import_export"), nil, 20)
@@ -105,6 +108,18 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "apply_recommended_stubby"},
         call("api_apply_recommended_stubby")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "diag_dns"},
+        call("api_diag_dns")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "diag_proxy"},
+        call("api_diag_proxy")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "diag_e2e"},
+        call("api_diag_e2e")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "diag_dns_leak"},
+        call("api_diag_dns_leak")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "export_config"},
         call("api_export_config")).leaf = true
@@ -189,6 +204,10 @@ end
 
 function action_stubby()
     render_page("stubby")
+end
+
+function action_diagnostics()
+    render_page("diagnostics")
 end
 
 function action_import_export()
@@ -1766,4 +1785,254 @@ function api_tweaker_git_update()
         http.prepare_content("application/json")
         http.write_json({ error = "Internal error" })
     end
+end
+
+local function nslookup(domain, server)
+    if not server:match("^%d+%.%d+%.%d+%.%d+$") then
+        return { ip = "", status = "FAIL", raw = "Invalid server address" }
+    end
+    if not domain:match("^[%w%.%-]+%.%w+$") then
+        return { ip = "", status = "FAIL", raw = "Invalid domain" }
+    end
+    local cmd = "nslookup " .. domain .. " " .. server .. " 2>&1"
+    local fd = io.popen(cmd)
+    local raw = fd:read("*a")
+    fd:close()
+    local ip = ""
+    for addr in raw:gmatch("Address:%s*([%d%.]+)") do
+        ip = addr
+    end
+    local fail = raw:find("can't find") or raw:find("timed out") or raw:find("refused") or raw:find("SERVFAIL") or raw:find("no servers")
+    return {
+        ip = ip,
+        status = fail and "FAIL" or (ip ~= "" and "OK" or "FAIL"),
+        raw = raw
+    }
+end
+
+local function get_singbox_inbounds()
+    local uci = require("luci.model.uci").cursor()
+    local config_path = "/etc/sing-box/config.json"
+    uci:foreach("podkop", "section", function(s)
+        if s.config_path and s.config_path ~= "" then
+            config_path = s.config_path
+        end
+    end)
+    local fd = io.open(config_path, "r")
+    if not fd then return {} end
+    local content = fd:read("*a")
+    fd:close()
+    local inbounds = {}
+    for ib in content:gmatch('"inbounds"%s*:%s*%[(.-)%]') do
+        for block in ib:gmatch("%{(.-)%}") do
+            local t = block:match('"type"%s*:%s*"([^"]+)"')
+            local port = block:match('"listen_port"%s*:%s*(%d+)')
+            local listen = block:match('"listen"%s*:%s*"([^"]+)"')
+            if t and port then
+                table.insert(inbounds, {
+                    type = t,
+                    listen = listen or "127.0.0.1",
+                    port = tonumber(port)
+                })
+            end
+        end
+    end
+    return inbounds
+end
+
+function api_diag_dns()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local ok = verify_csrf()
+    if not ok then return end
+
+    local uci = require("luci.model.uci").cursor()
+    local results = {}
+    local domain = "google.com"
+
+    local upstreams = {}
+    uci:foreach("stubby", "resolver", function(s)
+        if s.address and s.address ~= "" then
+            table.insert(upstreams, {
+                address = s.address,
+                tls_auth_name = s.tls_auth_name or "",
+                label = s.tls_auth_name and s.tls_auth_name ~= "" and s.tls_auth_name or s.address
+            })
+        end
+    end)
+
+    for _, up in ipairs(upstreams) do
+        local r = nslookup(domain, up.address)
+        table.insert(results, {
+            source = up.label,
+            target = up.address,
+            ip = r.ip,
+            status = r.status
+        })
+    end
+
+    local stubby_listen = "127.0.0.53"
+    uci:foreach("stubby", "stubby", function(s)
+        if s[".name"] == "global" then
+            local la = uci:get("stubby", "global", "listen_address")
+            if type(la) == "string" then
+                stubby_listen = la:match("([%d%.]+)")
+            elseif type(la) == "table" and #la > 0 then
+                stubby_listen = la[1]:match("([%d%.]+)")
+            end
+        end
+    end)
+
+    local r_stub = nslookup(domain, stubby_listen)
+    table.insert(results, {
+        source = "Via Stubby",
+        target = stubby_listen,
+        ip = r_stub.ip,
+        status = r_stub.status
+    })
+
+    local r_dnsmasq = nslookup(domain, "127.0.0.1")
+    table.insert(results, {
+        source = "Via dnsmasq",
+        target = "127.0.0.1",
+        ip = r_dnsmasq.ip,
+        status = r_dnsmasq.status
+    })
+
+    http.write_json({ results = results })
+end
+
+function api_diag_proxy()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local ok = verify_csrf()
+    if not ok then return end
+
+    local results = {}
+
+    local inbounds = get_singbox_inbounds()
+    local mixed_port = nil
+    for _, ib in ipairs(inbounds) do
+        if ib.type == "mixed" then
+            mixed_port = ib.port
+            break
+        end
+    end
+
+    if not mixed_port then
+        http.write_json({ results = {}, error = "No mixed inbound found in sing-box config" })
+        return
+    end
+
+    local pid = get_service_pid("sing-box")
+    if not pid then
+        http.write_json({ results = {}, error = "sing-box is not running" })
+        return
+    end
+
+    local proxy_url = "http://127.0.0.1:" .. mixed_port
+    local cmd = 'curl -s -o /dev/null -w "%{http_code} %{time_total}" -m 10 -x ' .. proxy_url .. ' https://www.google.com 2>&1'
+    local start = os.clock()
+    local fd = io.popen(cmd)
+    local raw = fd:read("*a")
+    fd:close()
+    local elapsed = math.floor((os.clock() - start) * 1000)
+
+    local code = raw:match("^(%d+)")
+    local time_s = raw:match("%d+%s+(%d+%.%d+)")
+    local time_ms_real = time_s and math.floor(tonumber(time_s) * 1000) or elapsed
+
+    table.insert(results, {
+        source = "sing-box mixed (:" .. mixed_port .. ")",
+        http_code = tonumber(code) or 0,
+        time_ms = time_ms_real,
+        status = (code and tonumber(code) >= 200 and tonumber(code) < 400) and "OK" or "FAIL"
+    })
+
+    http.write_json({ results = results })
+end
+
+function api_diag_e2e()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local ok = verify_csrf()
+    if not ok then return end
+
+    local results = {}
+
+    local fd = io.popen("curl -s -m 10 https://api.ipify.org 2>&1")
+    local ext_ip = fd:read("*a")
+    fd:close()
+    ext_ip = ext_ip:match("^%d+%.%d+%.%d+%.%d+$") or ext_ip:match("^%S+") or "unknown"
+
+    local fd2 = io.popen('curl -s -o /dev/null -w "%{http_code} %{time_total}" -m 10 https://www.google.com 2>&1')
+    local raw = fd2:read("*a")
+    fd2:close()
+
+    local code = raw:match("^(%d+)")
+    local time_s = raw:match("%d+%s+(%d+%.%d+)")
+    local time_ms = time_s and math.floor(tonumber(time_s) * 1000) or 0
+
+    results.external_ip = ext_ip
+    results.http_code = tonumber(code) or 0
+    results.time_ms = time_ms
+    results.status = (code and tonumber(code) >= 200 and tonumber(code) < 400) and "OK" or "FAIL"
+
+    http.write_json(results)
+end
+
+function api_diag_dns_leak()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local ok = verify_csrf()
+    if not ok then return end
+
+    local uci = require("luci.model.uci").cursor()
+    local results = {}
+    local domain = "google.com"
+
+    local upstreams = {}
+    uci:foreach("stubby", "resolver", function(s)
+        if s.address and s.address ~= "" then
+            table.insert(upstreams, s.address)
+        end
+    end)
+
+    local upstream_ok = false
+    if #upstreams > 0 then
+        local r_up = nslookup(domain, upstreams[1])
+        upstream_ip = r_up.ip
+        upstream_ok = (r_up.status == "OK")
+    end
+
+    local r_dnsmasq = nslookup(domain, "127.0.0.1")
+    local dnsmasq_ok = (r_dnsmasq.status == "OK")
+
+    local leak_detected = false
+    local detail = ""
+    if dnsmasq_ok and upstream_ok then
+        detail = "Both dnsmasq and upstream resolve successfully — no leak detected"
+        leak_detected = false
+    elseif dnsmasq_ok and not upstream_ok then
+        detail = "dnsmasq resolves but upstream is unreachable — dnsmasq may bypass Stubby"
+        leak_detected = true
+    elseif not dnsmasq_ok and upstream_ok then
+        detail = "dnsmasq failed but upstream works — dnsmasq may be misconfigured"
+        leak_detected = true
+    else
+        detail = "Both dnsmasq and upstream failed to resolve"
+        leak_detected = true
+    end
+
+    results.upstream_ip = upstream_ip
+    results.dnsmasq_ip = r_dnsmasq.ip
+    results.leak_detected = leak_detected
+    results.detail = detail
+    results.dnsmasq_status = r_dnsmasq.status
+
+    http.write_json(results)
 end
