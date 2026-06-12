@@ -1,0 +1,8 @@
+
+config fragment 'settings'
+	option enabled '1'
+	option fragment 'true'
+	option record_fragment 'true'
+	option singbox_config '/etc/sing-box/config.json'
+	option log_file '/var/log/podkop-fragment.log'
+	option log_max_lines '200'

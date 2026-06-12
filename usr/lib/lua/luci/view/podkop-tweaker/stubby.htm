@@ -10,6 +10,7 @@ Author: InsaniaQuon
     <ul class="cbi-tabmenu">
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
         <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/stubby")%>">Stubby Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/singbox")%>">Sing-box Config</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/diagnostics")%>">Diagnostics</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
@@ -30,6 +31,7 @@ Author: InsaniaQuon
                 <span class="ps-status-dot checking" id="ps-status-dot"></span>
                 <span class="ps-status-text" id="ps-status-text">Checking...</span>
                 <button class="btn cbi-button" id="ps-toggle-btn" style="display:none;margin-left:6px;font-size:11px;padding:2px 8px;"></button>
+                <button class="btn cbi-button" id="ps-autostart-btn" style="display:none;margin-left:6px;font-size:11px;padding:2px 8px;"></button>
             </div>
         </div>
         <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -162,7 +164,9 @@ Author: InsaniaQuon
         save: '<%=url("admin/services/podkop-tweaker/api/save_stubby_config")%>',
         status: '<%=url("admin/services/podkop-tweaker/api/stubby_service_status")%>',
         toggle: '<%=url("admin/services/podkop-tweaker/api/stubby_service_toggle")%>',
-        rollback: '<%=url("admin/services/podkop-tweaker/api/rollback_stubby")%>'
+        rollback: '<%=url("admin/services/podkop-tweaker/api/rollback_stubby")%>',
+        autostart: '<%=url("admin/services/podkop-tweaker/api/stubby_autostart")%>',
+        autostartToggle: '<%=url("admin/services/podkop-tweaker/api/stubby_autostart_toggle")%>'
     };
 
     var editor = document.getElementById('ps-config-editor');
@@ -636,7 +640,40 @@ Author: InsaniaQuon
                 if (r.success) {
                     initfixApplyStatus.textContent = 'Fix applied. Stubby restarted.';
                     initfixApplyStatus.style.color = '#4caf50';
-                    checkInitFix();
+    // === Autostart ===
+    var autostartBtn = document.getElementById('ps-autostart-btn');
+
+    function checkAutostart() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.autostart);
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var r = JSON.parse(xhr.responseText);
+                    autostartBtn.textContent = r.enabled ? 'Autostart: ON' : 'Autostart: OFF';
+                    autostartBtn.style.display = 'inline-block';
+                } catch (e) {}
+            }
+        };
+        xhr.send();
+    }
+
+    autostartBtn.addEventListener('click', function() {
+        var action = autostartBtn.textContent.indexOf('ON') >= 0 ? 'disable' : 'enable';
+        autostartBtn.disabled = true;
+        xhrPost(URLS.autostartToggle, 'action=' + action, function(xhr) {
+            autostartBtn.disabled = false;
+            if (xhr) {
+                try {
+                    var r = JSON.parse(xhr.responseText);
+                    autostartBtn.textContent = r.enabled ? 'Autostart: ON' : 'Autostart: OFF';
+                } catch (e) {}
+            }
+        });
+    });
+
+    checkAutostart();
+    checkInitFix();
                     checkStatus(updateStatusUI);
                 } else {
                     initfixApplyStatus.textContent = r.error || 'Failed';

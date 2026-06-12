@@ -323,6 +323,18 @@ describe("_is_valid_update_path", function()
         assert.is_false(pt._is_valid_update_path("etc/config/podkop", true))
         assert.is_false(pt._is_valid_update_path("tmp/evil.sh", true))
     end)
+
+    it("accepts fragment module paths in strict mode", function()
+        assert.is_true(pt._is_valid_update_path("usr/bin/podkop-fragment-patch.sh", false))
+        assert.is_true(pt._is_valid_update_path("etc/init.d/podkop-fragment", false))
+        assert.is_true(pt._is_valid_update_path("etc/config/podkop-fragment", false))
+    end)
+
+    it("rejects similar but different etc paths in strict mode", function()
+        assert.is_false(pt._is_valid_update_path("etc/init.d/podkop", false))
+        assert.is_false(pt._is_valid_update_path("etc/config/podkop", false))
+        assert.is_false(pt._is_valid_update_path("etc/init.d/sing-box", false))
+    end)
 end)
 
 describe("backup_file", function()

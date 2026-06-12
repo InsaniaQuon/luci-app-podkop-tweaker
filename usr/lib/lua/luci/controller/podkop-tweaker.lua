@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.3.1 | 05.06.2026 | Diagnostics: chain highlighting, deps docs, S22 fix
+-- Podkop Tweaker | v3.5.0 | 11.06.2026 | Sing-box tab, fragment patch UI, start/stop, autostart
 
-local APP_VERSION = "3.3.1"
+local APP_VERSION = "3.5.0"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -48,6 +48,9 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "stubby"},
         call("action_stubby"), nil, 15)
+
+    entry({"admin", "services", "podkop-tweaker", "singbox"},
+        call("action_singbox"), nil, 16)
 
     entry({"admin", "services", "podkop-tweaker", "diagnostics"},
         call("action_diagnostics"), nil, 17)
@@ -108,6 +111,57 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "apply_recommended_stubby"},
         call("api_apply_recommended_stubby")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "read_singbox_config"},
+        call("api_read_singbox_config")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "save_singbox_config"},
+        call("api_save_singbox_config")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "singbox_service_status"},
+        call("api_singbox_service_status")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "singbox_service_toggle"},
+        call("api_singbox_service_toggle")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "rollback_singbox"},
+        call("api_rollback_singbox")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "export_singbox_config"},
+        call("api_export_singbox_config")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "download_singbox_backup"},
+        call("api_download_singbox_backup")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "import_singbox_config"},
+        call("api_import_singbox_config")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "singbox_outbounds"},
+        call("api_singbox_outbounds")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "singbox_patch_fragment"},
+        call("api_singbox_patch_fragment")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "wrapper_status"},
+        call("api_wrapper_status")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "wrapper_toggle"},
+        call("api_wrapper_toggle")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "podkop_service_toggle"},
+        call("api_podkop_service_toggle")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "podkop_autostart"},
+        call("api_podkop_autostart")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "podkop_autostart_toggle"},
+        call("api_podkop_autostart_toggle")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "stubby_autostart"},
+        call("api_stubby_autostart")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "stubby_autostart_toggle"},
+        call("api_stubby_autostart_toggle")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "diag_dns"},
         call("api_diag_dns")).leaf = true
@@ -206,6 +260,10 @@ function action_stubby()
     render_page("stubby")
 end
 
+function action_singbox()
+    render_page("singbox")
+end
+
 function action_diagnostics()
     render_page("diagnostics")
 end
@@ -221,10 +279,14 @@ function action_import_export()
     local stubby_backup_attr = nixio.fs.stat("/etc/config/stubby.auto-backup")
     local stubby_backup_time = stubby_backup_attr
         and os.date("%H:%M %d.%m.%Y", stubby_backup_attr.mtime) or nil
+    local singbox_backup_attr = nixio.fs.stat("/etc/sing-box/config.json.auto-backup")
+    local singbox_backup_time = singbox_backup_attr
+        and os.date("%H:%M %d.%m.%Y", singbox_backup_attr.mtime) or nil
     render_page("import-export", {
         auto_backup_time = auto_backup_time,
         auto_sub_backup_time = auto_sub_backup_time,
-        stubby_backup_time = stubby_backup_time
+        stubby_backup_time = stubby_backup_time,
+        singbox_backup_time = singbox_backup_time
     })
 end
 
@@ -2035,4 +2097,424 @@ function api_diag_dns_leak()
     results.dnsmasq_status = r_dnsmasq.status
 
     http.write_json(results)
+end
+
+-- === Sing-box Config ===
+
+local SINGBOX_CONFIG = "/etc/sing-box/config.json"
+local SINGBOX_BACKUP = SINGBOX_CONFIG .. ".auto-backup"
+
+function api_read_singbox_config()
+    local http = require("luci.http")
+    http.prepare_content("text/plain")
+    set_no_cache_headers()
+    local fd = io.open(SINGBOX_CONFIG, "r")
+    if fd then
+        local content = fd:read("*a")
+        fd:close()
+        http.write(content)
+    else
+        http.write("")
+    end
+end
+
+function api_save_singbox_config()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local content = http.formvalue("content") or ""
+    if content == "" then
+        http.write_json({ error = "Configuration is empty" })
+        return
+    end
+    if #content > 2097152 then
+        http.write_json({ error = "Config too large (max 2MB)" })
+        return
+    end
+    if content:find("\0", 1, true) then
+        http.write_json({ error = "Invalid content: contains null bytes" })
+        return
+    end
+    local rfd = io.open(SINGBOX_CONFIG, "r")
+    if rfd then
+        local orig = rfd:read("*a")
+        rfd:close()
+        if orig == content then
+            http.write_json({ success = true, unchanged = true })
+            return
+        end
+        local bfd = io.open(SINGBOX_BACKUP, "w")
+        if bfd then
+            bfd:write(orig)
+            bfd:close()
+        end
+    end
+    local tmp_path = SINGBOX_CONFIG .. ".tmp-write"
+    local tmpfd = io.open(tmp_path, "w")
+    if not tmpfd then
+        http.write_json({ error = "Cannot write temporary file" })
+        return
+    end
+    tmpfd:write(content)
+    tmpfd:close()
+    local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
+    if check and check ~= "" then
+        os.remove(tmp_path)
+        http.write_json({ error = "sing-box check failed", details = check })
+        return
+    end
+    os.rename(tmp_path, SINGBOX_CONFIG)
+    sys.exec("/etc/init.d/sing-box restart 2>&1")
+    http.write_json({ success = true, restarting = true })
+end
+
+function api_singbox_service_status()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local pid = get_service_pid("sing-box")
+    http.write_json({
+        running = (pid ~= nil),
+        pid = pid
+    })
+end
+
+function api_singbox_service_toggle()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local action = http.formvalue("action") or ""
+    if action ~= "start" and action ~= "stop" then
+        http.write_json({ error = "Invalid action" })
+        return
+    end
+    sys.exec("/etc/init.d/sing-box " .. action .. " 2>&1")
+    local pid = get_service_pid("sing-box")
+    http.write_json({
+        success = true,
+        running = (pid ~= nil)
+    })
+end
+
+function api_rollback_singbox()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local fd = io.open(SINGBOX_BACKUP, "r")
+    if not fd then
+        http.write_json({ error = "Backup file not found" })
+        return
+    end
+    local data = fd:read("*a")
+    fd:close()
+    local wfd = io.open(SINGBOX_CONFIG, "w")
+    if not wfd then
+        http.write_json({ error = "Cannot write config" })
+        return
+    end
+    wfd:write(data)
+    wfd:close()
+    sys.exec("/etc/init.d/sing-box restart 2>&1")
+    http.write_json({ success = true, restarting = true })
+end
+
+function api_export_singbox_config()
+    local http = require("luci.http")
+    http.prepare_content("application/octet-stream")
+    set_no_cache_headers()
+    http.header("Content-Disposition", 'attachment; filename="singbox-config.json"')
+    local fd = io.open(SINGBOX_CONFIG, "r")
+    if fd then
+        local content = fd:read("*a")
+        fd:close()
+        http.write(content)
+    else
+        http.status(404, "Not Found")
+        http.write("")
+    end
+end
+
+function api_download_singbox_backup()
+    local http = require("luci.http")
+    http.prepare_content("application/octet-stream")
+    set_no_cache_headers()
+    if not io.open(SINGBOX_BACKUP, "r") then
+        http.status(404, "Not Found")
+        http.write_json({ error = "No sing-box backup found" })
+        return
+    end
+    http.header("Content-Disposition", 'attachment; filename="singbox-backup.json"')
+    local fd = io.open(SINGBOX_BACKUP, "r")
+    if fd then
+        local data = fd:read("*a")
+        fd:close()
+        http.write(data)
+    else
+        http.write("")
+    end
+end
+
+function api_import_singbox_config()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local content = http.formvalue("content") or ""
+    if content == "" then
+        http.write_json({ error = "Empty content" })
+        return
+    end
+    if #content > 2097152 then
+        http.write_json({ error = "Config too large (max 2MB)" })
+        return
+    end
+    if content:find("\0", 1, true) then
+        http.write_json({ error = "Invalid content: contains null bytes" })
+        return
+    end
+    local tmp_path = SINGBOX_CONFIG .. ".tmp-import"
+    local tmpfd = io.open(tmp_path, "w")
+    if not tmpfd then
+        http.write_json({ error = "Cannot write temporary file" })
+        return
+    end
+    tmpfd:write(content)
+    tmpfd:close()
+    local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
+    if check and check ~= "" then
+        os.remove(tmp_path)
+        http.write_json({ error = "sing-box check failed", details = check })
+        return
+    end
+    local rfd = io.open(SINGBOX_CONFIG, "r")
+    if rfd then
+        local orig = rfd:read("*a")
+        rfd:close()
+        local bfd = io.open(SINGBOX_BACKUP, "w")
+        if bfd then
+            bfd:write(orig)
+            bfd:close()
+        end
+    end
+    os.rename(tmp_path, SINGBOX_CONFIG)
+    sys.exec("/etc/init.d/sing-box restart 2>&1")
+    http.write_json({ success = true, restarting = true })
+end
+
+function api_singbox_outbounds()
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local raw = sys.exec("jq '.outbounds[] | {tag, type, tls_enabled: (.tls.enabled // false), has_fragment: (.tls.fragment // false)}' " .. SINGBOX_CONFIG .. " 2>/dev/null")
+    if not raw or raw == "" then
+        http.write_json({ outbounds = {} })
+        return
+    end
+    local outbounds = {}
+    local cur = {}
+    for line in raw:gmatch("[^\r\n]+") do
+        local tag = line:match('"tag":%s*"([^"]+)"')
+        local typ = line:match('"type":%s*"([^"]+)"')
+        local tls_en = line:match('"tls_enabled":%s*(true)')
+        local tls_dis = line:match('"tls_enabled":%s*(false)')
+        local frag_en = line:match('"has_fragment":%s*(true)')
+        local frag_dis = line:match('"has_fragment":%s*(false)')
+        if tag then cur.tag = tag end
+        if typ then cur.type = typ end
+        if tls_en then cur.tls_enabled = true end
+        if tls_dis then cur.tls_enabled = false end
+        if frag_en then cur.has_fragment = true end
+        if frag_dis then cur.has_fragment = false end
+        if line:match("^%}") then
+            table.insert(outbounds, cur)
+            cur = {}
+        end
+    end
+    http.write_json({ outbounds = outbounds })
+end
+
+function api_singbox_patch_fragment()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local json = require("luci.jsonc")
+    local tags_raw = http.formvalue("tags") or "[]"
+    local tags = json.parse(tags_raw)
+    if not tags or type(tags) ~= "table" or #tags == 0 then
+        http.write_json({ error = "No outbounds selected" })
+        return
+    end
+    for i, t in ipairs(tags) do
+        if type(t) ~= "string" or not t:match("^[a-zA-Z0-9_%-%.]+$") then
+            http.write_json({ error = "Invalid tag value" })
+            return
+        end
+    end
+    local rfd = io.open(SINGBOX_CONFIG, "r")
+    if not rfd then
+        http.write_json({ error = "Cannot read config" })
+        return
+    end
+    local orig = rfd:read("*a")
+    rfd:close()
+    local bfd = io.open(SINGBOX_BACKUP, "w")
+    if bfd then
+        bfd:write(orig)
+        bfd:close()
+    end
+    local jq_args = ""
+    local jq_select = ""
+    for i, t in ipairs(tags) do
+        jq_args = jq_args .. ' --arg t' .. i .. ' ' .. t
+        if i > 1 then jq_select = jq_select .. " or " end
+        jq_select = jq_select .. '.tag == $t' .. i
+    end
+    local jq_expr = '(.outbounds[] | select(' .. jq_select .. ') | .tls) |= . + {"fragment": true, "record_fragment": true}'
+    local patched = sys.exec("jq " .. jq_args .. " '" .. jq_expr .. "' " .. SINGBOX_CONFIG .. " 2>/dev/null")
+    if not patched or patched == "" then
+        http.write_json({ error = "jq patch failed" })
+        return
+    end
+    local tmp_path = SINGBOX_CONFIG .. ".tmp-patch"
+    local tmpfd = io.open(tmp_path, "w")
+    if not tmpfd then
+        http.write_json({ error = "Cannot write temporary file" })
+        return
+    end
+    tmpfd:write(patched)
+    tmpfd:close()
+    local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
+    if check and check ~= "" then
+        os.remove(tmp_path)
+        http.write_json({ error = "sing-box check failed after patch", details = check })
+        return
+    end
+    os.rename(tmp_path, SINGBOX_CONFIG)
+    sys.exec("/etc/init.d/sing-box restart 2>&1")
+    http.write_json({ success = true, restarting = true })
+end
+
+function api_wrapper_status()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local fd = io.open("/etc/init.d/podkop.orig", "r")
+    http.write_json({
+        installed = (fd ~= nil)
+    })
+    if fd then fd:close() end
+end
+
+function api_wrapper_toggle()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local action = http.formvalue("action") or ""
+    if action ~= "enable" and action ~= "disable" then
+        http.write_json({ error = "Invalid action" })
+        return
+    end
+    sys.exec("/etc/init.d/podkop-fragment " .. action .. " 2>&1")
+    local fd = io.open("/etc/init.d/podkop.orig", "r")
+    http.write_json({
+        success = true,
+        installed = (fd ~= nil)
+    })
+    if fd then fd:close() end
+end
+
+-- === Podkop Service Toggle ===
+
+function api_podkop_service_toggle()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local action = http.formvalue("action") or ""
+    if action ~= "start" and action ~= "stop" then
+        http.write_json({ error = "Invalid action" })
+        return
+    end
+    sys.exec("/etc/init.d/podkop " .. action .. " 2>&1")
+    local pid = get_service_pid("sing-box")
+    http.write_json({
+        success = true,
+        running = (pid ~= nil)
+    })
+end
+
+function api_podkop_autostart()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local fd = io.open("/etc/rc.d/S99podkop", "r")
+    http.write_json({
+        enabled = (fd ~= nil)
+    })
+    if fd then fd:close() end
+end
+
+function api_podkop_autostart_toggle()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local action = http.formvalue("action") or ""
+    if action ~= "enable" and action ~= "disable" then
+        http.write_json({ error = "Invalid action" })
+        return
+    end
+    sys.exec("/etc/init.d/podkop " .. action .. " 2>&1")
+    local fd = io.open("/etc/rc.d/S99podkop", "r")
+    http.write_json({
+        success = true,
+        enabled = (fd ~= nil)
+    })
+    if fd then fd:close() end
+end
+
+-- === Stubby Autostart ===
+
+function api_stubby_autostart()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local sys = require("luci.sys")
+    local links = sys.exec("ls /etc/rc.d/S*stubby 2>/dev/null")
+    http.write_json({
+        enabled = (links and links ~= "")
+    })
+end
+
+function api_stubby_autostart_toggle()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local action = http.formvalue("action") or ""
+    if action ~= "enable" and action ~= "disable" then
+        http.write_json({ error = "Invalid action" })
+        return
+    end
+    sys.exec("/etc/init.d/stubby " .. action .. " 2>&1")
+    local links = sys.exec("ls /etc/rc.d/S*stubby 2>/dev/null")
+    http.write_json({
+        success = true,
+        enabled = (links and links ~= "")
+    })
 end

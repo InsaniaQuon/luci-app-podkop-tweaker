@@ -39,7 +39,10 @@ jobs:
             usr/lib/lua/pt-subs-lib.lua \
             usr/lib/lua/pt-auto-update.lua \
             usr/share/luci/menu.d/luci-app-podkop-tweaker.json \
-            usr/share/rpcd/acl.d/luci-app-podkop-tweaker.json
+            usr/share/rpcd/acl.d/luci-app-podkop-tweaker.json \
+            etc/config/podkop-fragment \
+            etc/init.d/podkop-fragment \
+            usr/bin/podkop-fragment-patch.sh
 
       - name: Create Release
         uses: softprops/action-gh-release@v3

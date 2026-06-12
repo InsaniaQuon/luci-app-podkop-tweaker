@@ -495,6 +495,9 @@ function M._is_valid_update_path(rel_path, relaxed)
     if rel_path:match("^usr/lib/lua/luci/view/podkop%-tweaker/[%w_%-]+%.htm$") then return true end
     if rel_path:match("^usr/share/luci/menu%.d/[%w_%-]+%.json$") then return true end
     if rel_path:match("^usr/share/rpcd/acl%.d/[%w_%-]+%.json$") then return true end
+    if rel_path == "usr/bin/podkop-fragment-patch.sh" then return true end
+    if rel_path == "etc/init.d/podkop-fragment" then return true end
+    if rel_path == "etc/config/podkop-fragment" then return true end
     return false
 end
 

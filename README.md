@@ -6,6 +6,7 @@ LuCI web interface for managing Podkop proxy client on OpenWrt routers.
 
 - **Config Editor** — web-based Podkop configuration editor with syntax highlighting
 - **Stubby Config** — Stubby DNS-over-TLS configuration editor with init script fix and service start/stop
+- **Sing-box Config** — sing-box config.json editor with validation, start/stop
 - **Diagnostics** — DNS chain visualization with live test coloring, DNS resolution test, proxy connectivity test, end-to-end test, DNS leak test
 - **Import/Export** — config file import/export with automatic backup and one-click rollback
 - **System Information** — Podkop and system version info with update via ttyd terminal

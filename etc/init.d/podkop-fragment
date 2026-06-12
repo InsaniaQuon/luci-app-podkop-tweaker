@@ -1,0 +1,87 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+
+PODKOP_INIT="/etc/init.d/podkop"
+PODKOP_ORIG="/etc/init.d/podkop.orig"
+PATCH_SCRIPT="/usr/bin/podkop-fragment-patch.sh"
+FRAGMENT_INIT="/etc/init.d/podkop-fragment"
+FRAGMENT_CONFIG="/etc/config/podkop-fragment"
+DEFAULT_LOG="/var/log/podkop-fragment.log"
+
+_install_wrapper() {
+	if [ -f "$PODKOP_ORIG" ]; then
+		echo "Wrapper already installed ($PODKOP_ORIG exists)"
+		return 0
+	fi
+
+	if [ ! -f "$PODKOP_INIT" ]; then
+		echo "ERROR: $PODKOP_INIT not found"
+		return 1
+	fi
+
+	cp "$PODKOP_INIT" "$PODKOP_ORIG"
+
+	awk '
+/^start_service\(\)/ { in_start=1 }
+in_start && /^}$/ { print "\t'"$PATCH_SCRIPT"'"; in_start=0 }
+/^reload_service\(\)/ { in_reload=1 }
+in_reload && /^}$/ { print "\t'"$PATCH_SCRIPT"'"; in_reload=0 }
+{ print }
+' "$PODKOP_ORIG" > "$PODKOP_INIT"
+
+	chmod +x "$PODKOP_INIT"
+	echo "Wrapper installed: $PODKOP_INIT -> $PODKOP_ORIG + patch hook"
+}
+
+_uninstall_wrapper() {
+	if [ ! -f "$PODKOP_ORIG" ]; then
+		return 0
+	fi
+
+	mv "$PODKOP_ORIG" "$PODKOP_INIT"
+	chmod +x "$PODKOP_INIT"
+	echo "Wrapper removed: restored original $PODKOP_INIT"
+}
+
+start_service() {
+	"$PATCH_SCRIPT"
+}
+
+stop_service() {
+	:
+}
+
+service_triggers() {
+	procd_open_trigger
+	procd_add_config_trigger "config.change" "podkop-fragment" "$initscript" restart
+	procd_close_trigger
+}
+
+enable() {
+	_install_wrapper
+	ln -sf "$FRAGMENT_INIT" "/etc/rc.d/S99podkop-fragment"
+	"$PATCH_SCRIPT"
+	echo "podkop-fragment enabled and wrapper installed"
+}
+
+disable() {
+	_uninstall_wrapper
+	rm -f "/etc/rc.d/S99podkop-fragment"
+	echo "podkop-fragment disabled and wrapper removed"
+}
+
+uninstall() {
+	_uninstall_wrapper
+
+	rm -f "/etc/rc.d/S99podkop-fragment"
+
+	rm -f "$PATCH_SCRIPT"
+	rm -f "$FRAGMENT_INIT"
+	rm -f "$FRAGMENT_CONFIG"
+	rm -f "$DEFAULT_LOG"
+	rm -f "/etc/rc.d/S99podkop-fragment"
+
+	echo "podkop-fragment completely uninstalled"
+}

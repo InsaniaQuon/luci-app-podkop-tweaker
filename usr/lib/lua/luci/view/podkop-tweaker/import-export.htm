@@ -10,6 +10,7 @@ Author: InsaniaQuon
     <ul class="cbi-tabmenu">
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/stubby")%>">Stubby Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/singbox")%>">Sing-box Config</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/diagnostics")%>">Diagnostics</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
         <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
@@ -55,6 +56,17 @@ Author: InsaniaQuon
             </div>
             <div class="ps-ie-desc">
                 <p>Download the current Stubby configuration file (<code>/etc/config/stubby</code>).</p>
+            </div>
+        </div>
+
+        <div class="ps-ie-block">
+            <div class="ps-ie-actions">
+                <button class="btn cbi-button cbi-button-apply" data-action="export-singbox">
+                    Download Sing-box Config
+                </button>
+            </div>
+            <div class="ps-ie-desc">
+                <p>Download the current sing-box configuration file (<code>/etc/sing-box/config.json</code>).</p>
             </div>
         </div>
     </div>
@@ -112,6 +124,21 @@ Author: InsaniaQuon
                     <% end %>
                 </td>
             </tr>
+            <tr>
+                <td>Sing-box &mdash; before config edit</td>
+                <td>
+                    <% if singbox_backup_time then %>
+                        <span class="ps-status-ok"><%=singbox_backup_time%></span>
+                    <% else %>
+                        <span class="ps-status-none">Not found</span>
+                    <% end %>
+                </td>
+                <td>
+                    <% if singbox_backup_time then %>
+                        <button class="btn cbi-button" data-action="backup-singbox">Download</button>
+                    <% end %>
+                </td>
+            </tr>
         </table>
     </div>
 
@@ -143,6 +170,20 @@ Author: InsaniaQuon
             </div>
             <div class="ps-danger-box" style="margin-top:8px;">
                 <strong>&#10007; This will:</strong> replace <code>/etc/config/stubby</code>, create backup, restart Stubby.
+            </div>
+        </div>
+
+        <div class="ps-ie-block">
+            <div class="ps-ie-desc">
+                <p>Upload a sing-box configuration file to replace the current one.</p>
+            </div>
+            <div class="ps-ie-actions" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <input type="file" id="ps-import-singbox" accept=".json,.txt" style="font-size:12px;" />
+                <button class="btn cbi-button cbi-button-apply" id="ps-import-singbox-btn" disabled>Import Sing-box</button>
+                <span class="ps-config-status" id="ps-import-singbox-status"></span>
+            </div>
+            <div class="ps-danger-box" style="margin-top:8px;">
+                <strong>&#10007; This will:</strong> replace <code>/etc/sing-box/config.json</code>, validate with <code>sing-box check</code>, create backup, restart sing-box.
             </div>
         </div>
 
@@ -179,11 +220,14 @@ Author: InsaniaQuon
     var URLS = {
         importCfg: '<%=url("admin/services/podkop-tweaker/api/import_config")%>',
         importStubby: '<%=url("admin/services/podkop-tweaker/api/import_stubby_config")%>',
+        importSingbox: '<%=url("admin/services/podkop-tweaker/api/import_singbox_config")%>',
         exportCfg: '<%=url("admin/services/podkop-tweaker/api/export_config")%>',
         exportStubby: '<%=url("admin/services/podkop-tweaker/api/export_stubby_config")%>',
+        exportSingbox: '<%=url("admin/services/podkop-tweaker/api/export_singbox_config")%>',
         backup: '<%=url("admin/services/podkop-tweaker/api/download_backup")%>',
         backupSub: '<%=url("admin/services/podkop-tweaker/api/download_sub_backup")%>',
         backupStubby: '<%=url("admin/services/podkop-tweaker/api/download_stubby_backup")%>',
+        backupSingbox: '<%=url("admin/services/podkop-tweaker/api/download_singbox_backup")%>',
         status: '<%=url("admin/services/podkop-tweaker/api/service_status")%>',
         rollback: '<%=url("admin/services/podkop-tweaker/api/rollback")%>'
     };
@@ -194,6 +238,9 @@ Author: InsaniaQuon
     var importStubbyFile = document.getElementById('ps-import-stubby');
     var importStubbyBtn = document.getElementById('ps-import-stubby-btn');
     var importStubbyStatus = document.getElementById('ps-import-stubby-status');
+    var importSingboxFile = document.getElementById('ps-import-singbox');
+    var importSingboxBtn = document.getElementById('ps-import-singbox-btn');
+    var importSingboxStatus = document.getElementById('ps-import-singbox-status');
     var rollbackBtn = document.getElementById('ps-rollback-btn');
     var errorBtn = document.getElementById('ps-error-btn');
     var errorModal = document.getElementById('ps-error-modal');
@@ -365,6 +412,13 @@ Author: InsaniaQuon
         doFileImport(importStubbyFile, importStubbyBtn, importStubbyStatus, URLS.importStubby, 'Stubby', null);
     });
 
+    importSingboxFile.addEventListener('change', function() {
+        importSingboxBtn.disabled = !this.files || !this.files[0];
+    });
+    importSingboxBtn.addEventListener('click', function() {
+        doFileImport(importSingboxFile, importSingboxBtn, importSingboxStatus, URLS.importSingbox, 'Sing-box', null);
+    });
+
     function doRollback() {
         rollbackBtn.style.display = 'none';
         importPodkopStatus.textContent = 'Rolling back...';
@@ -411,9 +465,11 @@ Author: InsaniaQuon
             switch (action) {
                 case 'export': window.location.href = URLS.exportCfg; break;
                 case 'export-stubby': window.location.href = URLS.exportStubby; break;
+                case 'export-singbox': window.location.href = URLS.exportSingbox; break;
                 case 'backup-auto': window.location.href = URLS.backup; break;
                 case 'backup-sub': window.location.href = URLS.backupSub; break;
                 case 'backup-stubby': window.location.href = URLS.backupStubby; break;
+                case 'backup-singbox': window.location.href = URLS.backupSingbox; break;
             }
         });
     });
