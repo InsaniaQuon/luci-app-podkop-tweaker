@@ -94,15 +94,62 @@ Author: InsaniaQuon
     <div class="ps-modal-content">
         <h3>Patch Fragment</h3>
         <div style="font-size:13px;line-height:1.6;">
-            <p>Select TLS outbounds to add <code>"fragment": true, "record_fragment": true</code>:</p>
+            <p>Select TLS outbounds:</p>
             <div id="ps-patch-list" style="margin:10px 0;"></div>
+            <table style="width:100%;font-size:12px;border-collapse:collapse;margin:8px 0;">
+                <thead>
+                    <tr style="border-bottom:2px solid var(--ps-border,#ddd);">
+                        <th style="text-align:left;padding:4px;"></th>
+                        <th style="text-align:center;padding:4px;color:#4caf50;">Record Fragment</th>
+                        <th style="text-align:center;padding:4px;color:#f44336;">TLS Fragment</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="border-bottom:1px solid var(--ps-border,#eee);">
+                        <td style="padding:4px;font-weight:bold;">Level</td>
+                        <td style="padding:4px;text-align:center;">TLS record</td>
+                        <td style="padding:4px;text-align:center;">TCP segment</td>
+                    </tr>
+                    <tr style="border-bottom:1px solid var(--ps-border,#eee);">
+                        <td style="padding:4px;font-weight:bold;">Latency</td>
+                        <td style="padding:4px;text-align:center;color:#4caf50;">None</td>
+                        <td style="padding:4px;text-align:center;color:#f44336;">Added</td>
+                    </tr>
+                    <tr style="border-bottom:1px solid var(--ps-border,#eee);">
+                        <td style="padding:4px;font-weight:bold;">Performance</td>
+                        <td style="padding:4px;text-align:center;color:#4caf50;">No impact</td>
+                        <td style="padding:4px;text-align:center;color:#f44336;">Slower</td>
+                    </tr>
+                    <tr>
+                        <td style="padding:4px;font-weight:bold;">Compatibility</td>
+                        <td style="padding:4px;text-align:center;color:#4caf50;">Good</td>
+                        <td style="padding:4px;text-align:center;color:#ff9800;">May break</td>
+                    </tr>
+                </tbody>
+            </table>
+            <div style="margin:10px 0;padding:8px;border:1px solid var(--ps-border,#ddd);border-radius:4px;">
+                <div style="margin:4px 0;display:flex;align-items:center;gap:6px;">
+                    <input type="checkbox" id="ps-patch-record-fragment" checked>
+                    <strong>TLS Record Fragment</strong>
+                    <span style="color:#4caf50;font-size:12px;">recommended</span>
+                </div>
+                <div style="margin:4px 0;display:flex;align-items:center;gap:6px;">
+                    <input type="checkbox" id="ps-patch-fragment">
+                    <strong>TLS Fragment</strong>
+                    <span style="color:#f44336;font-size:12px;">use if blocked</span>
+                </div>
+                <div id="ps-patch-fallback-wrap" style="display:none;margin:6px 0 4px 24px;">
+                    <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;">Fallback delay: <input type="text" id="ps-patch-fallback-delay" value="500ms" style="width:80px;font-size:12px;"> <span style="color:#888;font-size:11px;">(e.g. 500ms, 1s)</span></label>
+                </div>
+            </div>
             <div class="ps-warning-box" style="margin-top:8px;">
                 <strong>&#9888; Note:</strong> This will modify sing-box config directly and restart the service. A backup will be created.
             </div>
         </div>
         <div class="ps-modal-footer" style="margin-top:12px;display:flex;align-items:center;gap:8px;">
-            <button class="btn cbi-button" id="ps-patch-select-all" style="font-size:11px;padding:2px 8px;">Select All</button>
+            <button class="btn cbi-button" id="ps-patch-select-all">Select All</button>
             <button class="btn cbi-button cbi-button-apply" id="ps-patch-apply">Apply Patch</button>
+            <button class="btn cbi-button" id="ps-patch-remove">Remove Patch</button>
             <span id="ps-patch-status" style="font-size:12px;"></span>
             <button class="btn cbi-button" id="ps-patch-close">Close</button>
         </div>
@@ -116,7 +163,22 @@ Author: InsaniaQuon
             <div class="ps-warning-box">
                 <strong>&#9888; Warning:</strong> This modifies Podkop's init script (<code>/etc/init.d/podkop</code>). When Podkop is updated, the wrapper may need to be reinstalled (Disable + Enable). Proceed?
             </div>
-            <p>The wrapper automatically patches sing-box config with fragment settings after every Podkop restart.</p>
+            <p>The wrapper automatically patches sing-box config after every Podkop restart, using the settings below.</p>
+            <div style="margin:10px 0;padding:8px;border:1px solid var(--ps-border,#ddd);border-radius:4px;">
+                <div style="margin:4px 0;display:flex;align-items:center;gap:6px;">
+                    <input type="checkbox" id="ps-wrap-record-fragment" checked>
+                    <strong>TLS Record Fragment</strong>
+                    <span style="color:#4caf50;font-size:12px;">recommended</span>
+                </div>
+                <div style="margin:4px 0;display:flex;align-items:center;gap:6px;">
+                    <input type="checkbox" id="ps-wrap-fragment">
+                    <strong>TLS Fragment</strong>
+                    <span style="color:#f44336;font-size:12px;">use if blocked</span>
+                </div>
+                <div id="ps-wrap-fallback-wrap" style="display:none;margin:6px 0 4px 24px;">
+                    <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;">Fallback delay: <input type="text" id="ps-wrap-fallback-delay" value="500ms" style="width:80px;font-size:12px;"> <span style="color:#888;font-size:11px;">(e.g. 500ms, 1s)</span></label>
+                </div>
+            </div>
         </div>
         <div class="ps-modal-footer" style="margin-top:12px;display:flex;align-items:center;gap:8px;">
             <button class="btn cbi-button cbi-button-apply" id="ps-wrapper-confirm">Enable</button>
@@ -126,6 +188,9 @@ Author: InsaniaQuon
     </div>
 </div>
 
+<style>
+.ps-modal input[type="checkbox"] { margin:0 !important; }
+</style>
 <style>
 <% include("podkop-tweaker/podkop-tweaker-css") %>
 </style>
@@ -143,7 +208,8 @@ Author: InsaniaQuon
         outbounds: '<%=url("admin/services/podkop-tweaker/api/singbox_outbounds")%>',
         patchFragment: '<%=url("admin/services/podkop-tweaker/api/singbox_patch_fragment")%>',
         wrapperStatus: '<%=url("admin/services/podkop-tweaker/api/wrapper_status")%>',
-        wrapperToggle: '<%=url("admin/services/podkop-tweaker/api/wrapper_toggle")%>'
+        wrapperToggle: '<%=url("admin/services/podkop-tweaker/api/wrapper_toggle")%>',
+        fragmentSettings: '<%=url("admin/services/podkop-tweaker/api/fragment_settings")%>'
     };
 
     var editor = document.getElementById('ps-config-editor');
@@ -517,9 +583,18 @@ Author: InsaniaQuon
     var patchModal = document.getElementById('ps-patch-modal');
     var patchList = document.getElementById('ps-patch-list');
     var patchApply = document.getElementById('ps-patch-apply');
+    var patchRemove = document.getElementById('ps-patch-remove');
     var patchSelectAll = document.getElementById('ps-patch-select-all');
     var patchStatus = document.getElementById('ps-patch-status');
     var patchClose = document.getElementById('ps-patch-close');
+    var patchFragCb = document.getElementById('ps-patch-fragment');
+    var patchRecCb = document.getElementById('ps-patch-record-fragment');
+    var patchFallbackWrap = document.getElementById('ps-patch-fallback-wrap');
+    var patchFallbackInput = document.getElementById('ps-patch-fallback-delay');
+
+    patchFragCb.addEventListener('change', function() {
+        patchFallbackWrap.style.display = patchFragCb.checked ? 'block' : 'none';
+    });
 
     patchBtn.addEventListener('click', function() {
         patchStatus.textContent = 'Loading outbounds...';
@@ -534,16 +609,25 @@ Author: InsaniaQuon
                     if (tlsObs.length === 0) {
                         patchList.innerHTML = '<p style="color:#888;">No TLS outbounds found.</p>';
                         patchApply.style.display = 'none';
+                        patchRemove.style.display = 'none';
                         patchSelectAll.style.display = 'none';
                     } else {
                         var html = '';
                         tlsObs.forEach(function(o, i) {
-                            var checked = !o.has_fragment ? ' checked' : ' disabled';
-                            var fragInfo = o.has_fragment ? ' <span style="color:#4caf50;">(already patched)</span>' : '';
-                            html += '<div style="margin:4px 0;"><label><input type="checkbox" class="ps-patch-cb" data-tag="' + escapeHtml(o.tag) + '"' + checked + '> <code>' + escapeHtml(o.tag) + '</code> (' + escapeHtml(o.type) + ')' + fragInfo + '</label></div>';
+                            var label = o.server ? escapeHtml(o.server) : escapeHtml(o.tag);
+                            var fragInfo = o.has_fragment
+                                ? ' <span style="color:#4caf50;font-size:11px;">(patched)</span>'
+                                : ' <span style="color:#888;font-size:11px;">(unpatched)</span>';
+                            html += '<div style="margin:4px 0;display:flex;align-items:center;gap:6px;">'
+                                + '<input type="checkbox" class="ps-patch-cb" data-tag="' + escapeHtml(o.tag) + '">'
+                                + '<strong>' + label + '</strong>'
+                                + '<span style="color:#888;font-size:11px;">(' + escapeHtml(o.type) + ')</span>'
+                                + fragInfo
+                                + '</div>';
                         });
                         patchList.innerHTML = html;
                         patchApply.style.display = 'inline-block';
+                        patchRemove.style.display = 'inline-block';
                         patchSelectAll.style.display = 'inline-block';
                     }
                     patchStatus.textContent = '';
@@ -564,11 +648,11 @@ Author: InsaniaQuon
     patchModal.addEventListener('click', function(e) { if (e.target === patchModal) patchModal.style.display = 'none'; });
 
     patchSelectAll.addEventListener('click', function() {
-        var cbs = patchList.querySelectorAll('.ps-patch-cb:not(:disabled)');
+        var cbs = patchList.querySelectorAll('.ps-patch-cb');
         cbs.forEach(function(cb) { cb.checked = true; });
     });
 
-    patchApply.addEventListener('click', function() {
+    function doPatch(isRemove) {
         var selected = [];
         patchList.querySelectorAll('.ps-patch-cb:checked').forEach(function(cb) {
             selected.push(cb.getAttribute('data-tag'));
@@ -578,12 +662,31 @@ Author: InsaniaQuon
             patchStatus.style.color = '#f44336';
             return;
         }
-        if (!confirm('Apply fragment patch to ' + selected.length + ' outbound(s)?\n\nThis will modify sing-box config and restart the service.')) return;
+        var params = 'tags=' + encodeURIComponent(JSON.stringify(selected));
+        if (isRemove) {
+            params += '&mode=remove';
+            if (!confirm('Remove fragment patch from ' + selected.length + ' outbound(s)?\n\nThis will delete fragment settings and restart the service.')) return;
+        } else {
+            if (!patchFragCb.checked && !patchRecCb.checked) {
+                patchStatus.textContent = 'Select at least one fragment method.';
+                patchStatus.style.color = '#f44336';
+                return;
+            }
+            var methodDesc = patchFragCb.checked ? 'fragment' : '';
+            if (patchRecCb.checked) methodDesc += (methodDesc ? ' + ' : '') + 'record_fragment';
+            if (!confirm('Apply ' + methodDesc + ' patch to ' + selected.length + ' outbound(s)?\n\nThis will modify sing-box config and restart the service.')) return;
+            params += '&fragment=' + (patchFragCb.checked ? '1' : '0') + '&record_fragment=' + (patchRecCb.checked ? '1' : '0');
+            if (patchFragCb.checked) {
+                params += '&fallback_delay=' + encodeURIComponent(patchFallbackInput.value || '500ms');
+            }
+        }
         patchApply.disabled = true;
-        patchStatus.textContent = 'Patching...';
+        patchRemove.disabled = true;
+        patchStatus.textContent = isRemove ? 'Removing...' : 'Patching...';
         patchStatus.style.color = '#2196f3';
-        xhrPost(URLS.patchFragment, 'tags=' + encodeURIComponent(JSON.stringify(selected)), function(xhr) {
+        xhrPost(URLS.patchFragment, params, function(xhr) {
             patchApply.disabled = false;
+            patchRemove.disabled = false;
             if (!xhr) {
                 patchStatus.textContent = 'Network error';
                 patchStatus.style.color = '#f44336';
@@ -592,7 +695,7 @@ Author: InsaniaQuon
             try {
                 var resp = JSON.parse(xhr.responseText);
                 if (resp.success) {
-                    patchStatus.textContent = 'Patched. Restarting...';
+                    patchStatus.textContent = isRemove ? 'Removed. Restarting...' : 'Patched. Restarting...';
                     patchStatus.style.color = '#4caf50';
                     setTimeout(function() {
                         patchModal.style.display = 'none';
@@ -608,7 +711,10 @@ Author: InsaniaQuon
                 patchStatus.style.color = '#f44336';
             }
         });
-    });
+    }
+
+    patchApply.addEventListener('click', function() { doPatch(false); });
+    patchRemove.addEventListener('click', function() { doPatch(true); });
 
     // === Wrapper ===
     var wrapperBtn = document.getElementById('ps-wrapper-btn');
@@ -617,6 +723,14 @@ Author: InsaniaQuon
     var wrapperConfirm = document.getElementById('ps-wrapper-confirm');
     var wrapperModalStatus = document.getElementById('ps-wrapper-modal-status');
     var wrapperClose = document.getElementById('ps-wrapper-close');
+    var wrapFragCb = document.getElementById('ps-wrap-fragment');
+    var wrapRecCb = document.getElementById('ps-wrap-record-fragment');
+    var wrapFallbackWrap = document.getElementById('ps-wrap-fallback-wrap');
+    var wrapFallbackInput = document.getElementById('ps-wrap-fallback-delay');
+
+    wrapFragCb.addEventListener('change', function() {
+        wrapFallbackWrap.style.display = wrapFragCb.checked ? 'block' : 'none';
+    });
 
     function checkWrapper() {
         var xhr = new XMLHttpRequest();
@@ -645,9 +759,23 @@ Author: InsaniaQuon
             wrapperModalStatus.textContent = '';
             wrapperConfirm.textContent = 'Enable';
             wrapperConfirm.style.display = 'inline-block';
+            var sxhr = new XMLHttpRequest();
+            sxhr.open('GET', URLS.fragmentSettings);
+            sxhr.onload = function() {
+                if (sxhr.status === 200) {
+                    try {
+                        var s = JSON.parse(sxhr.responseText);
+                        wrapFragCb.checked = !!s.fragment;
+                        wrapRecCb.checked = s.record_fragment !== false;
+                        if (s.fallback_delay) wrapFallbackInput.value = s.fallback_delay;
+                        wrapFallbackWrap.style.display = wrapFragCb.checked ? 'block' : 'none';
+                    } catch (e) {}
+                }
+            };
+            sxhr.send();
             wrapperModal.style.display = 'flex';
         } else {
-            if (!confirm('Disable wrapper? This will restore the original Podkop init script.')) return;
+            if (!confirm('Disable wrapper?\n\nThis will restore the original Podkop init script.\nFragment settings are only available when enabling wrapper.')) return;
             wrapperBtn.disabled = true;
             xhrPost(URLS.wrapperToggle, 'action=disable', function(xhr) {
                 wrapperBtn.disabled = false;
@@ -656,6 +784,8 @@ Author: InsaniaQuon
                         var r = JSON.parse(xhr.responseText);
                         if (r.success) {
                             checkWrapper();
+                        } else {
+                            alert(r.error || 'Failed to disable wrapper');
                         }
                     } catch (e) {}
                 }
@@ -667,7 +797,13 @@ Author: InsaniaQuon
         wrapperConfirm.disabled = true;
         wrapperModalStatus.textContent = 'Enabling...';
         wrapperModalStatus.style.color = '#2196f3';
-        xhrPost(URLS.wrapperToggle, 'action=enable', function(xhr) {
+        var params = 'action=enable'
+            + '&fragment=' + (wrapFragCb.checked ? '1' : '0')
+            + '&record_fragment=' + (wrapRecCb.checked ? '1' : '0');
+        if (wrapFragCb.checked) {
+            params += '&fallback_delay=' + encodeURIComponent(wrapFallbackInput.value || '500ms');
+        }
+        xhrPost(URLS.wrapperToggle, params, function(xhr) {
             wrapperConfirm.disabled = false;
             if (!xhr) {
                 wrapperModalStatus.textContent = 'Network error';

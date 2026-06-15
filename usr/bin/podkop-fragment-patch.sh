@@ -4,8 +4,9 @@
 
 config_load podkop-fragment
 config_get ENABLED settings enabled 1
-config_get FRAGMENT settings fragment true
+config_get FRAGMENT settings fragment false
 config_get RECORD_FRAGMENT settings record_fragment true
+config_get FALLBACK_DELAY settings fragment_fallback_delay '500ms'
 config_get SINGBOX_CONFIG settings singbox_config '/etc/sing-box/config.json'
 config_get LOG_FILE settings log_file '/var/log/podkop-fragment.log'
 config_get LOG_MAX_LINES settings log_max_lines 200
@@ -51,19 +52,35 @@ if [ $WAIT -eq $MAX_WAIT ]; then
 	exit 1
 fi
 
-ALREADY_PATCHED=$(jq -e '(.outbounds[] | select(.tls.enabled == true and .tls.fragment == true)) | limit(1; .)' "$SINGBOX_CONFIG" 2>/dev/null)
+if [ "$FRAGMENT" = "true" ] && [ "$RECORD_FRAGMENT" = "true" ]; then
+	ALREADY_PATCHED=$(jq -e '(.outbounds[] | select(.tls.enabled == true and .tls.fragment == true and .tls.record_fragment == true)) | limit(1; .)' "$SINGBOX_CONFIG" 2>/dev/null)
+elif [ "$FRAGMENT" = "true" ]; then
+	ALREADY_PATCHED=$(jq -e '(.outbounds[] | select(.tls.enabled == true and .tls.fragment == true)) | limit(1; .)' "$SINGBOX_CONFIG" 2>/dev/null)
+elif [ "$RECORD_FRAGMENT" = "true" ]; then
+	ALREADY_PATCHED=$(jq -e '(.outbounds[] | select(.tls.enabled == true and .tls.record_fragment == true and .tls.fragment != true)) | limit(1; .)' "$SINGBOX_CONFIG" 2>/dev/null)
+else
+	log_msg "INFO: both fragment and record_fragment disabled, skipping"
+	exit 0
+fi
+
 if [ -n "$ALREADY_PATCHED" ]; then
 	log_msg "INFO: config already patched, skipping"
 	exit 0
 fi
 
-log_msg "INFO: patching $SINGBOX_CONFIG (fragment=$FRAGMENT, record_fragment=$RECORD_FRAGMENT)"
+log_msg "INFO: patching $SINGBOX_CONFIG (fragment=$FRAGMENT, record_fragment=$RECORD_FRAGMENT, fallback_delay=$FALLBACK_DELAY)"
 
 cp "$SINGBOX_CONFIG" "${SINGBOX_CONFIG}.bak"
 
-jq --arg f "$FRAGMENT" --arg rf "$RECORD_FRAGMENT" \
-	'(.outbounds[] | select(.tls.enabled == true) | .tls) |= . + {"fragment": ($f == "true"), "record_fragment": ($rf == "true")}' \
-	"${SINGBOX_CONFIG}.bak" > "$SINGBOX_CONFIG"
+if [ "$FRAGMENT" = "true" ]; then
+	jq --arg f "$FRAGMENT" --arg rf "$RECORD_FRAGMENT" --arg fd "$FALLBACK_DELAY" \
+		'(.outbounds[] | select(.tls.enabled == true) | .tls) |= . + {"fragment": ($f == "true"), "record_fragment": ($rf == "true"), "fragment_fallback_delay": $fd}' \
+		"${SINGBOX_CONFIG}.bak" > "$SINGBOX_CONFIG"
+else
+	jq --arg f "$FRAGMENT" --arg rf "$RECORD_FRAGMENT" \
+		'(.outbounds[] | select(.tls.enabled == true) | .tls) |= . + {"fragment": ($f == "true"), "record_fragment": ($rf == "true")} | (.outbounds[] | select(.tls.enabled == true) | .tls) |= del(.fragment_fallback_delay)' \
+		"${SINGBOX_CONFIG}.bak" > "$SINGBOX_CONFIG"
+fi
 
 if ! sing-box check -c "$SINGBOX_CONFIG" >/dev/null 2>&1; then
 	log_msg "ERROR: sing-box check failed after patch, rolling back"

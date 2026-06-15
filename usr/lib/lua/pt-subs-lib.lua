@@ -474,6 +474,9 @@ function M.apply_files_from_dir(extract_dir, relaxed)
                         dst_fd:write(data)
                         dst_fd:close()
                         copied = copied + 1
+                        if rel:match("^usr/bin/") or rel:match("^etc/init%.d/") or rel:match("^etc/rc%.d/") then
+                            os.execute("chmod +x '" .. dest .. "' 2>/dev/null")
+                        end
                     end
                 end
             end

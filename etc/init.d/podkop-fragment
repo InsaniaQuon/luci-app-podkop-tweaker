@@ -60,7 +60,10 @@ service_triggers() {
 }
 
 enable() {
-	_install_wrapper
+	if ! _install_wrapper; then
+		echo "ERROR: wrapper installation failed"
+		exit 1
+	fi
 	ln -sf "$FRAGMENT_INIT" "/etc/rc.d/S99podkop-fragment"
 	"$PATCH_SCRIPT"
 	echo "podkop-fragment enabled and wrapper installed"

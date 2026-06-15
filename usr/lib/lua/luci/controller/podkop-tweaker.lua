@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.5.0 | 11.06.2026 | Sing-box tab, fragment patch UI, start/stop, autostart
+-- Podkop Tweaker | v3.5.1 | 15.06.2026 | Fragment options UI, permissions fix, wrapper error handling
 
-local APP_VERSION = "3.5.0"
+local APP_VERSION = "3.5.1"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -147,6 +147,9 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "wrapper_toggle"},
         call("api_wrapper_toggle")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "fragment_settings"},
+        call("api_fragment_settings")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "podkop_service_toggle"},
         call("api_podkop_service_toggle")).leaf = true
@@ -2313,7 +2316,7 @@ function api_singbox_outbounds()
     local sys = require("luci.sys")
     http.prepare_content("application/json")
     set_no_cache_headers()
-    local raw = sys.exec("jq '.outbounds[] | {tag, type, tls_enabled: (.tls.enabled // false), has_fragment: (.tls.fragment // false)}' " .. SINGBOX_CONFIG .. " 2>/dev/null")
+    local raw = sys.exec("jq '.outbounds[] | {tag, type, server: (.server // \"\"), tls_enabled: (.tls.enabled // false), has_fragment: ((.tls.fragment // false) or (.tls.record_fragment // false))}' " .. SINGBOX_CONFIG .. " 2>/dev/null")
     if not raw or raw == "" then
         http.write_json({ outbounds = {} })
         return
@@ -2323,12 +2326,14 @@ function api_singbox_outbounds()
     for line in raw:gmatch("[^\r\n]+") do
         local tag = line:match('"tag":%s*"([^"]+)"')
         local typ = line:match('"type":%s*"([^"]+)"')
+        local srv = line:match('"server":%s*"([^"]*)"')
         local tls_en = line:match('"tls_enabled":%s*(true)')
         local tls_dis = line:match('"tls_enabled":%s*(false)')
         local frag_en = line:match('"has_fragment":%s*(true)')
         local frag_dis = line:match('"has_fragment":%s*(false)')
         if tag then cur.tag = tag end
         if typ then cur.type = typ end
+        if srv then cur.server = srv end
         if tls_en then cur.tls_enabled = true end
         if tls_dis then cur.tls_enabled = false end
         if frag_en then cur.has_fragment = true end
@@ -2360,6 +2365,7 @@ function api_singbox_patch_fragment()
             return
         end
     end
+    local mode = http.formvalue("mode") or "apply"
     local rfd = io.open(SINGBOX_CONFIG, "r")
     if not rfd then
         http.write_json({ error = "Cannot read config" })
@@ -2379,7 +2385,28 @@ function api_singbox_patch_fragment()
         if i > 1 then jq_select = jq_select .. " or " end
         jq_select = jq_select .. '.tag == $t' .. i
     end
-    local jq_expr = '(.outbounds[] | select(' .. jq_select .. ') | .tls) |= . + {"fragment": true, "record_fragment": true}'
+    local jq_expr
+    if mode == "remove" then
+        jq_expr = '(.outbounds[] | select(' .. jq_select .. ') | .tls) |= del(.fragment, .record_fragment, .fragment_fallback_delay)'
+    else
+        local use_fragment = http.formvalue("fragment") == "1"
+        local use_record_fragment = http.formvalue("record_fragment") == "1"
+        if not use_fragment and not use_record_fragment then
+            http.write_json({ error = "Select at least one fragment method" })
+            return
+        end
+        local fallback_delay = http.formvalue("fallback_delay") or "500ms"
+        if not fallback_delay:match("^%d+%a+$") then
+            http.write_json({ error = "Invalid fallback_delay format" })
+            return
+        end
+        if use_fragment then
+            local rf_val = use_record_fragment and "true" or "false"
+            jq_expr = '(.outbounds[] | select(' .. jq_select .. ') | .tls) |= . + {"fragment": true, "record_fragment": (' .. rf_val .. '), "fragment_fallback_delay": "' .. fallback_delay .. '"}'
+        else
+            jq_expr = '(.outbounds[] | select(' .. jq_select .. ') | .tls) |= . + {"fragment": false, "record_fragment": true} | (.outbounds[] | select(' .. jq_select .. ') | .tls) |= del(.fragment_fallback_delay)'
+        end
+    end
     local patched = sys.exec("jq " .. jq_args .. " '" .. jq_expr .. "' " .. SINGBOX_CONFIG .. " 2>/dev/null")
     if not patched or patched == "" then
         http.write_json({ error = "jq patch failed" })
@@ -2426,13 +2453,47 @@ function api_wrapper_toggle()
         http.write_json({ error = "Invalid action" })
         return
     end
-    sys.exec("/etc/init.d/podkop-fragment " .. action .. " 2>&1")
+    if action == "enable" then
+        local uci = require("luci.model.uci").cursor()
+        local fragment = http.formvalue("fragment") == "1"
+        local record_fragment = http.formvalue("record_fragment") == "1"
+        local fallback_delay = http.formvalue("fallback_delay") or "500ms"
+        if not fallback_delay:match("^%d+%a+$") then
+            fallback_delay = "500ms"
+        end
+        uci:set("podkop-fragment", "settings", "fragment", fragment and "true" or "false")
+        uci:set("podkop-fragment", "settings", "record_fragment", record_fragment and "true" or "false")
+        uci:set("podkop-fragment", "settings", "fragment_fallback_delay", fallback_delay)
+        uci:commit("podkop-fragment")
+    end
+    local output = sys.exec("/etc/init.d/podkop-fragment " .. action .. " 2>&1; echo EXIT:$?")
+    local exit_code = output:match("EXIT:(%d+)") or "1"
+    if exit_code ~= "0" then
+        local err_msg = output:gsub("EXIT:%d+%s*$", ""):match("^%s*(.-)%s*$") or "Command failed"
+        http.write_json({ success = false, error = err_msg })
+        return
+    end
     local fd = io.open("/etc/init.d/podkop.orig", "r")
     http.write_json({
         success = true,
         installed = (fd ~= nil)
     })
     if fd then fd:close() end
+end
+
+function api_fragment_settings()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    local uci = require("luci.model.uci").cursor()
+    local fragment = uci:get("podkop-fragment", "settings", "fragment") or "false"
+    local record_fragment = uci:get("podkop-fragment", "settings", "record_fragment") or "true"
+    local fallback_delay = uci:get("podkop-fragment", "settings", "fragment_fallback_delay") or "500ms"
+    http.write_json({
+        fragment = (fragment == "true"),
+        record_fragment = (record_fragment == "true"),
+        fallback_delay = fallback_delay
+    })
 end
 
 -- === Podkop Service Toggle ===
