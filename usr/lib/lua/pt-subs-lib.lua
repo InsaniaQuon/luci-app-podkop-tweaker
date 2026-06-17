@@ -488,12 +488,7 @@ end
 
 function M._is_valid_update_path(rel_path, relaxed)
     if rel_path:find("..", 1, true) then return false end
-    if relaxed then
-        if rel_path:match("^usr/lib/lua/") then return true end
-        if rel_path:match("^usr/share/luci/") then return true end
-        if rel_path:match("^usr/share/rpcd/") then return true end
-        return false
-    end
+    if relaxed then return true end
     if rel_path:match("^usr/lib/lua/.*%.lua$") then return true end
     if rel_path:match("^usr/lib/lua/luci/view/podkop%-tweaker/[%w_%-]+%.htm$") then return true end
     if rel_path:match("^usr/share/luci/menu%.d/[%w_%-]+%.json$") then return true end

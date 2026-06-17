@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.5.1 | 15.06.2026 | Fragment options UI, permissions fix, wrapper error handling
+-- Podkop Tweaker | v3.5.2 | 17.06.2026 | Fix update validation and service PID
 
-local APP_VERSION = "3.5.1"
+local APP_VERSION = "3.5.2"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -880,7 +880,8 @@ function api_service_status()
     set_no_cache_headers()
     local pid = get_service_pid("sing-box")
     http.write_json({
-        running = (pid ~= nil)
+        running = (pid ~= nil),
+        pid = pid
     })
 end
 
@@ -976,7 +977,8 @@ function api_stubby_service_status()
     set_no_cache_headers()
     local pid = get_service_pid("stubby")
     http.write_json({
-        running = (pid ~= nil)
+        running = (pid ~= nil),
+        pid = pid
     })
 end
 
