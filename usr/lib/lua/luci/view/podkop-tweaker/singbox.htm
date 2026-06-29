@@ -739,7 +739,11 @@ Author: InsaniaQuon
             if (xhr.status === 200) {
                 try {
                     var r = JSON.parse(xhr.responseText);
-                    if (r.installed) {
+                    if (r.installed && r.stale) {
+                        wrapperBtn.textContent = 'Reinstall Wrapper';
+                        wrapperStatusEl.textContent = 'Wrapper lost after Podkop update — needs reinstall';
+                        wrapperStatusEl.style.color = '#ff9800';
+                    } else if (r.installed) {
                         wrapperBtn.textContent = 'Disable Wrapper';
                         wrapperStatusEl.textContent = 'Wrapper active';
                         wrapperStatusEl.style.color = '#4caf50';
@@ -755,6 +759,26 @@ Author: InsaniaQuon
     }
 
     wrapperBtn.addEventListener('click', function() {
+        if (wrapperBtn.textContent.indexOf('Reinstall') >= 0) {
+            wrapperBtn.disabled = true;
+            wrapperStatusEl.textContent = 'Reinstalling...';
+            wrapperStatusEl.style.color = '#2196f3';
+            xhrPost(URLS.wrapperToggle, 'action=reinstall', function(xhr) {
+                wrapperBtn.disabled = false;
+                if (xhr) {
+                    try {
+                        var r = JSON.parse(xhr.responseText);
+                        if (r.success) {
+                            checkWrapper();
+                        } else {
+                            alert(r.error || 'Failed to reinstall wrapper');
+                            checkWrapper();
+                        }
+                    } catch (e) { checkWrapper(); }
+                }
+            });
+            return;
+        }
         if (wrapperBtn.textContent.indexOf('Enable') >= 0) {
             wrapperModalStatus.textContent = '';
             wrapperConfirm.textContent = 'Enable';

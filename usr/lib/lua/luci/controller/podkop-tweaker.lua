@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.5.2 | 17.06.2026 | Fix update validation and service PID
+-- Podkop Tweaker | v3.5.3 | 29.06.2026 | Update service reliability
 
-local APP_VERSION = "3.5.2"
+local APP_VERSION = "3.5.3"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -10,6 +10,7 @@ local CHECK_CACHE_TTL = 900
 local SUBS_FILE = "/etc/config/podkop-tweaker-subs.json"
 local UPDATE_LOG_FILE = "/etc/config/pt-update.log"
 local UPDATE_LOG_MAX = 25
+local PODKOP_INSTALL_URL = "https://raw.githubusercontent.com/itdoginfo/podkop/refs/heads/main/install.sh"
 
 local S = require("pt-subs-lib")
 
@@ -532,7 +533,7 @@ function api_update_start()
         return
     end
 
-    sys.exec("pkill -f 'ttyd.*podkop-update' 2>/dev/null")
+    sys.exec("pkill -f 'ttyd.*7682' 2>/dev/null")
 
     local host = http.getenv("SERVER_NAME") or "127.0.0.1"
     if not host:match("^[%w%.%-]+:%d+$") and not host:match("^[%w%.%-]+$") then
@@ -540,7 +541,16 @@ function api_update_start()
     end
     local port = "7682"
 
-    sys.exec("ttyd -p " .. port .. " podkop-update >/dev/null 2>&1 &")
+    local wrapper_orig = io.open("/etc/init.d/podkop.orig", "r")
+    local wrapper_active = wrapper_orig ~= nil
+    if wrapper_orig then wrapper_orig:close() end
+
+    local cmd = "ttyd -p " .. port .. " sh -c 'wget -O /tmp/podkop-install.sh " .. PODKOP_INSTALL_URL .. " && sh /tmp/podkop-install.sh"
+    if wrapper_active then
+        cmd = cmd .. " && rm -f /etc/init.d/podkop.orig && /etc/init.d/podkop-fragment enable"
+    end
+    cmd = cmd .. "' >/dev/null 2>&1 &"
+    sys.exec(cmd)
 
     http.write_json({ success = true, url = "http://" .. host .. ":" .. port })
 end
@@ -2438,10 +2448,23 @@ function api_wrapper_status()
     http.prepare_content("application/json")
     set_no_cache_headers()
     local fd = io.open("/etc/init.d/podkop.orig", "r")
-    http.write_json({
-        installed = (fd ~= nil)
-    })
+    local installed = (fd ~= nil)
     if fd then fd:close() end
+    local stale = false
+    if installed then
+        local ifd = io.open("/etc/init.d/podkop", "r")
+        if ifd then
+            local content = ifd:read("*a")
+            ifd:close()
+            if not content:find("podkop-fragment-patch.sh", 1, true) then
+                stale = true
+            end
+        end
+    end
+    http.write_json({
+        installed = installed,
+        stale = stale
+    })
 end
 
 function api_wrapper_toggle()
@@ -2451,11 +2474,13 @@ function api_wrapper_toggle()
     http.prepare_content("application/json")
     set_no_cache_headers()
     local action = http.formvalue("action") or ""
-    if action ~= "enable" and action ~= "disable" then
+    if action ~= "enable" and action ~= "disable" and action ~= "reinstall" then
         http.write_json({ error = "Invalid action" })
         return
     end
-    if action == "enable" then
+    if action == "reinstall" then
+        os.remove("/etc/init.d/podkop.orig")
+    elseif action == "enable" then
         local uci = require("luci.model.uci").cursor()
         local fragment = http.formvalue("fragment") == "1"
         local record_fragment = http.formvalue("record_fragment") == "1"
@@ -2468,6 +2493,7 @@ function api_wrapper_toggle()
         uci:set("podkop-fragment", "settings", "fragment_fallback_delay", fallback_delay)
         uci:commit("podkop-fragment")
     end
+    if action == "reinstall" then action = "enable" end
     local output = sys.exec("/etc/init.d/podkop-fragment " .. action .. " 2>&1; echo EXIT:$?")
     local exit_code = output:match("EXIT:(%d+)") or "1"
     if exit_code ~= "0" then
