@@ -613,7 +613,7 @@ Author: InsaniaQuon
         html += '<span id="ps-opt-cron-msk" style="' + showStyle + '">(MSK, daily)</span>';
         html += '</div>';
         html += '<div class="ps-options-row" style="font-size:12px;color:var(--ps-text-dim);margin-bottom:0">';
-        html += '<span style="margin-left:22px">Example: every 4 hours from 01:30 &rarr; 01:30, 05:30, 09:30, 13:30, 17:30, 21:30</span>';
+        html += '<span id="ps-cron-preview" style="margin-left:22px"></span>';
         html += '</div>';
         html += '<div class="ps-options-row">';
         html += '<input type="checkbox" id="ps-opt-restart"' + (restartVal ? ' checked' : '') + ' />';
@@ -639,7 +639,34 @@ Author: InsaniaQuon
 
         document.getElementById('ps-opt-cron').addEventListener('change', function() {
             toggleCronFields(this.checked);
+            updateCronPreview();
         });
+
+        function updateCronPreview() {
+            var preview = document.getElementById('ps-cron-preview');
+            if (!preview) return;
+            var cronCb = document.getElementById('ps-opt-cron');
+            if (!cronCb || !cronCb.checked) { preview.textContent = ''; return; }
+            var interval = parseInt(document.getElementById('ps-opt-interval').value) || 6;
+            if (interval < 1) interval = 1;
+            if (interval > 24) interval = 24;
+            var start = document.getElementById('ps-opt-start').value || '00:00';
+            var m = start.match(/^(\d{1,2}):(\d{2})$/);
+            if (!m) { preview.textContent = 'Invalid time format (use HH:MM)'; return; }
+            var startMin = parseInt(m[1]) * 60 + parseInt(m[2]);
+            if (startMin >= 1440) startMin = 0;
+            var times = [];
+            for (var t = startMin; t < 1440; t += interval * 60) {
+                var hh = Math.floor(t / 60);
+                var mm = t % 60;
+                times.push(String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0'));
+            }
+            preview.textContent = 'every ' + interval + 'h from ' + start + ' \u2192 ' + times.join(', ');
+        }
+
+        document.getElementById('ps-opt-interval').addEventListener('input', updateCronPreview);
+        document.getElementById('ps-opt-start').addEventListener('input', updateCronPreview);
+        updateCronPreview();
 
         document.getElementById('ps-opt-start').addEventListener('input', function() {
             this.value = this.value.replace(/[^\d:]/g, '');

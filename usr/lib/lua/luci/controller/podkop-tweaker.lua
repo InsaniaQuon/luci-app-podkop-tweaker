@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.5.3 | 29.06.2026 | Update service reliability
+-- Podkop Tweaker | v3.5.4 | 29.06.2026 | Auto-update schedule preview
 
-local APP_VERSION = "3.5.3"
+local APP_VERSION = "3.5.4"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
