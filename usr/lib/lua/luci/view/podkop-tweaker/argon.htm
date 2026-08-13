@@ -1,0 +1,353 @@
+<%#
+LuCI Podkop Tweaker — Argon Config Tab (typography settings)
+Author: InsaniaQuon
+-%>
+<%+header%>
+
+<div class="cbi-map" id="cbi-podkop-tweaker">
+    <h2 name="content">Podkop Tweaker</h2>
+
+    <ul class="cbi-tabmenu">
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/stubby")%>">Stubby Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/singbox")%>">Sing-box Config</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/diagnostics")%>">Diagnostics</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
+<% if show_argon then %>
+        <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/argon")%>">Argon Config</a></li>
+<% end %>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Local Update</a></li>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/about")%>">About</a></li>
+    </ul>
+
+    <div class="ps-stale-banner" id="ps-stale-banner">
+        <span>Page shows cached version. Updated version available.</span>
+        <button class="btn cbi-button" onclick="window.location.reload(true)">Reload</button>
+    </div>
+
+    <div class="cbi-section">
+        <div id="ps-argon-stale" style="margin-bottom:12px;display:flex;align-items:center;gap:8px;font-size:13px;">
+            <span id="ps-argon-css-status" style="font-weight:600;"></span>
+            <button class="btn cbi-button cbi-button-apply" id="ps-argon-reinject" style="display:none;font-size:11px;padding:2px 8px;">Reinject CSS</button>
+        </div>
+
+        <h3>Typography</h3>
+        <div style="font-size:13px;color:var(--ps-text-dim,#888);margin-top:12px;margin-bottom:16px;">
+            Changes apply globally to all LuCI pages. Use live preview before saving.
+        </div>
+
+        <div class="pts-grid" style="display:grid;grid-template-columns:200px 1fr;gap:12px 20px;align-items:center;font-size:13px;max-width:600px;">
+
+            <label for="ps-font-size">Font Size</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <input type="range" id="ps-font-size" min="13" max="20" step="1" value="16" style="flex:1;">
+                <span id="ps-font-size-val" style="min-width:40px;text-align:right;">16px</span>
+            </div>
+
+            <label for="ps-font-family">Font Family</label>
+            <select id="ps-font-family" style="width:100%;max-width:250px;">
+                <option value="Google Sans">Google Sans</option>
+                <option value="system-ui">system-ui</option>
+                <option value="Arial">Arial</option>
+                <option value="Verdana">Verdana</option>
+                <option value="Tahoma">Tahoma</option>
+                <option value="monospace">monospace</option>
+                <option value="custom">Custom...</option>
+            </select>
+
+            <label for="ps-font-family-custom" id="ps-font-custom-label" style="display:none;">Custom Font</label>
+            <input type="text" id="ps-font-family-custom" placeholder="e.g. 'Roboto', sans-serif" style="width:100%;max-width:250px;display:none;">
+
+            <label for="ps-font-weight">Font Weight</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <input type="range" id="ps-font-weight" min="300" max="700" step="50" value="400" style="flex:1;">
+                <span id="ps-font-weight-val" style="min-width:40px;text-align:right;">400</span>
+            </div>
+
+            <label for="ps-line-height">Line Height</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <input type="range" id="ps-line-height" min="1.0" max="2.0" step="0.1" value="1.5" style="flex:1;">
+                <span id="ps-line-height-val" style="min-width:40px;text-align:right;">1.5</span>
+            </div>
+
+            <label for="ps-letter-spacing">Letter Spacing</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <input type="range" id="ps-letter-spacing" min="-0.5" max="2" step="0.1" value="0" style="flex:1;">
+                <span id="ps-letter-spacing-val" style="min-width:40px;text-align:right;">0px</span>
+            </div>
+        </div>
+
+        <h3 style="margin-top:28px;">Sidebar Menu</h3>
+        <div style="font-size:13px;color:var(--ps-text-dim,#888);margin-top:12px;margin-bottom:16px;">
+            Adjust sidebar navigation independently from global typography.
+        </div>
+
+        <div class="pts-grid" style="display:grid;grid-template-columns:200px 1fr;gap:12px 20px;align-items:center;font-size:13px;max-width:600px;">
+            <label for="ps-menu-font-size">Menu Font Size</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <input type="range" id="ps-menu-font-size" min="0.7" max="1.2" step="0.05" value="0.9" style="flex:1;">
+                <span id="ps-menu-font-size-val" style="min-width:40px;text-align:right;">0.9rem</span>
+            </div>
+
+            <label for="ps-menu-padding">Menu Padding</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <input type="range" id="ps-menu-padding" min="5" max="20" step="1" value="10" style="flex:1;">
+                <span id="ps-menu-padding-val" style="min-width:40px;text-align:right;">10px</span>
+            </div>
+        </div>
+
+        <div style="margin-top:24px;display:flex;align-items:center;gap:8px;">
+            <button class="btn cbi-button" id="ps-argon-reset">Reset to Defaults</button>
+            <button class="btn cbi-button cbi-button-apply" id="ps-argon-save">Save &amp; Apply</button>
+            <span id="ps-argon-status" style="font-size:12px;"></span>
+        </div>
+
+        <div class="ps-warning-box" style="margin-top:16px;">
+            <strong>&#9888; Note:</strong> CSS is appended to <code>/www/luci-static/argon/css/cascade.css</code>. After theme update, click "Reinject CSS" to restore.
+        </div>
+    </div>
+</div>
+
+<style>
+<% include("podkop-tweaker/podkop-tweaker-css") %>
+.pts-grid label { text-align: right; padding-right: 4px; }
+</style>
+
+<script>
+(function() {
+    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
+    var CSRF = '<%= token or csrf_token or "" %>';
+    var URLS = {
+        typography: '<%=url("admin/services/podkop-tweaker/api/argon_typography")%>',
+        save: '<%=url("admin/services/podkop-tweaker/api/argon_typography_save")%>',
+        reset: '<%=url("admin/services/podkop-tweaker/api/argon_typography_reset")%>',
+        reinject: '<%=url("admin/services/podkop-tweaker/api/argon_reinject")%>'
+    };
+
+    var FONT_FAMILIES = {
+        'Google Sans': '"Google Sans", "Microsoft Yahei", "WenQuanYi Micro Hei", sans-serif',
+        'system-ui': 'system-ui, -apple-system, sans-serif',
+        'Arial': 'Arial, Helvetica, sans-serif',
+        'Verdana': 'Verdana, Geneva, sans-serif',
+        'Tahoma': 'Tahoma, Geneva, sans-serif',
+        'monospace': '"Cascadia Code", "JetBrains Mono", "Fira Code", monospace'
+    };
+
+    var els = {
+        fontSize: document.getElementById('ps-font-size'),
+        fontSizeVal: document.getElementById('ps-font-size-val'),
+        fontFamily: document.getElementById('ps-font-family'),
+        fontCustom: document.getElementById('ps-font-family-custom'),
+        fontCustomLabel: document.getElementById('ps-font-custom-label'),
+        fontWeight: document.getElementById('ps-font-weight'),
+        fontWeightVal: document.getElementById('ps-font-weight-val'),
+        lineHeight: document.getElementById('ps-line-height'),
+        lineHeightVal: document.getElementById('ps-line-height-val'),
+        letterSpacing: document.getElementById('ps-letter-spacing'),
+        letterSpacingVal: document.getElementById('ps-letter-spacing-val'),
+        menuFontSize: document.getElementById('ps-menu-font-size'),
+        menuFontSizeVal: document.getElementById('ps-menu-font-size-val'),
+        menuPadding: document.getElementById('ps-menu-padding'),
+        menuPaddingVal: document.getElementById('ps-menu-padding-val'),
+        staleBox: document.getElementById('ps-argon-stale'),
+        cssStatus: document.getElementById('ps-argon-css-status'),
+        reinjectBtn: document.getElementById('ps-argon-reinject'),
+        resetBtn: document.getElementById('ps-argon-reset'),
+        saveBtn: document.getElementById('ps-argon-save'),
+        status: document.getElementById('ps-argon-status')
+    };
+
+    var savedSettings = {};
+
+    function updateValDisplays() {
+        els.fontSizeVal.textContent = els.fontSize.value + 'px';
+        els.fontWeightVal.textContent = els.fontWeight.value;
+        els.lineHeightVal.textContent = parseFloat(els.lineHeight.value).toFixed(1);
+        els.letterSpacingVal.textContent = parseFloat(els.letterSpacing.value).toFixed(1) + 'px';
+        els.menuFontSizeVal.textContent = parseFloat(els.menuFontSize.value).toFixed(2) + 'rem';
+        els.menuPaddingVal.textContent = els.menuPadding.value + 'px';
+    }
+
+    function applyPreview() {
+        var fontSize = els.fontSize.value;
+        document.documentElement.style.fontSize = fontSize + 'px';
+        els.fontSizeVal.textContent = fontSize + 'px';
+
+        var fam = els.fontFamily.value;
+        var familyCss;
+        if (fam === 'custom') {
+            familyCss = els.fontCustom.value;
+            els.fontCustom.style.display = '';
+            els.fontCustomLabel.style.display = '';
+        } else {
+            familyCss = FONT_FAMILIES[fam] || '';
+            els.fontCustom.style.display = 'none';
+            els.fontCustomLabel.style.display = 'none';
+        }
+        if (familyCss) {
+            document.documentElement.style.setProperty('--font-family-sans-serif', familyCss);
+        }
+
+        document.body.style.fontWeight = els.fontWeight.value;
+        els.fontWeightVal.textContent = els.fontWeight.value;
+        els.lineHeightVal.textContent = parseFloat(els.lineHeight.value).toFixed(1);
+        document.body.style.lineHeight = els.lineHeight.value;
+        els.letterSpacingVal.textContent = parseFloat(els.letterSpacing.value).toFixed(1) + 'px';
+        document.body.style.letterSpacing = els.letterSpacing.value + 'px';
+        els.menuFontSizeVal.textContent = parseFloat(els.menuFontSize.value).toFixed(2) + 'rem';
+        els.menuPaddingVal.textContent = els.menuPadding.value + 'px';
+
+        var menuLinks = document.querySelectorAll('.main-left .nav li a');
+        for (var i = 0; i < menuLinks.length; i++) {
+            menuLinks[i].style.fontSize = els.menuFontSize.value + 'rem';
+            menuLinks[i].style.paddingTop = els.menuPadding.value + 'px';
+            menuLinks[i].style.paddingBottom = els.menuPadding.value + 'px';
+        }
+    }
+
+    function restoreFromSaved() {
+        document.documentElement.style.fontSize = '';
+        document.documentElement.style.setProperty('--font-family-sans-serif', '');
+        document.body.style.fontWeight = '';
+        document.body.style.lineHeight = '';
+        document.body.style.letterSpacing = '';
+        var menuLinks = document.querySelectorAll('.main-left .nav li a');
+        for (var i = 0; i < menuLinks.length; i++) {
+            menuLinks[i].style.fontSize = '';
+            menuLinks[i].style.paddingTop = '';
+            menuLinks[i].style.paddingBottom = '';
+        }
+    }
+
+    function updateCssStatus(stale) {
+        if (stale) {
+            els.cssStatus.textContent = '\u26A0 CSS lost after theme update';
+            els.cssStatus.style.color = '#ff9800';
+            els.reinjectBtn.style.display = 'inline-block';
+        } else {
+            els.cssStatus.textContent = '\u2713 CSS active';
+            els.cssStatus.style.color = '#4caf50';
+            els.reinjectBtn.style.display = 'none';
+        }
+    }
+
+    function loadSettings() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', URLS.typography);
+        xhr.onload = function() {
+            if (xhr.status !== 200) return;
+            try {
+                var r = JSON.parse(xhr.responseText);
+                var s = r.settings || {};
+                savedSettings = s;
+                if (s.font_size) els.fontSize.value = s.font_size; else els.fontSize.value = 16;
+                els.fontFamily.value = s.font_family || 'Google Sans';
+                if (s.font_family === 'custom') {
+                    els.fontCustom.value = s.font_family_custom || '';
+                    els.fontCustom.style.display = '';
+                    els.fontCustomLabel.style.display = '';
+                }
+                els.fontWeight.value = s.font_weight || '400';
+                if (s.line_height) els.lineHeight.value = s.line_height; else els.lineHeight.value = 1.5;
+                if (s.letter_spacing) els.letterSpacing.value = s.letter_spacing; else els.letterSpacing.value = 0;
+                if (s.menu_font_size) els.menuFontSize.value = s.menu_font_size; else els.menuFontSize.value = 0.9;
+                if (s.menu_padding) els.menuPadding.value = s.menu_padding; else els.menuPadding.value = 10;
+                updateValDisplays();
+                updateCssStatus(r.stale);
+            } catch (e) {}
+        };
+        xhr.send();
+    }
+
+    function xhrPost(url, params, cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url);
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.onload = function() { cb(xhr); };
+        xhr.onerror = function() { cb(null); };
+        xhr.send('token=' + encodeURIComponent(CSRF) + (params ? '&' + params : ''));
+    }
+
+    ['fontSize', 'fontFamily', 'fontCustom', 'fontWeight', 'lineHeight', 'letterSpacing', 'menuFontSize', 'menuPadding'].forEach(function(id) {
+        var el = els[id];
+        if (el) {
+            var evt = el.tagName === 'SELECT' ? 'change' : 'input';
+            el.addEventListener(evt, applyPreview);
+        }
+    });
+
+    els.saveBtn.addEventListener('click', function() {
+        els.saveBtn.disabled = true;
+        els.status.textContent = 'Saving...';
+        els.status.style.color = '#2196f3';
+        var params = 'font_size=' + encodeURIComponent(els.fontSize.value) +
+            '&font_family=' + encodeURIComponent(els.fontFamily.value) +
+            '&font_family_custom=' + encodeURIComponent(els.fontCustom.value) +
+            '&font_weight=' + encodeURIComponent(els.fontWeight.value) +
+            '&line_height=' + encodeURIComponent(els.lineHeight.value) +
+            '&letter_spacing=' + encodeURIComponent(els.letterSpacing.value) +
+            '&menu_font_size=' + encodeURIComponent(els.menuFontSize.value) +
+            '&menu_padding=' + encodeURIComponent(els.menuPadding.value);
+        xhrPost(URLS.save, params, function(xhr) {
+            els.saveBtn.disabled = false;
+            if (!xhr) { els.status.textContent = 'Network error'; els.status.style.color = '#f44336'; return; }
+            try {
+                var r = JSON.parse(xhr.responseText);
+                if (r.success) {
+                    els.status.textContent = 'Saved. Reloading...';
+                    els.status.style.color = '#4caf50';
+                    updateCssStatus(r.stale);
+                    setTimeout(function() { window.location.reload(true); }, 1500);
+                } else {
+                    els.status.textContent = 'Failed';
+                    els.status.style.color = '#f44336';
+                }
+            } catch (e) { els.status.textContent = 'Failed'; els.status.style.color = '#f44336'; }
+        });
+    });
+
+    els.resetBtn.addEventListener('click', function() {
+        if (!confirm('Reset all typography settings to defaults?')) return;
+        els.resetBtn.disabled = true;
+        els.status.textContent = 'Resetting...';
+        els.status.style.color = '#2196f3';
+        xhrPost(URLS.reset, '', function(xhr) {
+            els.resetBtn.disabled = false;
+            if (!xhr) { els.status.textContent = 'Network error'; els.status.style.color = '#f44336'; return; }
+            try {
+                var r = JSON.parse(xhr.responseText);
+                if (r.success) {
+                    els.status.textContent = 'Reset. Reload page.';
+                    els.status.style.color = '#4caf50';
+                    restoreFromSaved();
+                }
+            } catch (e) { els.status.textContent = 'Failed'; els.status.style.color = '#f44336'; }
+        });
+    });
+
+    els.reinjectBtn.addEventListener('click', function() {
+        els.reinjectBtn.disabled = true;
+        xhrPost(URLS.reinject, '', function(xhr) {
+            els.reinjectBtn.disabled = false;
+            if (xhr) {
+                try {
+                    var r = JSON.parse(xhr.responseText);
+                    if (r.success) {
+                        updateCssStatus(r.stale);
+                        if (!r.stale) {
+                            els.status.textContent = 'CSS reinjected.';
+                            els.status.style.color = '#4caf50';
+                        }
+                    }
+                } catch (e) {}
+            }
+        });
+    });
+
+    loadSettings();
+})();
+</script>
+
+<%+footer%>

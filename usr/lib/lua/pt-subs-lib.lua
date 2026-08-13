@@ -496,6 +496,7 @@ function M._is_valid_update_path(rel_path, relaxed)
     if rel_path == "usr/bin/podkop-fragment-patch.sh" then return true end
     if rel_path == "etc/init.d/podkop-fragment" then return true end
     if rel_path == "etc/config/podkop-fragment" then return true end
+    if rel_path == "etc/config/podkop-tweaker" then return true end
     return false
 end
 

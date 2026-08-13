@@ -13,6 +13,9 @@ Author: InsaniaQuon
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/singbox")%>">Sing-box Config</a></li>
         <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/diagnostics")%>">Diagnostics</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
+<% if show_argon then %>
+        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/argon")%>">Argon Config</a></li>
+<% end %>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
         <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Local Update</a></li>

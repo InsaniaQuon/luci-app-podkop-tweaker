@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.5.4 | 29.06.2026 | Auto-update schedule preview
+-- Podkop Tweaker | v3.6.0 | 30.06.2026 | Optional Argon theme typography tab
 
-local APP_VERSION = "3.5.4"
+local APP_VERSION = "3.6.0"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -11,6 +11,19 @@ local SUBS_FILE = "/etc/config/podkop-tweaker-subs.json"
 local UPDATE_LOG_FILE = "/etc/config/pt-update.log"
 local UPDATE_LOG_MAX = 25
 local PODKOP_INSTALL_URL = "https://raw.githubusercontent.com/itdoginfo/podkop/refs/heads/main/install.sh"
+
+local ARGON_CASCADE_CSS = "/www/luci-static/argon/css/cascade.css"
+local ARGON_CSS_MARKER_START = "/* === Podkop Tweaker Typography === */"
+local ARGON_CSS_MARKER_END = "/* === End Podkop Tweaker Typography === */"
+
+local ARGON_FONT_FAMILIES = {
+    ["Google Sans"] = '"Google Sans", "Microsoft Yahei", "WenQuanYi Micro Hei", sans-serif',
+    ["system-ui"] = "system-ui, -apple-system, sans-serif",
+    ["Arial"] = "Arial, Helvetica, sans-serif",
+    ["Verdana"] = "Verdana, Geneva, sans-serif",
+    ["Tahoma"] = "Tahoma, Geneva, sans-serif",
+    ["monospace"] = '"Cascadia Code", "JetBrains Mono", "Fira Code", monospace',
+}
 
 local S = require("pt-subs-lib")
 
@@ -56,8 +69,11 @@ function index()
     entry({"admin", "services", "podkop-tweaker", "diagnostics"},
         call("action_diagnostics"), nil, 17)
 
-    entry({"admin", "services", "podkop-tweaker", "import-export"},
-        call("action_import_export"), nil, 20)
+    entry({"admin", "services", "podkop-tweaker", "subscriptions"},
+        call("action_subscriptions"), nil, 40)
+
+    entry({"admin", "services", "podkop-tweaker", "argon"},
+        call("action_argon"), nil, 45)
 
     entry({"admin", "services", "podkop-tweaker", "system-info"},
         call("action_system_info"), nil, 30)
@@ -151,6 +167,18 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "fragment_settings"},
         call("api_fragment_settings")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "argon_typography"},
+        call("api_argon_typography")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "argon_typography_save"},
+        call("api_argon_typography_save")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "argon_typography_reset"},
+        call("api_argon_typography_reset")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "argon_reinject"},
+        call("api_argon_reinject")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "podkop_service_toggle"},
         call("api_podkop_service_toggle")).leaf = true
@@ -248,9 +276,11 @@ end
 
 local function render_page(template_name, extra)
     local disp = require("luci.dispatcher")
+    local uci = require("luci.model.uci").cursor()
     local vars = {
         app_version = APP_VERSION,
-        csrf_token = (disp.context and disp.context.token) or ""
+        csrf_token = (disp.context and disp.context.token) or "",
+        show_argon = (uci:get("podkop-tweaker", "settings", "show_argon_tab") == "1")
     }
     if extra then for k, v in pairs(extra) do vars[k] = v end end
     luci.template.render("podkop-tweaker/" .. template_name, vars)
@@ -300,6 +330,15 @@ end
 
 function action_subscriptions()
     render_page("subscriptions")
+end
+
+function action_argon()
+    local uci = require("luci.model.uci").cursor()
+    if uci:get("podkop-tweaker", "settings", "show_argon_tab") ~= "1" then
+        luci.http.redirect(luci.dispatcher.build_url("admin/services/podkop-tweaker/config"))
+        return
+    end
+    render_page("argon")
 end
 
 function action_update()
@@ -2606,4 +2645,245 @@ function api_stubby_autostart_toggle()
         success = true,
         enabled = (links and links ~= "")
     })
+end
+
+-- === Argon Typography ===
+
+local function argon_read_settings()
+    local uci = require("luci.model.uci").cursor()
+    return {
+        font_size = uci:get("argon", "typography", "font_size") or "",
+        font_family = uci:get("argon", "typography", "font_family") or "Google Sans",
+        font_family_custom = uci:get("argon", "typography", "font_family_custom") or "",
+        font_weight = uci:get("argon", "typography", "font_weight") or "400",
+        line_height = uci:get("argon", "typography", "line_height") or "",
+        letter_spacing = uci:get("argon", "typography", "letter_spacing") or "",
+        menu_font_size = uci:get("argon", "typography", "menu_font_size") or "",
+        menu_padding = uci:get("argon", "typography", "menu_padding") or ""
+    }
+end
+
+local function argon_check_stale()
+    local fd = io.open(ARGON_CASCADE_CSS, "r")
+    if not fd then return true end
+    local content = fd:read("*a")
+    fd:close()
+    return not content:find("Podkop Tweaker Typography", 1, true)
+end
+
+local function argon_generate_css(s)
+    local lines = {}
+    table.insert(lines, ARGON_CSS_MARKER_START)
+    local root_lines = {}
+    if s.font_size and s.font_size ~= "" then
+        table.insert(root_lines, "  font-size: " .. tonumber(s.font_size) .. "px;")
+    end
+    local family_css
+    if s.font_family == "custom" then
+        family_css = s.font_family_custom
+    else
+        family_css = ARGON_FONT_FAMILIES[s.font_family]
+    end
+    if family_css and family_css ~= "" then
+        table.insert(root_lines, '  --font-family-sans-serif: ' .. family_css .. ';')
+    end
+    if #root_lines > 0 then
+        table.insert(lines, ":root {")
+        for _, l in ipairs(root_lines) do table.insert(lines, l) end
+        table.insert(lines, "}")
+    end
+    local body_lines = {}
+    if s.font_weight and s.font_weight ~= "" then
+        table.insert(body_lines, "  font-weight: " .. tonumber(s.font_weight) .. ";")
+    end
+    if s.line_height and s.line_height ~= "" then
+        table.insert(body_lines, "  line-height: " .. tonumber(s.line_height) .. ";")
+    end
+    if s.letter_spacing and s.letter_spacing ~= "" then
+        table.insert(body_lines, "  letter-spacing: " .. tonumber(s.letter_spacing) .. "px;")
+    end
+    if #body_lines > 0 then
+        table.insert(lines, "body {")
+        for _, l in ipairs(body_lines) do table.insert(lines, l) end
+        table.insert(lines, "}")
+    end
+    local menu_lines = {}
+    if s.menu_font_size and s.menu_font_size ~= "" then
+        table.insert(menu_lines, "font-size: " .. tonumber(s.menu_font_size) .. "rem;")
+    end
+    if s.menu_padding and s.menu_padding ~= "" then
+        table.insert(menu_lines, "padding-top: " .. tonumber(s.menu_padding) .. "px;")
+        table.insert(menu_lines, "padding-bottom: " .. tonumber(s.menu_padding) .. "px;")
+    end
+    if #menu_lines > 0 then
+        table.insert(lines, ".main-left .nav li a { " .. table.concat(menu_lines, " ") .. " }")
+    end
+    table.insert(lines, ARGON_CSS_MARKER_END)
+    return table.concat(lines, "\n")
+end
+
+local function argon_inject_css(css_block)
+    local fd = io.open(ARGON_CASCADE_CSS, "r")
+    if not fd then return false end
+    local content = fd:read("*a")
+    fd:close()
+    local start_pos = content:find(ARGON_CSS_MARKER_START, 1, true)
+    if start_pos then
+        local end_pos = content:find(ARGON_CSS_MARKER_END, start_pos, true)
+        if end_pos then
+            end_pos = end_pos + #ARGON_CSS_MARKER_END
+            while content:sub(end_pos, end_pos):match("[\r\n]") do
+                end_pos = end_pos + 1
+            end
+            content = content:sub(1, start_pos - 1):gsub("[\r\n]+$", "") .. "\n" .. css_block .. "\n" .. content:sub(end_pos)
+        end
+    else
+        content = content:gsub("[\r\n]+$", "") .. "\n" .. css_block .. "\n"
+    end
+    local wfd = io.open(ARGON_CASCADE_CSS, "w")
+    if not wfd then return false end
+    wfd:write(content)
+    wfd:close()
+    return true
+end
+
+local function argon_apply()
+    local settings = argon_read_settings()
+    local css = argon_generate_css(settings)
+    return argon_inject_css(css)
+end
+
+local function argon_tab_disabled()
+    local uci = require("luci.model.uci").cursor()
+    return uci:get("podkop-tweaker", "settings", "show_argon_tab") ~= "1"
+end
+
+function api_argon_typography()
+    local http = require("luci.http")
+    local json = require("luci.jsonc")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    if argon_tab_disabled() then
+        http.write_json({ error = "Argon tab is disabled" })
+        return
+    end
+    local settings = argon_read_settings()
+    local families = {}
+    for k, _ in pairs(ARGON_FONT_FAMILIES) do
+        table.insert(families, k)
+    end
+    table.sort(families)
+    http.write_json({
+        settings = settings,
+        stale = argon_check_stale(),
+        font_families = families
+    })
+end
+
+function api_argon_typography_save()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    if argon_tab_disabled() then
+        http.write_json({ error = "Argon tab is disabled" })
+        return
+    end
+    local uci = require("luci.model.uci").cursor()
+    local font_size = http.formvalue("font_size") or ""
+    if font_size ~= "" then
+        local n = tonumber(font_size)
+        if not n or n < 13 or n > 20 then font_size = "" end
+    end
+    local font_family = http.formvalue("font_family") or "Google Sans"
+    local font_family_custom = http.formvalue("font_family_custom") or ""
+    font_family_custom = font_family_custom:gsub("[\"';\\]", "")
+    local font_weight = http.formvalue("font_weight") or "400"
+    if not font_weight:match("^[0-9]+$") then font_weight = "400" end
+    local line_height = http.formvalue("line_height") or ""
+    if line_height ~= "" then
+        local n = tonumber(line_height)
+        if not n or n < 1.0 or n > 2.0 then line_height = "" end
+    end
+    local letter_spacing = http.formvalue("letter_spacing") or ""
+    if letter_spacing ~= "" then
+        local n = tonumber(letter_spacing)
+        if not n or n < -0.5 or n > 2.0 then letter_spacing = "" end
+    end
+    local menu_font_size = http.formvalue("menu_font_size") or ""
+    if menu_font_size ~= "" then
+        local n = tonumber(menu_font_size)
+        if not n or n < 0.7 or n > 1.2 then menu_font_size = "" end
+    end
+    local menu_padding = http.formvalue("menu_padding") or ""
+    if menu_padding ~= "" then
+        local n = tonumber(menu_padding)
+        if not n or n < 5 or n > 20 then menu_padding = "" end
+    end
+    uci:set("argon", "typography", "typography")
+    uci:set("argon", "typography", "font_size", font_size)
+    uci:set("argon", "typography", "font_family", font_family)
+    uci:set("argon", "typography", "font_family_custom", font_family_custom)
+    uci:set("argon", "typography", "font_weight", font_weight)
+    uci:set("argon", "typography", "line_height", line_height)
+    uci:set("argon", "typography", "letter_spacing", letter_spacing)
+    uci:set("argon", "typography", "menu_font_size", menu_font_size)
+    uci:set("argon", "typography", "menu_padding", menu_padding)
+    uci:commit("argon")
+    local ok = argon_apply()
+    http.write_json({ success = ok, stale = argon_check_stale() })
+end
+
+function api_argon_typography_reset()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    if argon_tab_disabled() then
+        http.write_json({ error = "Argon tab is disabled" })
+        return
+    end
+    local uci = require("luci.model.uci").cursor()
+    uci:set("argon", "typography", "typography")
+    uci:set("argon", "typography", "font_size", "")
+    uci:set("argon", "typography", "font_family", "Google Sans")
+    uci:set("argon", "typography", "font_family_custom", "")
+    uci:set("argon", "typography", "font_weight", "400")
+    uci:set("argon", "typography", "line_height", "")
+    uci:set("argon", "typography", "letter_spacing", "")
+    uci:set("argon", "typography", "menu_font_size", "")
+    uci:set("argon", "typography", "menu_padding", "")
+    uci:commit("argon")
+    local fd = io.open(ARGON_CASCADE_CSS, "r")
+    if fd then
+        local content = fd:read("*a")
+        fd:close()
+        local start_pos = content:find(ARGON_CSS_MARKER_START, 1, true)
+        if start_pos then
+            local end_pos = content:find(ARGON_CSS_MARKER_END, start_pos, true)
+            if end_pos then
+                end_pos = end_pos + #ARGON_CSS_MARKER_END
+                while content:sub(end_pos, end_pos):match("[\r\n]") do
+                    end_pos = end_pos + 1
+                end
+                content = content:sub(1, start_pos - 1):gsub("[\r\n]+$", "") .. "\n"
+                local wfd = io.open(ARGON_CASCADE_CSS, "w")
+                if wfd then wfd:write(content) wfd:close() end
+            end
+        end
+    end
+    http.write_json({ success = true, stale = true })
+end
+
+function api_argon_reinject()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+    if argon_tab_disabled() then
+        http.write_json({ error = "Argon tab is disabled" })
+        return
+    end
+    local ok = argon_apply()
+    http.write_json({ success = ok, stale = argon_check_stale() })
 end

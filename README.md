@@ -12,6 +12,7 @@ LuCI web interface for managing Podkop proxy client on OpenWrt routers.
 - **System Information** — Podkop and system version info with update via ttyd terminal
 - **Subscriptions** — proxy subscription manager (vless/vmess/ss/trojan) with auto-update scheduling
 - **Self-Update** — update Podkop Tweaker from GitHub Releases or local archive
+- **Argon Config** (optional, disabled by default) — typography settings for the Argon LuCI theme: font size, family, weight, line height, letter spacing, sidebar menu tuning with live preview
 
 ## Requirements
 
@@ -32,6 +33,26 @@ tar -xzf luci-app-podkop-tweaker-vX.Y.Z.tar.gz -C /
 ```
 
 No ipk package build required — files are copied as-is.
+
+## Argon Config (optional)
+
+The Argon Config tab is **hidden by default**. It provides typography settings (font size, font family, font weight, line height, letter spacing, sidebar menu font size and padding) for the [Argon theme](https://github.com/jerrykuku/luci-theme-argon) with live preview. Settings are stored in `/etc/config/argon` and applied by appending a CSS block to `/www/luci-static/argon/css/cascade.css`.
+
+Enable the tab via SSH:
+
+```bash
+uci set podkop-tweaker.settings.show_argon_tab='1'
+uci commit podkop-tweaker
+```
+
+Disable it back:
+
+```bash
+uci set podkop-tweaker.settings.show_argon_tab='0'
+uci commit podkop-tweaker
+```
+
+After a theme update the CSS block is lost — open the Argon Config tab and click "Reinject CSS".
 
 ## Disclaimer
 
