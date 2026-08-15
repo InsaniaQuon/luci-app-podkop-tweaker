@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.6.0 | 30.06.2026 | Optional Argon theme typography tab
+-- Podkop Tweaker | v3.6.1 | 15.08.2026 | Restore import-export tab route
 
-local APP_VERSION = "3.6.0"
+local APP_VERSION = "3.6.1"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -69,6 +69,9 @@ function index()
     entry({"admin", "services", "podkop-tweaker", "diagnostics"},
         call("action_diagnostics"), nil, 17)
 
+    entry({"admin", "services", "podkop-tweaker", "import-export"},
+        call("action_import_export"), nil, 20)
+
     entry({"admin", "services", "podkop-tweaker", "subscriptions"},
         call("action_subscriptions"), nil, 40)
 
@@ -77,9 +80,6 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "system-info"},
         call("action_system_info"), nil, 30)
-
-    entry({"admin", "services", "podkop-tweaker", "subscriptions"},
-        call("action_subscriptions"), nil, 40)
 
     entry({"admin", "services", "podkop-tweaker", "update"},
         call("action_update"), nil, 50)
