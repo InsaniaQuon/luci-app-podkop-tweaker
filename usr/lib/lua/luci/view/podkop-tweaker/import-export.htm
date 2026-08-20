@@ -1,5 +1,5 @@
 <%#
-LuCI Podkop Tweaker — Import/Export Tab
+LuCI Podkop Tweaker — Import/Export Tab (Bundle picker UI)
 Author: InsaniaQuon
 -%>
 <%+header%>
@@ -27,61 +27,54 @@ Author: InsaniaQuon
         <button class="btn cbi-button" onclick="window.location.reload(true)">Reload</button>
     </div>
 
-    <div class="cbi-section ps-ie-status-section">
-        <div class="ps-service-status" id="ps-service-status">
-            <span class="ps-status-dot checking" id="ps-status-dot"></span>
-            <span class="ps-status-text" id="ps-status-text">Checking...</span>
-        </div>
-    </div>
-
     <div class="cbi-section">
-        <h3>Export</h3>
+        <h3>Export &amp; Import</h3>
 
-        <div class="ps-ie-block">
-            <div class="ps-ie-actions">
-                <button class="btn cbi-button cbi-button-apply" data-action="export">
-                    Download Podkop Config
-                </button>
+        <div class="ps-ie-columns">
+            <div class="ps-ie-column">
+                <h4>Export</h4>
+                <div class="ps-ie-block">
+                    <div class="ps-ie-desc">
+                        <p>Export selected settings as a single JSON bundle file.</p>
+                    </div>
+                    <div class="ps-ie-actions">
+                        <button class="btn cbi-button cbi-button-apply" id="ps-export-open">
+                            Export Bundle...
+                        </button>
+                    </div>
+                </div>
             </div>
-            <div class="ps-ie-desc">
-                <p>Download the current Podkop configuration file (<code>/etc/config/podkop</code>).</p>
-                <div class="ps-warning-box">
-                    <strong>&#9888; Warning:</strong> This file contains proxy credentials (UUIDs, passwords). Do not share it with third parties.
+
+            <div class="ps-ie-column">
+                <h4>Import</h4>
+                <div class="ps-ie-block">
+                    <div class="ps-ie-desc">
+                        <p>Upload a bundle file (<code>.json</code>) or a single config file &mdash; contents are reviewed before applying.</p>
+                    </div>
+                    <div class="ps-ie-actions" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                        <input type="file" id="ps-import-file" accept=".json,.conf,.config,.txt,.bak" hidden />
+                        <button class="btn cbi-button" id="ps-import-pick">Choose File</button>
+                        <span class="ps-import-fname" id="ps-import-fname">No file selected</span>
+                        <button class="btn cbi-button cbi-button-apply" id="ps-import-open" disabled>Review &amp; Import...</button>
+                        <span class="ps-config-status" id="ps-import-status"></span>
+                    </div>
                 </div>
             </div>
         </div>
-
-        <div class="ps-ie-block">
-            <div class="ps-ie-actions">
-                <button class="btn cbi-button cbi-button-apply" data-action="export-stubby">
-                    Download Stubby Config
-                </button>
-            </div>
-            <div class="ps-ie-desc">
-                <p>Download the current Stubby configuration file (<code>/etc/config/stubby</code>).</p>
-            </div>
-        </div>
-
-        <div class="ps-ie-block">
-            <div class="ps-ie-actions">
-                <button class="btn cbi-button cbi-button-apply" data-action="export-singbox">
-                    Download Sing-box Config
-                </button>
-            </div>
-            <div class="ps-ie-desc">
-                <p>Download the current sing-box configuration file (<code>/etc/sing-box/config.json</code>).</p>
-            </div>
-        </div>
     </div>
 
     <div class="cbi-section">
-        <h3>Auto Backup</h3>
+        <h3>Auto Backup &amp; Service Status</h3>
 
-        <div class="ps-ie-desc" style="margin-bottom:12px;">
-            <p>Auto backup files created before changes. Each backup replaces the previous one.</p>
-        </div>
+        <div class="ps-ie-columns">
+            <div class="ps-ie-column">
+                <h4>Auto Backup</h4>
 
-        <table class="ps-ie-backup-table">
+                <div class="ps-ie-desc" style="margin-bottom:12px;">
+                    <p>Auto backup files created before changes. Each backup replaces the previous one.</p>
+                </div>
+
+                <table class="ps-ie-backup-table">
             <tr>
                 <td>Podkop &mdash; before config edit</td>
                 <td>
@@ -142,62 +135,101 @@ Author: InsaniaQuon
                     <% end %>
                 </td>
             </tr>
-        </table>
+                </table>
+            </div>
+
+            <div class="ps-ie-column">
+                <h4>Service Status</h4>
+
+                <div class="ps-ie-desc" style="margin-bottom:12px;">
+                    <p>Target services of this page. Podkop runs sing-box as its worker process.</p>
+                </div>
+
+                <div class="ps-svc-list">
+                    <div class="ps-svc-row">
+                        <span class="ps-status-dot checking" id="ps-podkop-dot"></span>
+                        <div class="ps-svc-body">
+                            <div class="ps-svc-title">
+                                <span class="ps-svc-name">Podkop</span>
+                                <span class="ps-svc-proc">process: sing-box</span>
+                            </div>
+                            <span class="ps-status-text" id="ps-podkop-text">Checking...</span>
+                        </div>
+                    </div>
+                    <div class="ps-svc-row">
+                        <span class="ps-status-dot checking" id="ps-stubby-dot"></span>
+                        <div class="ps-svc-body">
+                            <div class="ps-svc-title">
+                                <span class="ps-svc-name">Stubby</span>
+                                <span class="ps-svc-proc">process: stubby</span>
+                            </div>
+                            <span class="ps-status-text" id="ps-stubby-text">Checking...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="ps-svc-footer">
+                    <span style="flex:1"></span>
+                    <button class="btn cbi-button ps-error-btn" id="ps-error-btn" style="display:none">
+                        &#9888; Error
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
+</div>
 
-    <div class="cbi-section">
-        <h3>Import</h3>
-
-        <div class="ps-ie-block">
-            <div class="ps-ie-desc">
-                <p>Upload a Podkop configuration file to replace the current one.</p>
-            </div>
-            <div class="ps-ie-actions" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <input type="file" id="ps-import-podkop" accept=".conf,.config,.txt,.bak" style="font-size:12px;" />
-                <button class="btn cbi-button cbi-button-apply" id="ps-import-podkop-btn" disabled>Import Podkop</button>
-                <span class="ps-config-status" id="ps-import-podkop-status"></span>
-            </div>
-            <div class="ps-danger-box" style="margin-top:8px;">
-                <strong>&#10007; This will:</strong> replace <code>/etc/config/podkop</code>, create backup, restart Podkop.
-            </div>
+<div class="ps-modal" id="ps-export-modal" style="display:none;">
+    <div class="ps-modal-content">
+        <h3>Export Bundle</h3>
+        <div class="ps-check-list" id="ps-export-list">
+            <label class="ps-check-item"><input type="checkbox" value="podkop" checked /><span>Podkop config</span><span class="ps-check-note">contains credentials</span></label>
+            <label class="ps-check-item"><input type="checkbox" value="stubby" checked /><span>Stubby config</span></label>
+            <label class="ps-check-item"><input type="checkbox" value="singbox" checked /><span>Sing-box config</span></label>
+            <label class="ps-check-item"><input type="checkbox" value="fragment" checked /><span>Fragment settings</span></label>
+<% if show_argon then %>
+            <label class="ps-check-item"><input type="checkbox" value="argon" checked /><span>Argon typography</span></label>
+<% end %>
+            <label class="ps-check-item"><input type="checkbox" value="tweaker" checked /><span>Tweaker settings</span><span class="ps-check-note is-neutral">Argon tab visibility</span></label>
+            <label class="ps-check-item"><input type="checkbox" value="subs" checked /><span>Subscriptions &amp; auto-update schedule</span></label>
         </div>
-
-        <div class="ps-ie-block">
-            <div class="ps-ie-desc">
-                <p>Upload a Stubby configuration file to replace the current one.</p>
-            </div>
-            <div class="ps-ie-actions" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <input type="file" id="ps-import-stubby" accept=".conf,.config,.txt,.bak" style="font-size:12px;" />
-                <button class="btn cbi-button cbi-button-apply" id="ps-import-stubby-btn" disabled>Import Stubby</button>
-                <span class="ps-config-status" id="ps-import-stubby-status"></span>
-            </div>
-            <div class="ps-danger-box" style="margin-top:8px;">
-                <strong>&#10007; This will:</strong> replace <code>/etc/config/stubby</code>, create backup, restart Stubby.
-            </div>
+        <div class="ps-warning-box">
+            <strong>&#9888; Warning:</strong> the bundle may contain proxy credentials (UUIDs, passwords). Do not share it with third parties.
         </div>
-
-        <div class="ps-ie-block">
-            <div class="ps-ie-desc">
-                <p>Upload a sing-box configuration file to replace the current one.</p>
-            </div>
-            <div class="ps-ie-actions" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <input type="file" id="ps-import-singbox" accept=".json,.txt" style="font-size:12px;" />
-                <button class="btn cbi-button cbi-button-apply" id="ps-import-singbox-btn" disabled>Import Sing-box</button>
-                <span class="ps-config-status" id="ps-import-singbox-status"></span>
-            </div>
-            <div class="ps-danger-box" style="margin-top:8px;">
-                <strong>&#10007; This will:</strong> replace <code>/etc/sing-box/config.json</code>, validate with <code>sing-box check</code>, create backup, restart sing-box.
-            </div>
+        <div class="ps-modal-footer">
+            <button class="btn cbi-button" id="ps-export-all">Select all / none</button>
+            <span style="flex:1"></span>
+            <button class="btn cbi-button" id="ps-export-cancel">Cancel</button>
+            <button class="btn cbi-button cbi-button-apply" id="ps-export-confirm">Download Bundle</button>
         </div>
+    </div>
+</div>
 
-        <div style="margin-top:8px;">
-            <button class="btn cbi-button ps-rollback-btn" id="ps-rollback-btn" style="display:none">
-                Rollback Podkop
-            </button>
-            <span class="ps-config-status" id="ps-import-status"></span>
-            <button class="btn cbi-button ps-error-btn" id="ps-error-btn" style="display:none">
-                &#9888; Error
-            </button>
+<div class="ps-modal" id="ps-import-modal" style="display:none;">
+    <div class="ps-modal-content">
+        <h3 id="ps-import-modal-title">Import Bundle</h3>
+        <div class="ps-summary-box" id="ps-import-meta" style="display:none;"></div>
+        <div class="ps-check-list" id="ps-import-review-list"></div>
+        <div id="ps-import-as-row" style="display:none;margin:12px 0;font-size:13px;">
+            Import as:
+            <select id="ps-import-as-select" class="ps-import-select">
+                <option value="podkop">Podkop config</option>
+                <option value="stubby">Stubby config</option>
+                <option value="singbox">Sing-box config</option>
+            </select>
+        </div>
+        <div class="ps-summary-box" id="ps-import-summary"></div>
+        <div class="ps-danger-box">
+            <strong>&#10007; Note:</strong> backups are created before applying. Items that fail validation are skipped, the rest are applied.
+        </div>
+        <div class="ps-import-results" id="ps-import-results"></div>
+        <div class="ps-config-status" id="ps-import-modal-status" style="display:block;margin:8px 0;"></div>
+        <div class="ps-modal-footer">
+            <button class="btn cbi-button ps-rollback-btn" id="ps-import-rollback" style="display:none">Rollback Podkop</button>
+            <span style="flex:1"></span>
+            <button class="btn cbi-button" id="ps-import-cancel">Cancel</button>
+            <button class="btn cbi-button cbi-button-apply" id="ps-import-confirm">Import</button>
+            <button class="btn cbi-button" id="ps-import-close" style="display:none;">Close</button>
         </div>
     </div>
 </div>
@@ -224,33 +256,44 @@ Author: InsaniaQuon
         importCfg: '<%=url("admin/services/podkop-tweaker/api/import_config")%>',
         importStubby: '<%=url("admin/services/podkop-tweaker/api/import_stubby_config")%>',
         importSingbox: '<%=url("admin/services/podkop-tweaker/api/import_singbox_config")%>',
-        exportCfg: '<%=url("admin/services/podkop-tweaker/api/export_config")%>',
-        exportStubby: '<%=url("admin/services/podkop-tweaker/api/export_stubby_config")%>',
-        exportSingbox: '<%=url("admin/services/podkop-tweaker/api/export_singbox_config")%>',
+        exportBundle: '<%=url("admin/services/podkop-tweaker/api/export_bundle")%>',
+        importBundle: '<%=url("admin/services/podkop-tweaker/api/import_bundle")%>',
         backup: '<%=url("admin/services/podkop-tweaker/api/download_backup")%>',
         backupSub: '<%=url("admin/services/podkop-tweaker/api/download_sub_backup")%>',
         backupStubby: '<%=url("admin/services/podkop-tweaker/api/download_stubby_backup")%>',
         backupSingbox: '<%=url("admin/services/podkop-tweaker/api/download_singbox_backup")%>',
         status: '<%=url("admin/services/podkop-tweaker/api/service_status")%>',
+        stubbyStatus: '<%=url("admin/services/podkop-tweaker/api/stubby_service_status")%>',
         rollback: '<%=url("admin/services/podkop-tweaker/api/rollback")%>'
     };
 
-    var importPodkopFile = document.getElementById('ps-import-podkop');
-    var importPodkopBtn = document.getElementById('ps-import-podkop-btn');
-    var importPodkopStatus = document.getElementById('ps-import-podkop-status');
-    var importStubbyFile = document.getElementById('ps-import-stubby');
-    var importStubbyBtn = document.getElementById('ps-import-stubby-btn');
-    var importStubbyStatus = document.getElementById('ps-import-stubby-status');
-    var importSingboxFile = document.getElementById('ps-import-singbox');
-    var importSingboxBtn = document.getElementById('ps-import-singbox-btn');
-    var importSingboxStatus = document.getElementById('ps-import-singbox-status');
-    var rollbackBtn = document.getElementById('ps-rollback-btn');
+    var ITEM_LABELS = {
+        podkop: 'Podkop config',
+        stubby: 'Stubby config',
+        singbox: 'Sing-box config',
+        fragment: 'Fragment settings',
+        argon: 'Argon typography',
+        tweaker: 'Tweaker settings',
+        subs: 'Subscriptions & schedule'
+    };
+    var ITEM_CONSEQ = {
+        podkop: { replaces: '/etc/config/podkop', restarts: 'Podkop' },
+        stubby: { replaces: '/etc/config/stubby', restarts: 'Stubby' },
+        singbox: { replaces: '/etc/sing-box/config.json', restarts: 'sing-box' },
+        fragment: { replaces: '/etc/config/podkop-fragment' },
+        argon: { replaces: 'Argon typography (UCI + CSS)' },
+        tweaker: { replaces: '/etc/config/podkop-tweaker' },
+        subs: { replaces: 'subscriptions file, auto-update schedule' }
+    };
+
     var errorBtn = document.getElementById('ps-error-btn');
     var errorModal = document.getElementById('ps-error-modal');
     var errorDetails = document.getElementById('ps-error-details');
     var errorClose = document.getElementById('ps-error-close');
-    var statusDot = document.getElementById('ps-status-dot');
-    var statusText = document.getElementById('ps-status-text');
+    var statusDot = document.getElementById('ps-podkop-dot');
+    var statusText = document.getElementById('ps-podkop-text');
+    var stubbyDot = document.getElementById('ps-stubby-dot');
+    var stubbyText = document.getElementById('ps-stubby-text');
 
     var _lastError = null;
     var _errorTimer = null;
@@ -262,11 +305,7 @@ Author: InsaniaQuon
         var t = [ts.getHours(), ts.getMinutes(), ts.getSeconds()].map(function(v) {
             return String(v).padStart(2, '0');
         }).join(':');
-        _lastError = {
-            msg: shortMsg,
-            details: '[' + t + '] ' + (fullDetails || shortMsg),
-            ts: Date.now()
-        };
+        _lastError = '[' + t + '] ' + (fullDetails || shortMsg);
         errorBtn.style.display = 'inline-block';
         if (_errorTimer) clearTimeout(_errorTimer);
         _errorTimer = setTimeout(function() {
@@ -284,9 +323,9 @@ Author: InsaniaQuon
         xhr.send('token=' + encodeURIComponent(CSRF) + (params ? '&' + params : ''));
     }
 
-    function checkStatus(cb) {
+    function checkJson(url, cb) {
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.status);
+        xhr.open('GET', url);
         xhr.onload = function() {
             if (xhr.status === 200) {
                 try {
@@ -299,10 +338,27 @@ Author: InsaniaQuon
         xhr.send();
     }
 
-    function updateStatusUI(running, pid) {
-        statusDot.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
-        statusText.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
-        statusText.style.color = running ? '#4caf50' : '#f44336';
+    function checkStatus(cb) {
+        checkJson(URLS.status, cb);
+    }
+
+    function checkStubbyStatus(cb) {
+        checkJson(URLS.stubbyStatus, cb);
+    }
+
+    function makeStatusUpdater(dotEl, textEl) {
+        return function(running, pid) {
+            dotEl.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
+            textEl.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
+            textEl.style.color = running ? '#4caf50' : '#f44336';
+        };
+    }
+
+    var updateStatusUI = makeStatusUpdater(statusDot, statusText);
+    var updateStubbyUI = makeStatusUpdater(stubbyDot, stubbyText);
+
+    function refreshStubbyStatus() {
+        checkStubbyStatus(updateStubbyUI);
     }
 
     function pollStatus(onSuccess, onTimeout, attempts) {
@@ -326,149 +382,17 @@ Author: InsaniaQuon
 
     errorBtn.addEventListener('click', function() {
         if (!_lastError) return;
-        errorDetails.textContent = _lastError.details;
+        errorDetails.textContent = _lastError;
         errorModal.style.display = 'flex';
     });
     errorClose.addEventListener('click', function() { errorModal.style.display = 'none'; });
     errorModal.addEventListener('click', function(e) { if (e.target === errorModal) errorModal.style.display = 'none'; });
-
-    function doFileImport(fileInput, importBtn, statusEl, url, serviceName, pollFn) {
-        if (!fileInput.files || !fileInput.files[0]) return;
-        if (!confirm('This will replace the current ' + serviceName + ' configuration.\n\nAn automatic backup will be created.\n\nContinue?')) return;
-
-        var file = fileInput.files[0];
-        if (file.size > 1048576) {
-            statusEl.textContent = 'File too large (max 1 MB)';
-            statusEl.style.color = '#f44336';
-            return;
-        }
-
-        importBtn.disabled = true;
-        importBtn.textContent = 'Importing...';
-        statusEl.textContent = 'Reading file...';
-        statusEl.style.color = '#2196f3';
-
-        var reader = new FileReader();
-        reader.onerror = function() {
-            importBtn.disabled = false;
-            importBtn.textContent = 'Import ' + serviceName;
-            statusEl.textContent = 'File read failed';
-            statusEl.style.color = '#f44336';
-        };
-        reader.onload = function() {
-            statusEl.textContent = 'Importing and restarting ' + serviceName.toLowerCase() + '...';
-            xhrPost(url, 'content=' + encodeURIComponent(reader.result), function(xhr) {
-                importBtn.disabled = false;
-                importBtn.textContent = 'Import ' + serviceName;
-                if (!xhr) {
-                    statusEl.textContent = 'Network error';
-                    statusEl.style.color = '#f44336';
-                    return;
-                }
-                try {
-                    var resp = JSON.parse(xhr.responseText);
-                    if (resp.success && resp.restarting) {
-                        statusEl.textContent = 'Restarting ' + serviceName.toLowerCase() + '...';
-                        statusEl.style.color = '#2196f3';
-                        if (pollFn) {
-                            pollFn(
-                                function() {
-                                    fileInput.value = '';
-                                    statusEl.textContent = 'Imported successfully.';
-                                    statusEl.style.color = '#4caf50';
-                                },
-                                function() {
-                                    if (serviceName === 'Podkop') rollbackBtn.style.display = 'inline-block';
-                                    statusEl.textContent = serviceName + ' did not start after import.';
-                                    statusEl.style.color = '#f44336';
-                                }
-                            );
-                        } else {
-                            fileInput.value = '';
-                            statusEl.textContent = 'Imported successfully.';
-                            statusEl.style.color = '#4caf50';
-                        }
-                    } else {
-                        statusEl.textContent = resp.error || 'Import failed';
-                        statusEl.style.color = '#f44336';
-                    }
-                } catch (e) {
-                    statusEl.textContent = 'Import failed';
-                    statusEl.style.color = '#f44336';
-                }
-            });
-        };
-        reader.readAsText(file);
-    }
-
-    importPodkopFile.addEventListener('change', function() {
-        importPodkopBtn.disabled = !this.files || !this.files[0];
-    });
-    importPodkopBtn.addEventListener('click', function() {
-        doFileImport(importPodkopFile, importPodkopBtn, importPodkopStatus, URLS.importCfg, 'Podkop', pollStatus);
-    });
-
-    importStubbyFile.addEventListener('change', function() {
-        importStubbyBtn.disabled = !this.files || !this.files[0];
-    });
-    importStubbyBtn.addEventListener('click', function() {
-        doFileImport(importStubbyFile, importStubbyBtn, importStubbyStatus, URLS.importStubby, 'Stubby', null);
-    });
-
-    importSingboxFile.addEventListener('change', function() {
-        importSingboxBtn.disabled = !this.files || !this.files[0];
-    });
-    importSingboxBtn.addEventListener('click', function() {
-        doFileImport(importSingboxFile, importSingboxBtn, importSingboxStatus, URLS.importSingbox, 'Sing-box', null);
-    });
-
-    function doRollback() {
-        rollbackBtn.style.display = 'none';
-        importPodkopStatus.textContent = 'Rolling back...';
-        importPodkopStatus.style.color = '#2196f3';
-
-        xhrPost(URLS.rollback, '', function(xhr) {
-            if (!xhr) {
-                importPodkopStatus.textContent = 'Rollback network error';
-                importPodkopStatus.style.color = '#f44336';
-                return;
-            }
-            try {
-                var resp = JSON.parse(xhr.responseText);
-                if (resp.success) {
-                    importPodkopStatus.textContent = 'Rolled back. Restarting...';
-                    importPodkopStatus.style.color = '#2196f3';
-                    pollStatus(
-                        function() {
-                            importPodkopStatus.textContent = 'Rolled back successfully.';
-                            importPodkopStatus.style.color = '#4caf50';
-                        },
-                        function() {
-                            importPodkopStatus.textContent = 'Rollback done but sing-box still not running.';
-                            importPodkopStatus.style.color = '#ff9800';
-                        }
-                    );
-                } else {
-                    importPodkopStatus.textContent = 'Rollback failed: ' + (resp.error || '');
-                    importPodkopStatus.style.color = '#f44336';
-                }
-            } catch (e) {
-                importPodkopStatus.textContent = 'Rollback failed';
-                importPodkopStatus.style.color = '#f44336';
-            }
-        });
-    }
-
-    rollbackBtn.addEventListener('click', doRollback);
 
     document.querySelectorAll('[data-action]').forEach(function(btn) {
         btn.addEventListener('click', function(e) {
             e.preventDefault();
             var action = btn.getAttribute('data-action');
             switch (action) {
-                case 'export': window.location.href = URLS.exportCfg; break;
-                case 'export-stubby': window.location.href = URLS.exportStubby; break;
-                case 'export-singbox': window.location.href = URLS.exportSingbox; break;
                 case 'backup-auto': window.location.href = URLS.backup; break;
                 case 'backup-sub': window.location.href = URLS.backupSub; break;
                 case 'backup-stubby': window.location.href = URLS.backupStubby; break;
@@ -477,7 +401,449 @@ Author: InsaniaQuon
         });
     });
 
+    /* === Bundle export picker === */
+
+    var exportOpenBtn = document.getElementById('ps-export-open');
+    var exportModal = document.getElementById('ps-export-modal');
+    var exportList = document.getElementById('ps-export-list');
+    var exportAllBtn = document.getElementById('ps-export-all');
+    var exportCancelBtn = document.getElementById('ps-export-cancel');
+    var exportConfirmBtn = document.getElementById('ps-export-confirm');
+
+    exportOpenBtn.addEventListener('click', function() {
+        exportModal.style.display = 'flex';
+    });
+    exportCancelBtn.addEventListener('click', function() {
+        exportModal.style.display = 'none';
+    });
+    exportModal.addEventListener('click', function(e) {
+        if (e.target === exportModal) exportModal.style.display = 'none';
+    });
+    exportAllBtn.addEventListener('click', function() {
+        var boxes = exportList.querySelectorAll('input[type="checkbox"]');
+        var allChecked = true;
+        boxes.forEach(function(b) { if (!b.checked) allChecked = false; });
+        boxes.forEach(function(b) { b.checked = !allChecked; });
+    });
+    exportConfirmBtn.addEventListener('click', function() {
+        var selected = [];
+        exportList.querySelectorAll('input[type="checkbox"]').forEach(function(b) {
+            if (b.checked) selected.push(b.value);
+        });
+        if (selected.length === 0) return;
+        exportModal.style.display = 'none';
+        window.location.href = URLS.exportBundle + '?items=' + encodeURIComponent(selected.join(','));
+    });
+
+    /* === Import: file pick + format detection === */
+
+    var importFile = document.getElementById('ps-import-file');
+    var importPickBtn = document.getElementById('ps-import-pick');
+    var importFname = document.getElementById('ps-import-fname');
+    var importOpenBtn = document.getElementById('ps-import-open');
+    var importStatus = document.getElementById('ps-import-status');
+
+    var reviewModal = document.getElementById('ps-import-modal');
+    var reviewTitle = document.getElementById('ps-import-modal-title');
+    var reviewMeta = document.getElementById('ps-import-meta');
+    var reviewList = document.getElementById('ps-import-review-list');
+    var reviewSummary = document.getElementById('ps-import-summary');
+    var reviewResults = document.getElementById('ps-import-results');
+    var reviewStatusEl = document.getElementById('ps-import-modal-status');
+    var reviewConfirmBtn = document.getElementById('ps-import-confirm');
+    var reviewCancelBtn = document.getElementById('ps-import-cancel');
+    var reviewCloseBtn = document.getElementById('ps-import-close');
+    var reviewRollbackBtn = document.getElementById('ps-import-rollback');
+    var asRow = document.getElementById('ps-import-as-row');
+    var asSelect = document.getElementById('ps-import-as-select');
+
+    var _pendingBundle = null;
+    var _pendingRaw = null;
+
+    importPickBtn.addEventListener('click', function() {
+        importFile.click();
+    });
+
+    importFile.addEventListener('change', function() {
+        var has = this.files && this.files[0];
+        importOpenBtn.disabled = !has;
+        importFname.textContent = has ? this.files[0].name : 'No file selected';
+        importStatus.textContent = '';
+    });
+
+    importOpenBtn.addEventListener('click', function() {
+        var file = importFile.files && importFile.files[0];
+        if (!file) return;
+        if (file.size > 4194304) {
+            importStatus.textContent = 'File too large (max 4 MB)';
+            importStatus.style.color = '#f44336';
+            return;
+        }
+        importStatus.textContent = 'Reading file...';
+        importStatus.style.color = '#2196f3';
+        var reader = new FileReader();
+        reader.onerror = function() {
+            importStatus.textContent = 'File read failed';
+            importStatus.style.color = '#f44336';
+        };
+        reader.onload = function() {
+            importStatus.textContent = '';
+            detectAndOpen(reader.result);
+        };
+        reader.readAsText(file);
+    });
+
+    function detectAndOpen(text) {
+        var t = (text || '').replace(/^\uFEFF/, '').trim();
+        if (t.charAt(0) === '{') {
+            var j = null;
+            try { j = JSON.parse(t); } catch (e) { j = null; }
+            if (j && j.format === 'podkop-tweaker-bundle' && j.items && typeof j.items === 'object') {
+                openBundleReview(j, text);
+                return;
+            }
+            if (j) {
+                openRawReview(text, 'singbox');
+                return;
+            }
+        }
+        if (/^\s*config\s+/m.test(t)) {
+            var guess = 'podkop';
+            if (/^\s*config\s+stubby/m.test(t)) guess = 'stubby';
+            openRawReview(text, guess);
+            return;
+        }
+        importStatus.textContent = 'Unrecognized file format';
+        importStatus.style.color = '#f44336';
+    }
+
+    function resetReviewModal() {
+        reviewList.innerHTML = '';
+        reviewResults.innerHTML = '';
+        reviewSummary.textContent = '';
+        reviewStatusEl.textContent = '';
+        reviewStatusEl.style.color = '';
+        reviewMeta.style.display = 'none';
+        reviewMeta.textContent = '';
+        reviewList.style.display = 'none';
+        asRow.style.display = 'none';
+        reviewRollbackBtn.style.display = 'none';
+        reviewConfirmBtn.style.display = '';
+        reviewConfirmBtn.disabled = false;
+        reviewConfirmBtn.textContent = 'Import';
+        reviewCancelBtn.style.display = '';
+        reviewCloseBtn.style.display = 'none';
+    }
+
+    function openBundleReview(bundle, raw) {
+        resetReviewModal();
+        _pendingBundle = { json: bundle, raw: raw };
+        _pendingRaw = null;
+
+        reviewTitle.textContent = 'Import Bundle';
+        reviewMeta.style.display = 'block';
+        var metaBits = [];
+        if (bundle.created) metaBits.push('created: ' + bundle.created);
+        if (bundle.tweaker_version) metaBits.push('tweaker: v' + bundle.tweaker_version);
+        if (bundle.version) metaBits.push('format v' + bundle.version);
+        reviewMeta.textContent = metaBits.join('  |  ');
+
+        var names = Object.keys(bundle.items);
+        for (var i = 0; i < names.length; i++) {
+            var name = names[i];
+            var known = ITEM_LABELS.hasOwnProperty(name);
+            var label = document.createElement('label');
+            label.className = 'ps-check-item' + (known ? '' : ' is-disabled');
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = name;
+            cb.checked = known;
+            if (!known) cb.disabled = true;
+            label.appendChild(cb);
+            var span = document.createElement('span');
+            span.textContent = ITEM_LABELS[name] || name;
+            label.appendChild(span);
+            if (!known) {
+                var note = document.createElement('span');
+                note.className = 'ps-check-note';
+                note.textContent = 'unknown item \u2014 will be skipped';
+                label.appendChild(note);
+            } else if (name === 'podkop') {
+                var cred = document.createElement('span');
+                cred.className = 'ps-check-note';
+                cred.textContent = 'contains credentials';
+                label.appendChild(cred);
+            } else if (name === 'tweaker') {
+                var argonNote = document.createElement('span');
+                argonNote.className = 'ps-check-note is-neutral';
+                argonNote.textContent = 'Argon tab visibility';
+                label.appendChild(argonNote);
+            }
+            reviewList.appendChild(label);
+        }
+        reviewList.style.display = 'flex';
+
+        reviewList.addEventListener('change', updateBundleSummary);
+        updateBundleSummary();
+        reviewModal.style.display = 'flex';
+    }
+
+    function updateBundleSummary() {
+        var replaces = [];
+        var restarts = [];
+        reviewList.querySelectorAll('input[type="checkbox"]').forEach(function(b) {
+            if (b.checked && !b.disabled) {
+                var c = ITEM_CONSEQ[b.value];
+                if (c) {
+                    if (c.replaces) replaces.push(c.replaces);
+                    if (c.restarts) restarts.push(c.restarts);
+                }
+            }
+        });
+        reviewSummary.textContent = '';
+        if (replaces.length === 0) {
+            reviewSummary.textContent = 'Nothing selected.';
+            return;
+        }
+        var l1 = document.createElement('div');
+        l1.textContent = 'Will replace: ' + replaces.join(', ');
+        reviewSummary.appendChild(l1);
+        if (restarts.length > 0) {
+            var l2 = document.createElement('div');
+            l2.textContent = 'Will restart: ' + restarts.join(', ');
+            reviewSummary.appendChild(l2);
+        }
+    }
+
+    var RAW_TARGETS = {
+        podkop: { url: URLS.importCfg, name: 'Podkop', poll: true, conseq: '/etc/config/podkop, create backup, restart Podkop' },
+        stubby: { url: URLS.importStubby, name: 'Stubby', poll: false, conseq: '/etc/config/stubby, create backup, restart Stubby' },
+        singbox: { url: URLS.importSingbox, name: 'Sing-box', poll: false, conseq: '/etc/sing-box/config.json, sing-box check, backup, restart sing-box' }
+    };
+
+    function openRawReview(text, guess) {
+        resetReviewModal();
+        _pendingBundle = null;
+        _pendingRaw = { raw: text };
+
+        reviewTitle.textContent = 'Import Single Config';
+        asRow.style.display = 'block';
+        asSelect.value = guess;
+        updateRawSummary();
+        reviewModal.style.display = 'flex';
+    }
+
+    function updateRawSummary() {
+        var t = RAW_TARGETS[asSelect.value];
+        if (!t) return;
+        reviewSummary.textContent = '';
+        var l1 = document.createElement('div');
+        l1.textContent = 'Detected: single config file.';
+        reviewSummary.appendChild(l1);
+        var l2 = document.createElement('div');
+        l2.textContent = 'This will: ' + t.conseq;
+        reviewSummary.appendChild(l2);
+    }
+
+    asSelect.addEventListener('change', updateRawSummary);
+
+    reviewCancelBtn.addEventListener('click', function() {
+        reviewModal.style.display = 'none';
+        _pendingBundle = null;
+        _pendingRaw = null;
+        reviewList.removeEventListener('change', updateBundleSummary);
+    });
+    reviewModal.addEventListener('click', function(e) {
+        if (e.target === reviewModal) {
+            reviewModal.style.display = 'none';
+            _pendingBundle = null;
+            _pendingRaw = null;
+            reviewList.removeEventListener('change', updateBundleSummary);
+        }
+    });
+    reviewCloseBtn.addEventListener('click', function() {
+        reviewModal.style.display = 'none';
+        _pendingBundle = null;
+        _pendingRaw = null;
+        importFile.value = '';
+        importOpenBtn.disabled = true;
+        importFname.textContent = 'No file selected';
+        reviewList.removeEventListener('change', updateBundleSummary);
+    });
+
+    function finishImportModal() {
+        reviewConfirmBtn.style.display = 'none';
+        reviewCancelBtn.style.display = 'none';
+        reviewCloseBtn.style.display = '';
+        setTimeout(refreshStubbyStatus, 4000);
+    }
+
+    function modalFail(msg) {
+        reviewStatusEl.textContent = msg;
+        reviewStatusEl.style.color = '#f44336';
+        finishImportModal();
+    }
+
+    function appendResultLine(cls, text) {
+        var div = document.createElement('div');
+        div.className = cls;
+        div.textContent = text;
+        reviewResults.appendChild(div);
+    }
+
+    function renderBundleResults(resp) {
+        reviewResults.innerHTML = '';
+        var names = Object.keys(resp.results || {});
+        for (var i = 0; i < names.length; i++) {
+            var n = names[i];
+            var r = resp.results[n];
+            if (r && r.ok) {
+                appendResultLine('is-ok', '\u2713 ' + (ITEM_LABELS[n] || n));
+            } else {
+                appendResultLine('is-fail', '\u2717 ' + (ITEM_LABELS[n] || n) + ': ' + ((r && r.error) || 'failed'));
+            }
+        }
+        var skipped = resp.skipped || [];
+        for (var k = 0; k < skipped.length; k++) {
+            appendResultLine('is-skip', '\u2013 skipped: ' + (ITEM_LABELS[skipped[k]] || skipped[k]));
+        }
+    }
+
+    reviewConfirmBtn.addEventListener('click', function() {
+        if (_pendingBundle) confirmBundleImport();
+        else if (_pendingRaw) confirmRawImport();
+    });
+
+    function confirmBundleImport() {
+        var selected = [];
+        reviewList.querySelectorAll('input[type="checkbox"]').forEach(function(b) {
+            if (b.checked && !b.disabled) selected.push(b.value);
+        });
+        if (selected.length === 0) return;
+
+        reviewConfirmBtn.disabled = true;
+        reviewConfirmBtn.textContent = 'Importing...';
+        reviewStatusEl.textContent = 'Applying...';
+        reviewStatusEl.style.color = '#2196f3';
+
+        xhrPost(URLS.importBundle,
+            'content=' + encodeURIComponent(_pendingBundle.raw) +
+            '&items=' + encodeURIComponent(selected.join(',')),
+            function(xhr) {
+                reviewConfirmBtn.disabled = false;
+                reviewConfirmBtn.textContent = 'Import';
+                if (!xhr) { modalFail('Network error'); return; }
+                var resp = null;
+                try { resp = JSON.parse(xhr.responseText); } catch (e) {}
+                if (!resp) { modalFail('Import failed'); return; }
+                if (resp.error) { modalFail(resp.error); return; }
+                renderBundleResults(resp);
+                if (resp.restarting) {
+                    reviewStatusEl.textContent = 'Podkop restarting...';
+                    reviewStatusEl.style.color = '#2196f3';
+                    pollStatus(
+                        function() {
+                            reviewStatusEl.textContent = 'Imported. Podkop is running.';
+                            reviewStatusEl.style.color = '#4caf50';
+                            finishImportModal();
+                        },
+                        function() {
+                            reviewStatusEl.textContent = 'Podkop did not start after import.';
+                            reviewStatusEl.style.color = '#f44336';
+                            reviewRollbackBtn.style.display = 'inline-block';
+                            finishImportModal();
+                        }
+                    );
+                } else {
+                    reviewStatusEl.textContent = 'Import finished.';
+                    reviewStatusEl.style.color = '#4caf50';
+                    finishImportModal();
+                }
+            });
+    }
+
+    function confirmRawImport() {
+        var t = RAW_TARGETS[asSelect.value];
+        if (!t) return;
+
+        reviewConfirmBtn.disabled = true;
+        reviewConfirmBtn.textContent = 'Importing...';
+        reviewStatusEl.textContent = 'Importing ' + t.name.toLowerCase() + '...';
+        reviewStatusEl.style.color = '#2196f3';
+
+        xhrPost(t.url, 'content=' + encodeURIComponent(_pendingRaw.raw), function(xhr) {
+            reviewConfirmBtn.disabled = false;
+            reviewConfirmBtn.textContent = 'Import';
+            if (!xhr) { modalFail('Network error'); return; }
+            var resp = null;
+            try { resp = JSON.parse(xhr.responseText); } catch (e) {}
+            if (!resp) { modalFail('Import failed'); return; }
+            if (resp.error) {
+                modalFail(resp.error);
+                if (resp.details) pushError(resp.error, resp.details);
+                return;
+            }
+            if (resp.success && resp.restarting && t.poll) {
+                reviewStatusEl.textContent = 'Restarting ' + t.name.toLowerCase() + '...';
+                pollStatus(
+                    function() {
+                        reviewStatusEl.textContent = 'Imported successfully. Podkop is running.';
+                        reviewStatusEl.style.color = '#4caf50';
+                        finishImportModal();
+                    },
+                    function() {
+                        reviewStatusEl.textContent = t.name + ' did not start after import.';
+                        reviewStatusEl.style.color = '#f44336';
+                        reviewRollbackBtn.style.display = 'inline-block';
+                        finishImportModal();
+                    }
+                );
+            } else {
+                reviewStatusEl.textContent = 'Imported successfully.';
+                reviewStatusEl.style.color = '#4caf50';
+                finishImportModal();
+            }
+        });
+    }
+
+    reviewRollbackBtn.addEventListener('click', function() {
+        reviewRollbackBtn.style.display = 'none';
+        reviewStatusEl.textContent = 'Rolling back...';
+        reviewStatusEl.style.color = '#2196f3';
+        xhrPost(URLS.rollback, '', function(xhr) {
+            if (!xhr) {
+                reviewStatusEl.textContent = 'Rollback network error';
+                reviewStatusEl.style.color = '#f44336';
+                return;
+            }
+            try {
+                var resp = JSON.parse(xhr.responseText);
+                if (resp.success) {
+                    reviewStatusEl.textContent = 'Rolled back. Restarting...';
+                    reviewStatusEl.style.color = '#2196f3';
+                    pollStatus(
+                        function() {
+                            reviewStatusEl.textContent = 'Rolled back successfully.';
+                            reviewStatusEl.style.color = '#4caf50';
+                        },
+                        function() {
+                            reviewStatusEl.textContent = 'Rollback done but sing-box still not running.';
+                            reviewStatusEl.style.color = '#ff9800';
+                        }
+                    );
+                } else {
+                    reviewStatusEl.textContent = 'Rollback failed: ' + (resp.error || '');
+                    reviewStatusEl.style.color = '#f44336';
+                }
+            } catch (e) {
+                reviewStatusEl.textContent = 'Rollback failed';
+                reviewStatusEl.style.color = '#f44336';
+            }
+        });
+    });
+
     checkStatus(updateStatusUI);
+    refreshStubbyStatus();
 })();
 </script>
 

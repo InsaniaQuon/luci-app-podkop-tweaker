@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.6.1 | 15.08.2026 | Restore import-export tab route
+-- Podkop Tweaker | v3.7.0 | 20.08.2026 | Bundle import/export with picker UI (legacy blocks kept in <details>)
 
-local APP_VERSION = "3.6.1"
+local APP_VERSION = "3.7.0"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -11,6 +11,10 @@ local SUBS_FILE = "/etc/config/podkop-tweaker-subs.json"
 local UPDATE_LOG_FILE = "/etc/config/pt-update.log"
 local UPDATE_LOG_MAX = 25
 local PODKOP_INSTALL_URL = "https://raw.githubusercontent.com/itdoginfo/podkop/refs/heads/main/install.sh"
+
+local BUNDLE_FORMAT = "podkop-tweaker-bundle"
+local BUNDLE_VERSION = 1
+local BUNDLE_MAX_SIZE = 4194304
 
 local ARGON_CASCADE_CSS = "/www/luci-static/argon/css/cascade.css"
 local ARGON_CSS_MARKER_START = "/* === Podkop Tweaker Typography === */"
@@ -212,6 +216,12 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "import_config"},
         call("api_import_config")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "export_bundle"},
+        call("api_export_bundle")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "import_bundle"},
+        call("api_import_bundle")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "download_backup"},
         call("api_download_backup")).leaf = true
@@ -2886,4 +2896,382 @@ function api_argon_reinject()
     end
     local ok = argon_apply()
     http.write_json({ success = ok, stale = argon_check_stale() })
+end
+
+-- === Bundle Import/Export ===
+
+local BUNDLE_ITEMS = { "podkop", "stubby", "singbox", "fragment", "argon", "tweaker", "subs" }
+
+local function bundle_is_known_item(name)
+    for _, v in ipairs(BUNDLE_ITEMS) do
+        if name == v then return true end
+    end
+    return false
+end
+
+local function bundle_read_file(path)
+    local fd = io.open(path, "r")
+    if not fd then return nil end
+    local content = fd:read("*a")
+    fd:close()
+    return content
+end
+
+local function bundle_write_file(path, content)
+    local tmp = path .. ".tmp-write"
+    local tmpfd = io.open(tmp, "w")
+    if not tmpfd then
+        return false, "Cannot write temporary file"
+    end
+    tmpfd:write(content)
+    tmpfd:close()
+    local ok, err = os.rename(tmp, path)
+    if not ok then
+        os.remove(tmp)
+        return false, "Cannot apply: " .. (err or "unknown error")
+    end
+    return true
+end
+
+local function bundle_backup_file(path)
+    local data = bundle_read_file(path)
+    if not data then return true end
+    local bfd = io.open(path .. ".bundle-backup", "w")
+    if not bfd then return false end
+    bfd:write(data)
+    bfd:close()
+    return true
+end
+
+local function bundle_apply_argon(settings)
+    if type(settings) ~= "table" then
+        return false, "Invalid argon settings"
+    end
+    local function clamp_str(v, min, max)
+        if v == nil or v == "" then return "" end
+        v = tostring(v)
+        local n = tonumber(v)
+        if not n or n < min or n > max then return "" end
+        return v
+    end
+    local uci = require("luci.model.uci").cursor()
+    local font_size = clamp_str(settings.font_size, 13, 20)
+    local font_family = tostring(settings.font_family or "Google Sans")
+    if not ARGON_FONT_FAMILIES[font_family] and font_family ~= "custom" then
+        font_family = "Google Sans"
+    end
+    local font_family_custom = tostring(settings.font_family_custom or ""):gsub("[\"';\\]", "")
+    local font_weight = tostring(settings.font_weight or "400")
+    if not font_weight:match("^[0-9]+$") then font_weight = "400" end
+    local line_height = clamp_str(settings.line_height, 1.0, 2.0)
+    local letter_spacing = clamp_str(settings.letter_spacing, -0.5, 2.0)
+    local menu_font_size = clamp_str(settings.menu_font_size, 0.7, 1.2)
+    local menu_padding = clamp_str(settings.menu_padding, 5, 20)
+    uci:set("argon", "typography", "typography")
+    uci:set("argon", "typography", "font_size", font_size)
+    uci:set("argon", "typography", "font_family", font_family)
+    uci:set("argon", "typography", "font_family_custom", font_family_custom)
+    uci:set("argon", "typography", "font_weight", font_weight)
+    uci:set("argon", "typography", "line_height", line_height)
+    uci:set("argon", "typography", "letter_spacing", letter_spacing)
+    uci:set("argon", "typography", "menu_font_size", menu_font_size)
+    uci:set("argon", "typography", "menu_padding", menu_padding)
+    uci:commit("argon")
+    if not argon_apply() then
+        return false, "CSS injection failed"
+    end
+    return true
+end
+
+local function bundle_apply_subs(data)
+    if type(data) ~= "table" then
+        return false, "Invalid subscriptions data"
+    end
+    local clean = {}
+    for key, val in pairs(data) do
+        if key ~= "version" then
+            if key == "settings" then
+                if val ~= nil and type(val) ~= "table" then
+                    return false, "Invalid subscriptions settings"
+                end
+                clean.settings = val
+            elseif type(key) == "string" and key ~= "" and key:match("^[a-zA-Z0-9_%-]+$") then
+                if type(val) ~= "table" then
+                    return false, "Invalid section data: " .. key
+                end
+                local slots = {}
+                for i, entry in ipairs(val) do
+                    if entry ~= nil and type(entry) ~= "table" then
+                        return false, "Invalid slot data in section: " .. key
+                    end
+                    if type(entry) == "table" then
+                        local sub_url = tostring(entry.subscription_url or "")
+                        if sub_url ~= "" and not sub_url:match("^https?://") then
+                            return false, "Invalid subscription URL in section: " .. key
+                        end
+                    end
+                    slots[i] = entry
+                end
+                clean[key] = slots
+            end
+        end
+    end
+    if not bundle_backup_file(SUBS_FILE) then
+        return false, "Cannot create backup"
+    end
+    if not S.write_subs(clean, SUBS_FILE) then
+        return false, "Cannot write subscriptions file"
+    end
+    if type(clean.settings) == "table" then
+        local interval = tonumber(clean.settings.auto_update_interval) or 0
+        local start_time = tostring(clean.settings.auto_update_start or "")
+        if interval > 0 and not start_time:match("^%d%d:%d%d$") then
+            interval = 0
+            start_time = ""
+        end
+        create_auto_update_script()
+        setup_cron(interval, start_time)
+        setup_hotplug(clean.settings.auto_update_on_restart == true)
+    end
+    return true
+end
+
+function api_export_bundle()
+    local http = require("luci.http")
+    local requested = {}
+    local items_param = http.formvalue("items") or ""
+    for it in items_param:gmatch("[%w%-]+") do
+        if bundle_is_known_item(it) then requested[it] = true end
+    end
+
+    local bundle = {
+        format = BUNDLE_FORMAT,
+        version = BUNDLE_VERSION,
+        created = os.date("%Y-%m-%d %H:%M"),
+        tweaker_version = APP_VERSION,
+        items = {}
+    }
+
+    if requested.podkop then
+        local c = bundle_read_file("/etc/config/podkop")
+        if c then bundle.items.podkop = { content = c } end
+    end
+    if requested.stubby then
+        local c = bundle_read_file("/etc/config/stubby")
+        if c then bundle.items.stubby = { content = c } end
+    end
+    if requested.singbox then
+        local c = bundle_read_file(SINGBOX_CONFIG)
+        if c then bundle.items.singbox = { content = c } end
+    end
+    if requested.fragment then
+        local c = bundle_read_file("/etc/config/podkop-fragment")
+        if c then bundle.items.fragment = { content = c } end
+    end
+    if requested.argon and not argon_tab_disabled() then
+        bundle.items.argon = { settings = argon_read_settings() }
+    end
+    if requested.tweaker then
+        local c = bundle_read_file("/etc/config/podkop-tweaker")
+        if c then bundle.items.tweaker = { content = c } end
+    end
+    if requested.subs then
+        local subs = S.read_subs(SUBS_FILE)
+        bundle.items.subs = { data = subs }
+    end
+
+    if not next(bundle.items) then
+        http.prepare_content("application/json")
+        http.write_json({ error = "No items to export" })
+        return
+    end
+
+    local str = S.json_stringify(bundle)
+    if not str then
+        http.prepare_content("application/json")
+        http.status(500, "Cannot serialize bundle")
+        http.write_json({ error = "Cannot serialize bundle" })
+        return
+    end
+
+    http.prepare_content("application/octet-stream")
+    set_no_cache_headers()
+    http.header("Content-Disposition",
+        'attachment; filename="podkop-tweaker-bundle-' .. os.date("%Y-%m-%d") .. '.json"')
+    http.write(str)
+end
+
+function api_import_bundle()
+    if not verify_csrf() then return end
+    local http = require("luci.http")
+    local sys = require("luci.sys")
+    http.prepare_content("application/json")
+    set_no_cache_headers()
+
+    local content = http.formvalue("content") or ""
+    if content == "" then
+        local fdupload = http.formvalue("file")
+        if type(fdupload) == "table" and fdupload.data then
+            content = fdupload.data
+        elseif type(fdupload) == "string" then
+            content = fdupload
+        end
+    end
+    if content == "" then
+        http.write_json({ error = "Bundle content is empty" })
+        return
+    end
+    if #content > BUNDLE_MAX_SIZE then
+        http.write_json({ error = "Bundle too large (max 4MB)" })
+        return
+    end
+    if content:find("\0", 1, true) then
+        http.write_json({ error = "Invalid content: contains null bytes" })
+        return
+    end
+
+    local bundle = S.json_parse(content)
+    if type(bundle) ~= "table" or bundle.format ~= BUNDLE_FORMAT then
+        http.write_json({ error = "Not a valid Podkop Tweaker bundle" })
+        return
+    end
+    local bundle_ver = tonumber(bundle.version) or 0
+    if bundle_ver < 1 or bundle_ver > BUNDLE_VERSION then
+        http.write_json({ error = "Unsupported bundle version: " .. tostring(bundle.version) })
+        return
+    end
+    if type(bundle.items) ~= "table" or not next(bundle.items) then
+        http.write_json({ error = "Bundle has no items" })
+        return
+    end
+
+    local selection_used = false
+    local selected = {}
+    local sel_param = http.formvalue("items") or ""
+    if sel_param ~= "" then
+        selection_used = true
+        for it in sel_param:gmatch("[%w%-]+") do selected[it] = true end
+    end
+
+    local skipped = {}
+    for name, _ in pairs(bundle.items) do
+        if not bundle_is_known_item(name)
+            or (selection_used and not selected[name]) then
+            table.insert(skipped, name)
+        end
+    end
+
+    local results = {}
+    local restart_podkop = false
+    local restart_stubby = false
+    local restart_singbox = false
+
+    local function apply_item(name)
+        local item = bundle.items[name]
+        if type(item) ~= "table" then
+            return false, "Invalid item data"
+        end
+        if name == "podkop" then
+            local c = item.content or ""
+            local ok, err = validate_uci_config(c)
+            if not ok then return false, err end
+            if not S.backup_config() then
+                return false, "Cannot create backup"
+            end
+            ok, err = bundle_write_file("/etc/config/podkop", c)
+            if not ok then return false, err end
+            restart_podkop = true
+            return true
+        elseif name == "stubby" then
+            local c = item.content or ""
+            local ok, err = validate_uci_config(c)
+            if not ok then return false, err end
+            if not S.backup_stubby_config() then
+                return false, "Cannot create backup"
+            end
+            ok, err = bundle_write_file("/etc/config/stubby", c)
+            if not ok then return false, err end
+            restart_stubby = true
+            return true
+        elseif name == "singbox" then
+            local c = item.content or ""
+            if c == "" then return false, "Empty sing-box config" end
+            if #c > 2097152 then return false, "Config too large (max 2MB)" end
+            local tmp_path = SINGBOX_CONFIG .. ".tmp-import"
+            local tmpfd = io.open(tmp_path, "w")
+            if not tmpfd then
+                return false, "Cannot write temporary file"
+            end
+            tmpfd:write(c)
+            tmpfd:close()
+            local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
+            if check and check ~= "" then
+                os.remove(tmp_path)
+                return false, "sing-box check failed: " .. check
+            end
+            local orig = bundle_read_file(SINGBOX_CONFIG)
+            if orig then
+                local bfd = io.open(SINGBOX_BACKUP, "w")
+                if bfd then
+                    bfd:write(orig)
+                    bfd:close()
+                end
+            end
+            os.rename(tmp_path, SINGBOX_CONFIG)
+            restart_singbox = true
+            return true
+        elseif name == "fragment" then
+            local c = item.content or ""
+            local ok, err = validate_uci_config(c)
+            if not ok then return false, err end
+            if not bundle_backup_file("/etc/config/podkop-fragment") then
+                return false, "Cannot create backup"
+            end
+            ok, err = bundle_write_file("/etc/config/podkop-fragment", c)
+            if not ok then return false, err end
+            return true
+        elseif name == "tweaker" then
+            local c = item.content or ""
+            local ok, err = validate_uci_config(c)
+            if not ok then return false, err end
+            if not bundle_backup_file("/etc/config/podkop-tweaker") then
+                return false, "Cannot create backup"
+            end
+            ok, err = bundle_write_file("/etc/config/podkop-tweaker", c)
+            if not ok then return false, err end
+            return true
+        elseif name == "argon" then
+            if argon_tab_disabled() then
+                return false, "Argon tab is disabled"
+            end
+            return bundle_apply_argon(item.settings)
+        elseif name == "subs" then
+            return bundle_apply_subs(item.data)
+        end
+        return false, "Unknown item"
+    end
+
+    for _, name in ipairs(BUNDLE_ITEMS) do
+        if type(bundle.items[name]) == "table"
+            and (not selection_used or selected[name]) then
+            local ok, err = apply_item(name)
+            results[name] = { ok = (ok == true), error = err }
+        end
+    end
+
+    if restart_podkop then sys.exec("/etc/init.d/podkop restart 2>&1") end
+    if restart_stubby then sys.exec("/etc/init.d/stubby restart 2>&1") end
+    if restart_singbox then sys.exec("/etc/init.d/sing-box restart 2>&1") end
+
+    local any_ok = false
+    for _, r in pairs(results) do
+        if r.ok then any_ok = true end
+    end
+
+    http.write_json({
+        success = any_ok,
+        restarting = restart_podkop,
+        results = results,
+        skipped = skipped
+    })
 end
