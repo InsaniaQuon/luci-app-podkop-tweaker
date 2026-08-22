@@ -27,95 +27,118 @@ Author: InsaniaQuon
         <button class="btn cbi-button" onclick="window.location.reload(true)">Reload</button>
     </div>
 
-    <div class="cbi-section">
-    <div style="padding:12px 16px;">
+    <div class="ps-split-layout ps-split-5050" style="margin-top:12px;">
+        <div class="ps-split-left">
+            <div class="cbi-section">
+                <div style="padding:12px 16px;">
 
-        <div style="margin-bottom:16px;">
-            <button class="btn cbi-button" id="ps-run-all" style="font-size:14px;padding:8px 24px;">Run All Diagnostics</button>
+                    <div style="margin-bottom:16px;">
+                        <button class="btn cbi-button" id="ps-run-all" style="font-size:14px;padding:8px 24px;">Run All Diagnostics</button>
+                    </div>
+
+                    <div style="margin-bottom:8px;">
+                        <span style="font-size:15px;font-weight:700;">DNS Chain</span>
+                    </div>
+                    <div id="ps-chain-content" style="font-size:13px;line-height:1.5;font-family:'Consolas','Monaco','Courier New',monospace;background:var(--ps-bg-alt,#f5f5f5);padding:16px;border-radius:6px;overflow-x:auto;white-space:pre;">Loading...</div>
+
+                    <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                        <span style="font-size:15px;font-weight:700;">DNS Leak Test</span>
+                        <button class="btn cbi-button" id="ps-leak-run">Run Leak Test</button>
+                    </div>
+                    <div id="ps-leak-loading" style="display:none;color:var(--ps-text-dim,#888);">Running DNS leak test...</div>
+                    <div id="ps-leak-result" style="display:none;">
+                        <table class="ps-sysinfo-table">
+                            <tr><td class="ps-sysinfo-label">Upstream Resolved IP</td><td class="ps-sysinfo-value" id="ps-leak-upstream">&mdash;</td></tr>
+                            <tr><td class="ps-sysinfo-label">dnsmasq Resolved IP</td><td class="ps-sysinfo-value" id="ps-leak-dnsmasq">&mdash;</td></tr>
+                            <tr><td class="ps-sysinfo-label">Detail</td><td class="ps-sysinfo-value" id="ps-leak-detail">&mdash;</td></tr>
+                            <tr><td class="ps-sysinfo-label">Status</td><td class="ps-sysinfo-value" id="ps-leak-status">&mdash;</td></tr>
+                        </table>
+                    </div>
+
+                    <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                        <span style="font-size:15px;font-weight:700;">Proxy Connectivity Test</span>
+                        <button class="btn cbi-button" id="ps-proxy-run">Run Proxy Test</button>
+                    </div>
+                    <div id="ps-proxy-loading" style="display:none;color:var(--ps-text-dim,#888);">Running proxy test...</div>
+                    <table class="ps-diag-table" id="ps-proxy-table" style="display:none;">
+                        <thead>
+                            <tr>
+                                <th>Proxy</th>
+                                <th>HTTP Code</th>
+                                <th>Time</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ps-proxy-body"></tbody>
+                    </table>
+                    <div id="ps-proxy-error" style="display:none;color:#f44336;font-size:13px;margin-top:6px;"></div>
+
+                    <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                        <span style="font-size:15px;font-weight:700;">DNS Resolution Test</span>
+                        <button class="btn cbi-button" id="ps-dns-run">Run DNS Test</button>
+                    </div>
+                    <div id="ps-dns-loading" style="display:none;color:var(--ps-text-dim,#888);">Running DNS tests...</div>
+                    <table class="ps-diag-table" id="ps-dns-table" style="display:none;">
+                        <thead>
+                            <tr>
+                                <th>Source</th>
+                                <th>Target</th>
+                                <th>Resolved IP</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ps-dns-body"></tbody>
+                    </table>
+
+                    <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+
+                    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+                        <span style="font-size:15px;font-weight:700;">End-to-End Test</span>
+                        <button class="btn cbi-button" id="ps-e2e-run">Run E2E Test</button>
+                    </div>
+                    <div id="ps-e2e-loading" style="display:none;color:var(--ps-text-dim,#888);">Running end-to-end test...</div>
+                    <div id="ps-e2e-result" style="display:none;">
+                        <table class="ps-sysinfo-table">
+                            <tr><td class="ps-sysinfo-label">External IP</td><td class="ps-sysinfo-value" id="ps-e2e-ip">&mdash;</td></tr>
+                            <tr><td class="ps-sysinfo-label">HTTP Status</td><td class="ps-sysinfo-value" id="ps-e2e-http">&mdash;</td></tr>
+                            <tr><td class="ps-sysinfo-label">Response Time</td><td class="ps-sysinfo-value" id="ps-e2e-time">&mdash;</td></tr>
+                            <tr><td class="ps-sysinfo-label">Status</td><td class="ps-sysinfo-value" id="ps-e2e-status">&mdash;</td></tr>
+                        </table>
+                    </div>
+
+                </div>
+            </div>
         </div>
 
-        <div style="margin-bottom:8px;">
-            <span style="font-size:15px;font-weight:700;">DNS Chain</span>
+        <div class="ps-split-right">
+            <div class="cbi-section">
+                <div class="ps-update-block">
+                    <div class="ps-sysinfo-header">
+                        <h3>Run Log</h3>
+                        <div class="ps-header-btns">
+                            <button class="btn cbi-button cbi-button-apply" id="ps-diaglog-download" disabled>&#11015; Download Log (JSON)</button>
+                        </div>
+                    </div>
+                    <div class="ps-log-settings-note">
+                        <strong>&#9888; Note:</strong> The log is cleared before each run (single test or Run All) and shows only that run. It survives a page refresh until the next run starts.
+                    </div>
+                    <div class="ps-log-viewer-wrap" id="ps-diaglog-wrap" style="max-height:560px;">
+                        <div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">No tests run yet.</div>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div id="ps-chain-content" style="font-size:13px;line-height:1.5;font-family:'Consolas','Monaco','Courier New',monospace;background:var(--ps-bg-alt,#f5f5f5);padding:16px;border-radius:6px;overflow-x:auto;white-space:pre;">Loading...</div>
-
-        <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
-
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-            <span style="font-size:15px;font-weight:700;">DNS Leak Test</span>
-            <button class="btn cbi-button" id="ps-leak-run">Run Leak Test</button>
-        </div>
-        <div id="ps-leak-loading" style="display:none;color:var(--ps-text-dim,#888);">Running DNS leak test...</div>
-        <div id="ps-leak-result" style="display:none;">
-            <table class="ps-sysinfo-table">
-                <tr><td class="ps-sysinfo-label">Upstream Resolved IP</td><td class="ps-sysinfo-value" id="ps-leak-upstream">&mdash;</td></tr>
-                <tr><td class="ps-sysinfo-label">dnsmasq Resolved IP</td><td class="ps-sysinfo-value" id="ps-leak-dnsmasq">&mdash;</td></tr>
-                <tr><td class="ps-sysinfo-label">Detail</td><td class="ps-sysinfo-value" id="ps-leak-detail">&mdash;</td></tr>
-                <tr><td class="ps-sysinfo-label">Status</td><td class="ps-sysinfo-value" id="ps-leak-status">&mdash;</td></tr>
-            </table>
-        </div>
-
-        <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
-
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-            <span style="font-size:15px;font-weight:700;">Proxy Connectivity Test</span>
-            <button class="btn cbi-button" id="ps-proxy-run">Run Proxy Test</button>
-        </div>
-        <div id="ps-proxy-loading" style="display:none;color:var(--ps-text-dim,#888);">Running proxy test...</div>
-        <table class="ps-diag-table" id="ps-proxy-table" style="display:none;">
-            <thead>
-                <tr>
-                    <th>Proxy</th>
-                    <th>HTTP Code</th>
-                    <th>Time</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody id="ps-proxy-body"></tbody>
-        </table>
-        <div id="ps-proxy-error" style="display:none;color:#f44336;font-size:13px;margin-top:6px;"></div>
-
-        <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
-
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-            <span style="font-size:15px;font-weight:700;">DNS Resolution Test</span>
-            <button class="btn cbi-button" id="ps-dns-run">Run DNS Test</button>
-        </div>
-        <div id="ps-dns-loading" style="display:none;color:var(--ps-text-dim,#888);">Running DNS tests...</div>
-        <table class="ps-diag-table" id="ps-dns-table" style="display:none;">
-            <thead>
-                <tr>
-                    <th>Source</th>
-                    <th>Target</th>
-                    <th>Resolved IP</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody id="ps-dns-body"></tbody>
-        </table>
-
-        <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
-
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-            <span style="font-size:15px;font-weight:700;">End-to-End Test</span>
-            <button class="btn cbi-button" id="ps-e2e-run">Run E2E Test</button>
-        </div>
-        <div id="ps-e2e-loading" style="display:none;color:var(--ps-text-dim,#888);">Running end-to-end test...</div>
-        <div id="ps-e2e-result" style="display:none;">
-            <table class="ps-sysinfo-table">
-                <tr><td class="ps-sysinfo-label">External IP</td><td class="ps-sysinfo-value" id="ps-e2e-ip">&mdash;</td></tr>
-                <tr><td class="ps-sysinfo-label">HTTP Status</td><td class="ps-sysinfo-value" id="ps-e2e-http">&mdash;</td></tr>
-                <tr><td class="ps-sysinfo-label">Response Time</td><td class="ps-sysinfo-value" id="ps-e2e-time">&mdash;</td></tr>
-                <tr><td class="ps-sysinfo-label">Status</td><td class="ps-sysinfo-value" id="ps-e2e-status">&mdash;</td></tr>
-            </table>
-        </div>
-
-    </div>
     </div>
 </div>
 
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
 <style>
-<% include("podkop-tweaker/podkop-tweaker-css") %>
 .ps-diag-table{width:auto;border-collapse:collapse;margin:0 0 16px;font-size:13px}
 .ps-diag-table th{font-size:11px;font-weight:600;text-align:center;padding:6px 10px;border-bottom:2px solid var(--ps-border,#ddd);color:var(--ps-text-dim,#888);white-space:nowrap}
 .ps-diag-table td{padding:5px 10px;border-bottom:1px solid var(--ps-bg-alt,#f0f0f0);border-right:1px solid var(--ps-bg-alt,#f0f0f0);white-space:nowrap}
@@ -126,47 +149,165 @@ Author: InsaniaQuon
 .ps-chain-line{display:block}
 .ps-chain-ok{color:#4caf50;font-weight:600}
 .ps-chain-fail{color:#f44336;font-weight:600}
+.ps-sysinfo-table td{white-space:normal;word-break:break-word}
+#ps-diaglog-wrap .ps-log-detail-line{white-space:normal;word-break:break-word}
 </style>
 
 <%+footer%>
 
 <script>
-(function() {
-    var CSRF = '<%=token%>';
-    var URLS = {
+window.PT = {
+    version: '<%= app_version %>',
+    csrf: '<%= csrf_token %>',
+    urls: {
+        appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>',
         chainInfo: '<%=url("admin/services/podkop-tweaker/api/stubby_chain_info")%>',
         diagDns: '<%=url("admin/services/podkop-tweaker/api/diag_dns")%>',
         diagProxy: '<%=url("admin/services/podkop-tweaker/api/diag_proxy")%>',
         diagE2e: '<%=url("admin/services/podkop-tweaker/api/diag_e2e")%>',
         diagLeak: '<%=url("admin/services/podkop-tweaker/api/diag_dns_leak")%>'
-    };
+    }
+};
+</script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
 
-    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
+<script>
+(function() {
+    PT.checkStale();
 
     var _chainUpstreamNames = [];
 
-    function xhrPost(url, cb) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', url);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() { cb(xhr); };
-        xhr.onerror = function() { cb(null); };
-        xhr.send('token=' + encodeURIComponent(CSRF));
+    // === Run Log (session-scoped, cleared before each run) ===
+    var RUNLOG_KEY = 'pt-diag-run-log';
+    var runLog = [];
+    var runLogWrap = document.getElementById('ps-diaglog-wrap');
+    var runLogDownloadBtn = document.getElementById('ps-diaglog-download');
+
+    function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+    function loadRunLog() {
+        try {
+            var raw = sessionStorage.getItem(RUNLOG_KEY);
+            var arr = raw ? JSON.parse(raw) : [];
+            runLog = (arr instanceof Array) ? arr : [];
+        } catch (e) { runLog = []; }
+        renderRunLog();
     }
 
-    function escapeHtml(s) {
-        var d = document.createElement('div');
-        d.appendChild(document.createTextNode(s || ''));
-        return d.innerHTML;
+    function persistRunLog() {
+        try { sessionStorage.setItem(RUNLOG_KEY, JSON.stringify(runLog)); } catch (e) {}
     }
+
+    function resetRunLog() {
+        runLog = [];
+        persistRunLog();
+        renderRunLog();
+    }
+
+    function appendRunLog(testName, status, data, errorText, tookMs, httpStatus) {
+        var d = new Date();
+        var entry = {
+            ts: pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()),
+            test: testName,
+            status: status,
+            error: errorText || '',
+            took_ms: tookMs || 0,
+            data: data || null
+        };
+        if (status === 'ERROR') entry.http_status = httpStatus || 0;
+        runLog.push(entry);
+        persistRunLog();
+        renderRunLog();
+    }
+
+    function formatValue(v) {
+        if (v === null || v === undefined || v === '') return '-';
+        if (typeof v === 'object') return JSON.stringify(v);
+        return String(v);
+    }
+
+    function pushDataLines(prefix, obj, out) {
+        for (var k in obj) {
+            if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+            var v = obj[k];
+            var key = prefix ? prefix + '.' + k : k;
+            if (v instanceof Array) {
+                if (!v.length) { out.push(key + ': []'); continue; }
+                for (var i = 0; i < v.length; i++) {
+                    out.push(key + '[' + i + ']: ' + formatValue(v[i]));
+                }
+            } else if (v !== null && typeof v === 'object') {
+                pushDataLines(key, v, out);
+            } else {
+                out.push(key + ': ' + formatValue(v));
+            }
+        }
+    }
+
+    function entryLines(e) {
+        var out = [];
+        out.push('took_ms: ' + (e.took_ms || 0));
+        if (e.status === 'ERROR') out.push('http_status: ' + (e.http_status || 0));
+        if (e.error) out.push('error: ' + e.error);
+        if (e.data && typeof e.data === 'object') pushDataLines('', e.data, out);
+        return out;
+    }
+
+    function statusColor(status) {
+        return status === 'OK' ? '#4caf50' : (status === 'FAIL' ? '#ff9800' : '#f44336');
+    }
+
+    function renderRunLog() {
+        if (!runLog.length) {
+            runLogWrap.innerHTML = '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">No tests run yet.</div>';
+            runLogDownloadBtn.disabled = true;
+            return;
+        }
+        runLogDownloadBtn.disabled = false;
+        var html = '';
+        for (var i = 0; i < runLog.length; i++) {
+            var e = runLog[i];
+            html += '<div class="ps-log-event"><div class="ps-log-summary">'
+                + '<span class="ps-log-num">' + (i + 1) + '.</span> '
+                + '<span class="ps-log-ts">' + PT.escapeHtml(e.ts) + '</span> '
+                + '<strong>' + PT.escapeHtml(e.test) + '</strong> '
+                + '<span style="color:' + statusColor(e.status) + ';font-weight:600">' + PT.escapeHtml(e.status) + '</span>'
+                + '</div>';
+            var lines = entryLines(e);
+            if (lines.length) {
+                html += '<div class="ps-log-details">';
+                for (var j = 0; j < lines.length; j++) {
+                    html += '<div class="ps-log-detail-line">' + PT.escapeHtml(lines[j]) + '</div>';
+                }
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+        runLogWrap.innerHTML = html;
+    }
+
+    runLogDownloadBtn.addEventListener('click', function() {
+        if (!runLog.length) return;
+        var d = new Date();
+        var fname = pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + '.' + d.getFullYear()
+            + '_' + pad2(d.getHours()) + '.' + pad2(d.getMinutes())
+            + '-diagnostics-log.json';
+        PT.downloadJson(fname, {
+            format: 'pt-diag-run',
+            tweaker_version: PT.version,
+            exported: pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + '.' + d.getFullYear()
+                + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()),
+            entries: runLog
+        });
+    });
 
     function statusCell(status) {
         var color = status === 'OK' ? '#4caf50' : '#f44336';
-        return '<span style="color:' + color + ';font-weight:600;">' + escapeHtml(status) + '</span>';
+        return '<span style="color:' + color + ';font-weight:600;">' + PT.escapeHtml(status) + '</span>';
     }
 
     function span(id, text) {
-        return '<span class="ps-chain-line" id="' + id + '">' + escapeHtml(text) + '</span>';
+        return '<span class="ps-chain-line" id="' + id + '">' + PT.escapeHtml(text) + '</span>';
     }
 
     function buildChainHtml(data) {
@@ -211,7 +352,7 @@ Author: InsaniaQuon
 
     function loadChain() {
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.chainInfo);
+        xhr.open('GET', PT.urls.chainInfo);
         xhr.onload = function() {
             if (xhr.status === 200) {
                 try {
@@ -306,12 +447,14 @@ Author: InsaniaQuon
         loading.style.display = 'block';
         table.style.display = 'none';
         body.innerHTML = '';
+        var t0 = Date.now();
 
-        xhrPost(URLS.diagDns, function(xhr) {
+        PT.xhrPost(PT.urls.diagDns, '', function(xhr) {
             loading.style.display = 'none';
             if (!xhr || xhr.status !== 200) {
                 body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Request failed</td></tr>';
                 table.style.display = '';
+                appendRunLog('DNS Resolution Test', 'ERROR', null, 'Request failed', Date.now() - t0, xhr ? xhr.status : 0);
                 if (onDone) onDone(null);
                 return;
             }
@@ -321,18 +464,24 @@ Author: InsaniaQuon
                 for (var i = 0; i < results.length; i++) {
                     var r = results[i];
                     var tr = document.createElement('tr');
-                    tr.innerHTML = '<td>' + escapeHtml(r.source) + '</td>' +
-                        '<td>' + escapeHtml(r.target) + '</td>' +
-                        '<td>' + escapeHtml(r.ip || '\u2014') + '</td>' +
+                    tr.innerHTML = '<td>' + PT.escapeHtml(r.source) + '</td>' +
+                        '<td>' + PT.escapeHtml(r.target) + '</td>' +
+                        '<td>' + PT.escapeHtml(r.ip || '\u2014') + '</td>' +
                         '<td>' + statusCell(r.status) + '</td>';
                     body.appendChild(tr);
                 }
                 table.style.display = '';
                 highlightDns(results);
+                var allOk = true;
+                for (var k = 0; k < results.length; k++) {
+                    if (results[k].status !== 'OK') allOk = false;
+                }
+                appendRunLog('DNS Resolution Test', allOk ? 'OK' : 'FAIL', { rows: results }, '', Date.now() - t0);
                 if (onDone) onDone(results);
             } catch (e) {
                 body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Parse error</td></tr>';
                 table.style.display = '';
+                appendRunLog('DNS Resolution Test', 'ERROR', null, 'Parse error', Date.now() - t0, xhr.status);
                 if (onDone) onDone(null);
             }
         });
@@ -347,12 +496,14 @@ Author: InsaniaQuon
         table.style.display = 'none';
         errorDiv.style.display = 'none';
         body.innerHTML = '';
+        var t0 = Date.now();
 
-        xhrPost(URLS.diagProxy, function(xhr) {
+        PT.xhrPost(PT.urls.diagProxy, '', function(xhr) {
             loading.style.display = 'none';
             if (!xhr || xhr.status !== 200) {
                 body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Request failed</td></tr>';
                 table.style.display = '';
+                appendRunLog('Proxy Connectivity Test', 'ERROR', null, 'Request failed', Date.now() - t0, xhr ? xhr.status : 0);
                 if (onDone) onDone(null);
                 return;
             }
@@ -362,6 +513,7 @@ Author: InsaniaQuon
                     errorDiv.textContent = resp.error;
                     errorDiv.style.display = '';
                     highlightProxy([{status: 'FAIL'}]);
+                    appendRunLog('Proxy Connectivity Test', 'FAIL', { error: resp.error }, '', Date.now() - t0);
                     if (onDone) onDone(null);
                     return;
                 }
@@ -369,7 +521,7 @@ Author: InsaniaQuon
                 for (var i = 0; i < results.length; i++) {
                     var r = results[i];
                     var tr = document.createElement('tr');
-                    tr.innerHTML = '<td>' + escapeHtml(r.source) + '</td>' +
+                    tr.innerHTML = '<td>' + PT.escapeHtml(r.source) + '</td>' +
                         '<td>' + (r.http_code || '\u2014') + '</td>' +
                         '<td>' + (r.time_ms || '\u2014') + ' ms</td>' +
                         '<td>' + statusCell(r.status) + '</td>';
@@ -377,10 +529,15 @@ Author: InsaniaQuon
                 }
                 table.style.display = '';
                 highlightProxy(results);
+                appendRunLog('Proxy Connectivity Test',
+                    (results[0] || {}).status === 'OK' ? 'OK' : 'FAIL',
+                    { http_code: (results[0] || {}).http_code, time_ms: (results[0] || {}).time_ms, source: (results[0] || {}).source, results: results },
+                    '', Date.now() - t0);
                 if (onDone) onDone(results);
             } catch (e) {
                 body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Parse error</td></tr>';
                 table.style.display = '';
+                appendRunLog('Proxy Connectivity Test', 'ERROR', null, 'Parse error', Date.now() - t0, xhr.status);
                 if (onDone) onDone(null);
             }
         });
@@ -391,12 +548,14 @@ Author: InsaniaQuon
         var result = document.getElementById('ps-leak-result');
         loading.style.display = 'block';
         result.style.display = 'none';
+        var t0 = Date.now();
 
-        xhrPost(URLS.diagLeak, function(xhr) {
+        PT.xhrPost(PT.urls.diagLeak, '', function(xhr) {
             loading.style.display = 'none';
             if (!xhr || xhr.status !== 200) {
                 document.getElementById('ps-leak-upstream').textContent = 'Request failed';
                 result.style.display = '';
+                appendRunLog('DNS Leak Test', 'ERROR', null, 'Request failed', Date.now() - t0, xhr ? xhr.status : 0);
                 if (onDone) onDone(null);
                 return;
             }
@@ -407,13 +566,20 @@ Author: InsaniaQuon
                 document.getElementById('ps-leak-detail').textContent = resp.detail || '\u2014';
                 var leakColor = resp.leak_detected ? '#f44336' : '#4caf50';
                 var leakText = resp.leak_detected ? 'LEAK DETECTED' : 'No leak';
-                document.getElementById('ps-leak-status').innerHTML = '<span style="color:' + leakColor + ';font-weight:700;">' + escapeHtml(leakText) + '</span>';
+                document.getElementById('ps-leak-status').innerHTML = '<span style="color:' + leakColor + ';font-weight:700;">' + PT.escapeHtml(leakText) + '</span>';
                 result.style.display = '';
                 highlightLeak(resp.leak_detected);
+                appendRunLog('DNS Leak Test', resp.leak_detected ? 'FAIL' : 'OK', {
+                    upstream_ip: resp.upstream_ip,
+                    dnsmasq_ip: resp.dnsmasq_ip,
+                    dnsmasq_status: resp.dnsmasq_status,
+                    detail: resp.detail
+                }, '', Date.now() - t0);
                 if (onDone) onDone(resp);
             } catch (e) {
                 document.getElementById('ps-leak-upstream').textContent = 'Parse error';
                 result.style.display = '';
+                appendRunLog('DNS Leak Test', 'ERROR', null, 'Parse error', Date.now() - t0, xhr.status);
                 if (onDone) onDone(null);
             }
         });
@@ -424,13 +590,15 @@ Author: InsaniaQuon
         var result = document.getElementById('ps-e2e-result');
         loading.style.display = 'block';
         result.style.display = 'none';
+        var t0 = Date.now();
 
-        xhrPost(URLS.diagE2e, function(xhr) {
+        PT.xhrPost(PT.urls.diagE2e, '', function(xhr) {
             loading.style.display = 'none';
             if (!xhr || xhr.status !== 200) {
                 document.getElementById('ps-e2e-ip').textContent = 'Request failed';
                 result.style.display = '';
                 highlightE2e('FAIL');
+                appendRunLog('End-to-End Test', 'ERROR', null, 'Request failed', Date.now() - t0, xhr ? xhr.status : 0);
                 if (onDone) onDone(null);
                 return;
             }
@@ -442,26 +610,36 @@ Author: InsaniaQuon
                 document.getElementById('ps-e2e-status').innerHTML = statusCell(resp.status);
                 result.style.display = '';
                 highlightE2e(resp.status);
+                appendRunLog('End-to-End Test', resp.status === 'OK' ? 'OK' : 'FAIL', {
+                    external_ip: resp.external_ip,
+                    http_code: resp.http_code,
+                    time_ms: resp.time_ms
+                }, '', Date.now() - t0);
                 if (onDone) onDone(resp);
             } catch (e) {
                 document.getElementById('ps-e2e-ip').textContent = 'Parse error';
                 result.style.display = '';
                 highlightE2e('FAIL');
+                appendRunLog('End-to-End Test', 'ERROR', null, 'Parse error', Date.now() - t0, xhr.status);
                 if (onDone) onDone(null);
             }
         });
     }
 
     document.getElementById('ps-dns-run').addEventListener('click', function() {
+        resetRunLog();
         runDnsTest();
     });
     document.getElementById('ps-proxy-run').addEventListener('click', function() {
+        resetRunLog();
         runProxyTest();
     });
     document.getElementById('ps-leak-run').addEventListener('click', function() {
+        resetRunLog();
         runLeakTest();
     });
     document.getElementById('ps-e2e-run').addEventListener('click', function() {
+        resetRunLog();
         runE2eTest();
     });
 
@@ -469,6 +647,7 @@ Author: InsaniaQuon
         var btn = this;
         btn.disabled = true;
         btn.textContent = 'Running...';
+        resetRunLog();
         resetChainColors();
         runLeakTest(function() {
             setTimeout(function() {
@@ -488,5 +667,6 @@ Author: InsaniaQuon
         });
     });
 
+    loadRunLog();
 })();
 </script>

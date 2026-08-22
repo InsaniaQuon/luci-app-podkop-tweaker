@@ -191,18 +191,13 @@ Author: InsaniaQuon
     </div>
 </div>
 
-<style>
-.ps-modal input[type="checkbox"] { margin:0 !important; }
-</style>
-<style>
-<% include("podkop-tweaker/podkop-tweaker-css") %>
-</style>
-
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
 <script>
-(function() {
-    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
-    var CSRF = '<%= token or csrf_token or "" %>';
-    var URLS = {
+window.PT = {
+    version: '<%= app_version %>',
+    csrf: '<%= csrf_token %>',
+    urls: {
+        appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>',
         read: '<%=url("admin/services/podkop-tweaker/api/read_singbox_config")%>',
         save: '<%=url("admin/services/podkop-tweaker/api/save_singbox_config")%>',
         status: '<%=url("admin/services/podkop-tweaker/api/singbox_service_status")%>',
@@ -213,372 +208,38 @@ Author: InsaniaQuon
         wrapperStatus: '<%=url("admin/services/podkop-tweaker/api/wrapper_status")%>',
         wrapperToggle: '<%=url("admin/services/podkop-tweaker/api/wrapper_toggle")%>',
         fragmentSettings: '<%=url("admin/services/podkop-tweaker/api/fragment_settings")%>'
-    };
-
-    var editor = document.getElementById('ps-config-editor');
-    var lineNums = document.getElementById('ps-line-numbers');
-    var saveBtn = document.getElementById('ps-config-save');
-    var undoBtn = document.getElementById('ps-config-undo');
-    var diffBtn = document.getElementById('ps-config-diff');
-    var rollbackBtn = document.getElementById('ps-rollback-btn');
-    var statusEl = document.getElementById('ps-config-status');
-    var statusDot = document.getElementById('ps-status-dot');
-    var statusText = document.getElementById('ps-status-text');
-    var errorBtn = document.getElementById('ps-error-btn');
-    var errorModal = document.getElementById('ps-error-modal');
-    var errorDetails = document.getElementById('ps-error-details');
-    var errorClose = document.getElementById('ps-error-close');
-    var diffModal = document.getElementById('ps-diff-modal');
-    var diffBody = document.getElementById('ps-diff-body');
-    var diffStats = document.getElementById('ps-diff-stats');
-    var diffClose = document.getElementById('ps-diff-close');
-
-    var originalContent = '';
-    var isDirty = false;
-    var _lastError = null;
-    var _errorTimer = null;
-    var ERROR_TTL = 600000;
-    var _pollTimer = null;
-
-    function escapeHtml(s) {
-        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
+};
+</script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
 
-    function setStatus(text, color) {
-        statusEl.textContent = text;
-        statusEl.style.color = color || '#888';
-    }
+<script>
+(function() {
+    PT.checkStale();
 
-    function pushError(shortMsg, fullDetails) {
-        var ts = new Date();
-        var t = [ts.getHours(), ts.getMinutes(), ts.getSeconds()].map(function(v) {
-            return String(v).padStart(2, '0');
-        }).join(':');
-        _lastError = {
-            msg: shortMsg,
-            details: '[' + t + '] ' + (fullDetails || shortMsg),
-            ts: Date.now()
-        };
-        errorBtn.style.display = 'inline-block';
-        if (_errorTimer) clearTimeout(_errorTimer);
-        _errorTimer = setTimeout(function() {
-            _lastError = null;
-            errorBtn.style.display = 'none';
-        }, ERROR_TTL);
-        setStatus('Error', '#f44336');
-    }
-
-    function xhrPost(url, params, cb) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', url);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() { cb(xhr); };
-        xhr.onerror = function() { cb(null); };
-        xhr.send('token=' + encodeURIComponent(CSRF) + (params ? '&' + params : ''));
-    }
-
-    var _errorLineNo = -1;
-
-    function updateLineNumbers() {
-        var count = editor.value.split('\n').length;
-        var nums = [];
-        for (var i = 1; i <= count; i++) {
-            if (i === _errorLineNo) {
-                nums.push('<span style="color:#f44336;font-weight:700;">\u25B6 ' + i + '</span>');
-            } else {
-                nums.push(i);
-            }
+    var ctx = PT.editorPage({
+        urls: {
+            read: PT.urls.read,
+            save: PT.urls.save,
+            status: PT.urls.status,
+            rollback: PT.urls.rollback,
+            toggle: PT.urls.toggle
+        },
+        toggleDelay: 1000,
+        texts: {
+            saving: 'Saving and validating...',
+            restarting: 'Restarting sing-box...',
+            saved: 'Config saved. sing-box restarted.',
+            notStarted: 'sing-box did not start after save.',
+            notStartedDetail: 'sing-box did not start within 16 seconds after saving.',
+            rollbackStillDown: 'Rollback done but sing-box still not running.',
+            unchanged: 'No changes detected.'
+        },
+        extractError: function(resp) {
+            var src = resp.details || '';
+            var m = src.match(/line (\d+)/);
+            return { msg: resp.error || resp.details, line: m ? parseInt(m[1]) : null };
         }
-        lineNums.innerHTML = nums.join('\n');
-    }
-
-    function highlightErrorLine(lineNo) {
-        _errorLineNo = lineNo;
-        updateLineNumbers();
-        var lineHeight = editor.scrollHeight / editor.value.split('\n').length;
-        editor.scrollTop = Math.max(0, (lineNo - 5) * lineHeight);
-        lineNums.scrollTop = editor.scrollTop;
-    }
-
-    function clearErrorLine() {
-        if (_errorLineNo === -1) return;
-        _errorLineNo = -1;
-        updateLineNumbers();
-    }
-
-    editor.addEventListener('scroll', function() {
-        lineNums.scrollTop = editor.scrollTop;
-    });
-
-    function checkStatus(cb) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.status);
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                try {
-                    var r = JSON.parse(xhr.responseText);
-                    cb(r.running, r.pid);
-                } catch (e) { cb(false, null); }
-            } else { cb(false, null); }
-        };
-        xhr.onerror = function() { cb(false, null); };
-        xhr.send();
-    }
-
-    var toggleBtn = document.getElementById('ps-toggle-btn');
-
-    function updateStatusUI(running, pid) {
-        statusDot.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
-        statusText.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
-        statusText.style.color = running ? '#4caf50' : '#f44336';
-        toggleBtn.textContent = running ? 'Stop' : 'Start';
-        toggleBtn.style.display = 'inline-block';
-        toggleBtn.disabled = false;
-    }
-
-    toggleBtn.addEventListener('click', function() {
-        var action = toggleBtn.textContent.toLowerCase();
-        toggleBtn.disabled = true;
-        toggleBtn.textContent = action === 'stop' ? 'Stopping...' : 'Starting...';
-        xhrPost(URLS.toggle, 'action=' + action, function(xhr) {
-            if (!xhr) {
-                checkStatus(updateStatusUI);
-                return;
-            }
-            setTimeout(function() { checkStatus(updateStatusUI); }, 1000);
-        });
-    });
-
-    function pollStatus(onSuccess, onTimeout, attempts) {
-        if (_pollTimer) clearTimeout(_pollTimer);
-        attempts = attempts || 0;
-        if (attempts >= 8) {
-            onTimeout();
-            return;
-        }
-        _pollTimer = setTimeout(function() {
-            checkStatus(function(running, pid) {
-                updateStatusUI(running, pid);
-                if (running) {
-                    onSuccess();
-                } else {
-                    pollStatus(onSuccess, onTimeout, attempts + 1);
-                }
-            });
-        }, 2000);
-    }
-
-    function loadConfig() {
-        setStatus('Loading...', '#888');
-        editor.disabled = true;
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.read);
-        xhr.onload = function() {
-            editor.disabled = false;
-            if (xhr.status === 200) {
-                originalContent = xhr.responseText;
-                editor.value = originalContent;
-                isDirty = false;
-                saveBtn.disabled = true;
-                diffBtn.disabled = true;
-                updateLineNumbers();
-                setStatus('Loaded', '#4caf50');
-            } else {
-                setStatus('Failed to load', '#f44336');
-                pushError('Failed to load config', 'HTTP ' + xhr.status);
-            }
-        };
-        xhr.onerror = function() {
-            editor.disabled = false;
-            setStatus('Network error', '#f44336');
-        };
-        xhr.send();
-    }
-
-    editor.addEventListener('input', function() {
-        isDirty = (editor.value !== originalContent);
-        saveBtn.disabled = !isDirty;
-        diffBtn.disabled = !isDirty;
-        clearErrorLine();
-        updateLineNumbers();
-        setStatus(isDirty ? 'Unsaved changes' : 'Loaded', isDirty ? '#ff9800' : '#4caf50');
-    });
-
-    editor.addEventListener('keydown', function(e) {
-        if (e.key === 'Tab') {
-            e.preventDefault();
-            var s = editor.selectionStart, end = editor.selectionEnd;
-            editor.value = editor.value.substring(0, s) + '\t' + editor.value.substring(end);
-            editor.selectionStart = editor.selectionEnd = s + 1;
-            editor.dispatchEvent(new Event('input'));
-        }
-    });
-
-    document.addEventListener('keydown', function(e) {
-        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-            e.preventDefault();
-            if (isDirty && !saveBtn.disabled) doSave();
-        }
-    });
-
-    function doSave() {
-        saveBtn.disabled = true;
-        diffBtn.disabled = true;
-        rollbackBtn.style.display = 'none';
-        saveBtn.textContent = 'Saving...';
-        editor.disabled = true;
-        setStatus('Saving and validating...', '#2196f3');
-
-        xhrPost(URLS.save, 'content=' + encodeURIComponent(editor.value), function(xhr) {
-            editor.disabled = false;
-            saveBtn.textContent = 'Save Changes';
-            if (!xhr) {
-                saveBtn.disabled = isDirty;
-                diffBtn.disabled = !isDirty;
-                setStatus('Network error', '#f44336');
-                pushError('Network error', 'Failed to connect to server');
-                return;
-            }
-            try {
-                var resp = JSON.parse(xhr.responseText);
-                if (resp.success && resp.restarting) {
-                    setStatus('Restarting sing-box...', '#2196f3');
-                    pollStatus(
-                        function() {
-                            originalContent = editor.value;
-                            isDirty = false;
-                            diffBtn.disabled = true;
-                            setStatus('Config saved. sing-box restarted.', '#4caf50');
-                        },
-                        function() {
-                            setStatus('sing-box did not start after save.', '#f44336');
-                            rollbackBtn.style.display = 'inline-block';
-                            pushError('Restart failed', 'sing-box did not start within 16 seconds after saving.');
-                        }
-                    );
-                } else if (resp.success && resp.unchanged) {
-                    originalContent = editor.value;
-                    isDirty = false;
-                    saveBtn.disabled = true;
-                    diffBtn.disabled = true;
-                    setStatus('No changes detected.', '#4caf50');
-                } else {
-                    saveBtn.disabled = isDirty;
-                    diffBtn.disabled = !isDirty;
-                    setStatus('Save failed', '#f44336');
-                    if (resp.details) {
-                        var errLine = resp.details.match(/line (\d+)/);
-                        if (errLine) highlightErrorLine(parseInt(errLine[1]));
-                    }
-                    pushError('Save failed', resp.error || resp.details || 'Unknown error');
-                }
-            } catch (e) {
-                saveBtn.disabled = isDirty;
-                diffBtn.disabled = !isDirty;
-                setStatus('Save failed', '#f44336');
-                pushError('Save failed', 'Invalid response: ' + (xhr.responseText || '').substring(0, 300));
-            }
-        });
-    }
-
-    saveBtn.addEventListener('click', function() {
-        if (isDirty) doSave();
-    });
-
-    function doRollback() {
-        rollbackBtn.style.display = 'none';
-        setStatus('Rolling back...', '#2196f3');
-
-        xhrPost(URLS.rollback, '', function(xhr) {
-            if (!xhr) {
-                setStatus('Rollback network error', '#f44336');
-                return;
-            }
-            try {
-                var resp = JSON.parse(xhr.responseText);
-                if (resp.success) {
-                    setStatus('Rolled back. Restarting...', '#2196f3');
-                    pollStatus(
-                        function() {
-                            setStatus('Rolled back successfully.', '#4caf50');
-                            loadConfig();
-                        },
-                        function() {
-                            setStatus('Rollback done but sing-box still not running.', '#ff9800');
-                            loadConfig();
-                        }
-                    );
-                } else {
-                    setStatus('Rollback failed: ' + (resp.error || ''), '#f44336');
-                }
-            } catch (e) {
-                setStatus('Rollback failed', '#f44336');
-            }
-        });
-    }
-
-    rollbackBtn.addEventListener('click', doRollback);
-
-    undoBtn.addEventListener('click', function() {
-        if (!isDirty) return;
-        if (!confirm('Discard unsaved changes?')) return;
-        editor.value = originalContent;
-        isDirty = false;
-        saveBtn.disabled = true;
-        diffBtn.disabled = true;
-        updateLineNumbers();
-        setStatus('Loaded', '#4caf50');
-    });
-
-    function buildDiff(oldText, newText) {
-        var oldLines = oldText.split('\n');
-        var newLines = newText.split('\n');
-        var html = '';
-        var added = 0, removed = 0;
-        var max = Math.max(oldLines.length, newLines.length);
-        for (var i = 0; i < max; i++) {
-            var o = oldLines[i];
-            var n = newLines[i];
-            if (o === n) {
-                html += '<div class="ps-diff-line ps-diff-same"><span class="ps-diff-num">' + (i + 1) + '</span> ' + escapeHtml(o || '') + '</div>';
-            } else {
-                if (o !== undefined) {
-                    removed++;
-                    html += '<div class="ps-diff-line ps-diff-del"><span class="ps-diff-num">' + (i + 1) + '</span><span class="ps-diff-mark">-</span> ' + escapeHtml(o) + '</div>';
-                }
-                if (n !== undefined) {
-                    added++;
-                    html += '<div class="ps-diff-line ps-diff-add"><span class="ps-diff-num">' + (i + 1) + '</span><span class="ps-diff-mark">+</span> ' + escapeHtml(n) + '</div>';
-                }
-            }
-        }
-        diffStats.textContent = added + ' added, ' + removed + ' removed (' + newLines.length + ' lines total)';
-        return html;
-    }
-
-    diffBtn.addEventListener('click', function() {
-        if (!isDirty) return;
-        diffBody.innerHTML = buildDiff(originalContent, editor.value);
-        diffModal.style.display = 'flex';
-    });
-
-    diffClose.addEventListener('click', function() {
-        diffModal.style.display = 'none';
-    });
-    diffModal.addEventListener('click', function(e) {
-        if (e.target === diffModal) diffModal.style.display = 'none';
-    });
-
-    errorBtn.addEventListener('click', function() {
-        if (!_lastError) return;
-        errorDetails.textContent = _lastError.details;
-        errorModal.style.display = 'flex';
-    });
-    errorClose.addEventListener('click', function() { errorModal.style.display = 'none'; });
-    errorModal.addEventListener('click', function(e) { if (e.target === errorModal) errorModal.style.display = 'none'; });
-
-    window.addEventListener('beforeunload', function(e) {
-        if (isDirty) { e.preventDefault(); e.returnValue = ''; }
     });
 
     // === Fragment Patch ===
@@ -603,7 +264,7 @@ Author: InsaniaQuon
         patchStatus.textContent = 'Loading outbounds...';
         patchStatus.style.color = '#888';
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.outbounds);
+        xhr.open('GET', PT.urls.outbounds);
         xhr.onload = function() {
             if (xhr.status === 200) {
                 try {
@@ -617,14 +278,14 @@ Author: InsaniaQuon
                     } else {
                         var html = '';
                         tlsObs.forEach(function(o, i) {
-                            var label = o.server ? escapeHtml(o.server) : escapeHtml(o.tag);
+                            var label = o.server ? PT.escapeHtml(o.server) : PT.escapeHtml(o.tag);
                             var fragInfo = o.has_fragment
                                 ? ' <span style="color:#4caf50;font-size:11px;">(patched)</span>'
                                 : ' <span style="color:#888;font-size:11px;">(unpatched)</span>';
                             html += '<div style="margin:4px 0;display:flex;align-items:center;gap:6px;">'
-                                + '<input type="checkbox" class="ps-patch-cb" data-tag="' + escapeHtml(o.tag) + '">'
+                                + '<input type="checkbox" class="ps-patch-cb" data-tag="' + PT.escapeAttr(o.tag) + '">'
                                 + '<strong>' + label + '</strong>'
-                                + '<span style="color:#888;font-size:11px;">(' + escapeHtml(o.type) + ')</span>'
+                                + '<span style="color:#888;font-size:11px;">(' + PT.escapeHtml(o.type) + ')</span>'
                                 + fragInfo
                                 + '</div>';
                         });
@@ -687,7 +348,7 @@ Author: InsaniaQuon
         patchRemove.disabled = true;
         patchStatus.textContent = isRemove ? 'Removing...' : 'Patching...';
         patchStatus.style.color = '#2196f3';
-        xhrPost(URLS.patchFragment, params, function(xhr) {
+        PT.xhrPost(PT.urls.patchFragment, params, function(xhr) {
             patchApply.disabled = false;
             patchRemove.disabled = false;
             if (!xhr) {
@@ -702,8 +363,8 @@ Author: InsaniaQuon
                     patchStatus.style.color = '#4caf50';
                     setTimeout(function() {
                         patchModal.style.display = 'none';
-                        loadConfig();
-                        checkStatus(updateStatusUI);
+                        ctx.loadConfig();
+                        ctx.refreshStatus();
                     }, 2000);
                 } else {
                     patchStatus.textContent = resp.error || resp.details || 'Failed';
@@ -736,29 +397,22 @@ Author: InsaniaQuon
     });
 
     function checkWrapper() {
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.wrapperStatus);
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                try {
-                    var r = JSON.parse(xhr.responseText);
-                    if (r.installed && r.stale) {
-                        wrapperBtn.textContent = 'Reinstall Wrapper';
-                        wrapperStatusEl.textContent = 'Wrapper lost after Podkop update — needs reinstall';
-                        wrapperStatusEl.style.color = '#ff9800';
-                    } else if (r.installed) {
-                        wrapperBtn.textContent = 'Disable Wrapper';
-                        wrapperStatusEl.textContent = 'Wrapper active';
-                        wrapperStatusEl.style.color = '#4caf50';
-                    } else {
-                        wrapperBtn.textContent = 'Enable Wrapper';
-                        wrapperStatusEl.textContent = 'Wrapper not installed';
-                        wrapperStatusEl.style.color = '#888';
-                    }
-                } catch (e) {}
+        PT.getJson(PT.urls.wrapperStatus, function(r) {
+            if (!r) return;
+            if (r.installed && r.stale) {
+                wrapperBtn.textContent = 'Reinstall Wrapper';
+                wrapperStatusEl.textContent = 'Wrapper lost after Podkop update — needs reinstall';
+                wrapperStatusEl.style.color = '#ff9800';
+            } else if (r.installed) {
+                wrapperBtn.textContent = 'Disable Wrapper';
+                wrapperStatusEl.textContent = 'Wrapper active';
+                wrapperStatusEl.style.color = '#4caf50';
+            } else {
+                wrapperBtn.textContent = 'Enable Wrapper';
+                wrapperStatusEl.textContent = 'Wrapper not installed';
+                wrapperStatusEl.style.color = '#888';
             }
-        };
-        xhr.send();
+        });
     }
 
     wrapperBtn.addEventListener('click', function() {
@@ -766,7 +420,7 @@ Author: InsaniaQuon
             wrapperBtn.disabled = true;
             wrapperStatusEl.textContent = 'Reinstalling...';
             wrapperStatusEl.style.color = '#2196f3';
-            xhrPost(URLS.wrapperToggle, 'action=reinstall', function(xhr) {
+            PT.xhrPost(PT.urls.wrapperToggle, 'action=reinstall', function(xhr) {
                 wrapperBtn.disabled = false;
                 if (xhr) {
                     try {
@@ -786,25 +440,18 @@ Author: InsaniaQuon
             wrapperModalStatus.textContent = '';
             wrapperConfirm.textContent = 'Enable';
             wrapperConfirm.style.display = 'inline-block';
-            var sxhr = new XMLHttpRequest();
-            sxhr.open('GET', URLS.fragmentSettings);
-            sxhr.onload = function() {
-                if (sxhr.status === 200) {
-                    try {
-                        var s = JSON.parse(sxhr.responseText);
-                        wrapFragCb.checked = !!s.fragment;
-                        wrapRecCb.checked = s.record_fragment !== false;
-                        if (s.fallback_delay) wrapFallbackInput.value = s.fallback_delay;
-                        wrapFallbackWrap.style.display = wrapFragCb.checked ? 'block' : 'none';
-                    } catch (e) {}
-                }
-            };
-            sxhr.send();
+            PT.getJson(PT.urls.fragmentSettings, function(s) {
+                if (!s) return;
+                wrapFragCb.checked = !!s.fragment;
+                wrapRecCb.checked = s.record_fragment !== false;
+                if (s.fallback_delay) wrapFallbackInput.value = s.fallback_delay;
+                wrapFallbackWrap.style.display = wrapFragCb.checked ? 'block' : 'none';
+            });
             wrapperModal.style.display = 'flex';
         } else {
             if (!confirm('Disable wrapper?\n\nThis will restore the original Podkop init script.\nFragment settings are only available when enabling wrapper.')) return;
             wrapperBtn.disabled = true;
-            xhrPost(URLS.wrapperToggle, 'action=disable', function(xhr) {
+            PT.xhrPost(PT.urls.wrapperToggle, 'action=disable', function(xhr) {
                 wrapperBtn.disabled = false;
                 if (xhr) {
                     try {
@@ -830,7 +477,7 @@ Author: InsaniaQuon
         if (wrapFragCb.checked) {
             params += '&fallback_delay=' + encodeURIComponent(wrapFallbackInput.value || '500ms');
         }
-        xhrPost(URLS.wrapperToggle, params, function(xhr) {
+        PT.xhrPost(PT.urls.wrapperToggle, params, function(xhr) {
             wrapperConfirm.disabled = false;
             if (!xhr) {
                 wrapperModalStatus.textContent = 'Network error';
@@ -861,8 +508,6 @@ Author: InsaniaQuon
     wrapperModal.addEventListener('click', function(e) { if (e.target === wrapperModal) wrapperModal.style.display = 'none'; });
 
     checkWrapper();
-    checkStatus(updateStatusUI);
-    loadConfig();
 })();
 </script>
 

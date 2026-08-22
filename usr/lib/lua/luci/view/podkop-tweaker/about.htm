@@ -48,12 +48,19 @@ Author: InsaniaQuon
     </div>
 </div>
 
-<style>
-<% include("podkop-tweaker/podkop-tweaker-css") %>
-</style>
-
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
 <script>
-var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
+window.PT = {
+    version: '<%= app_version %>',
+    csrf: '<%= csrf_token %>',
+    urls: {
+        appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>'
+    }
+};
+</script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
+<script>
+PT.checkStale();
 </script>
 
 <%+footer%>

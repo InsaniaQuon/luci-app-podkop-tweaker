@@ -79,6 +79,11 @@ function M.shell_escape(s)
     return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
 end
 
+function M.clean_log_field(s)
+    if s == nil then return "" end
+    return (tostring(s):gsub("%c", " "))
+end
+
 function M.parse_subscription_raw(raw)
     local content = raw
     if not raw:match("vless://") and not raw:match("vmess://")
@@ -388,7 +393,7 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
                 and sub_entry.subscription_url and sub_entry.subscription_url ~= "" then
                 local proxy, err, attempt = M.do_update_subscription(
                     sec.name, i - 1, sub_entry.subscription_url, sub_entry.proxy_name)
-                local pname = sub_entry.proxy_name or ""
+                local pname = M.clean_log_field(sub_entry.proxy_name)
                 local retry_suffix = (attempt and attempt > 1) and (" (retry " .. attempt .. ")") or ""
                 if proxy and proxy.link then
                     local current_link = link or ""
@@ -491,6 +496,8 @@ function M._is_valid_update_path(rel_path, relaxed)
     if relaxed then return true end
     if rel_path:match("^usr/lib/lua/.*%.lua$") then return true end
     if rel_path:match("^usr/lib/lua/luci/view/podkop%-tweaker/[%w_%-]+%.htm$") then return true end
+    if rel_path:match("^www/luci%-static/resources/podkop%-tweaker/[%w_%-]+%.js$") then return true end
+    if rel_path:match("^www/luci%-static/resources/podkop%-tweaker/[%w_%-]+%.css$") then return true end
     if rel_path:match("^usr/share/luci/menu%.d/[%w_%-]+%.json$") then return true end
     if rel_path:match("^usr/share/rpcd/acl%.d/[%w_%-]+%.json$") then return true end
     if rel_path == "usr/bin/podkop-fragment-patch.sh" then return true end

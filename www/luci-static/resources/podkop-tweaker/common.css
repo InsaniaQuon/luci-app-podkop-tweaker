@@ -1,7 +1,8 @@
-<%#
-Inline CSS for Podkop Tweaker views — loaded via include() in HTM templates
+/*
+LuCI Podkop Tweaker — shared stylesheet (served from /luci-static/resources/podkop-tweaker/)
+Cache-busted via ?v=<app_version> in templates.
 Author: InsaniaQuon
--%>
+*/
 #cbi-podkop-tweaker,.ps-modal{
     --ps-bg:var(--background-color,#fff);
     --ps-bg-alt:#f0f0f0;
@@ -76,7 +77,6 @@ Author: InsaniaQuon
 .ps-sysinfo-status{font-size:13px;font-weight:600;white-space:nowrap}
 .ps-ver-latest{color:var(--ps-success);font-size:12px;font-weight:600}
 .ps-ver-outdated{color:#e67e22;font-size:12px;font-weight:600}
-.ps-update-btn{font-weight:600}
 .ps-latest-info{font-size:13px;color:var(--ps-text-muted);font-weight:600}
 .ps-sub-section{border:1px solid var(--ps-border);border-radius:8px;margin-bottom:16px;overflow:hidden}
 .ps-sub-section-header{display:flex;align-items:center;padding:12px 16px;background:var(--ps-bg-alt);border-bottom:1px solid var(--ps-border)}
@@ -117,12 +117,10 @@ Author: InsaniaQuon
 .ps-global-status{font-size:14px;font-weight:600}
 .ps-update-block{border:1px solid var(--ps-border);border-radius:8px;padding:16px;margin-bottom:16px}
 .ps-update-block h4{margin:0 0 12px;font-size:14px;color:var(--ps-text)}
-.ps-update-disabled{opacity:0.5;pointer-events:none}
 .ps-drop-zone{border:2px dashed var(--ps-border);border-radius:8px;padding:32px 16px;text-align:center;cursor:pointer;transition:border-color 0.2s,color 0.2s}
 .ps-drop-zone:hover,.ps-drop-zone.ps-drop-active{border-color:var(--ps-primary);color:var(--ps-primary)}
 .ps-drop-zone-icon{font-size:32px;margin-bottom:8px}
 .ps-drop-zone-text{font-size:13px;color:var(--ps-text-muted)}
-.ps-drop-zone-hint{font-size:11px;color:var(--ps-text-dim);margin-top:8px}
 .ps-update-result{margin-top:16px}
 .ps-update-versions{display:flex;align-items:center;gap:8px;font-size:13px;flex-wrap:wrap;margin-bottom:12px}
 .ps-update-version-label{color:var(--ps-text-muted)}
@@ -136,11 +134,8 @@ Author: InsaniaQuon
 .ps-split-layout{display:flex;gap:16px;align-items:flex-start}
 .ps-split-left{flex:0 0 65%;max-width:65%}
 .ps-split-right{flex:1;min-width:0}
+.ps-split-layout.ps-split-5050 .ps-split-left{flex:0 0 50%;max-width:50%}
 @media(max-width:768px){.ps-split-layout{flex-direction:column}.ps-split-left,.ps-split-right{flex:none;max-width:100%}}
-.ps-last-update{font-size:13px;margin-bottom:10px;padding:8px 10px;border-radius:4px;background:rgba(76,175,80,.08);border:1px solid rgba(76,175,80,.2)}
-.ps-last-update-label{font-weight:600;color:var(--ps-text)}
-.ps-last-update-stats{color:var(--ps-text-muted);margin-top:4px}
-.ps-last-update-stats b{color:var(--ps-text)}
 .ps-log-settings{display:flex;align-items:center;gap:8px;padding:6px 0;flex-wrap:wrap}
 .ps-log-settings-label{font-size:13px;color:var(--ps-text)}
 .ps-log-settings-select{padding:2px 6px;font-size:13px;border:1px solid var(--ps-border);border-radius:4px;background:var(--ps-bg);color:var(--ps-text)}
@@ -216,3 +211,4 @@ Author: InsaniaQuon
 .ps-svc-proc{font-size:12px;color:var(--ps-text-dim);font-family:monospace}
 .ps-svc-body .ps-status-text{font-size:13px;font-weight:400;color:var(--ps-text-muted)}
 .ps-svc-footer{display:flex;align-items:center;gap:10px;margin-top:4px;min-height:34px}
+.ps-modal input[type="checkbox"]{margin:0 !important}

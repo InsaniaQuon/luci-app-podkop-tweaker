@@ -92,21 +92,26 @@ Author: InsaniaQuon
     </div>
 </div>
 
-<style>
-<% include("podkop-tweaker/podkop-tweaker-css") %>
-</style>
-
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
 <script>
-(function() {
-    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
-    var CSRF = '<%= token or csrf_token or "" %>';
-    var URLS = {
+window.PT = {
+    version: '<%= app_version %>',
+    csrf: '<%= csrf_token %>',
+    urls: {
+        appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>',
         systemInfo: '<%=url("admin/services/podkop-tweaker/api/system_info")%>',
         updateStart: '<%=url("admin/services/podkop-tweaker/api/update_start")%>',
         tweakerCheck: '<%=url("admin/services/podkop-tweaker/api/tweaker_check_update")%>',
         tweakerUpdate: '<%=url("admin/services/podkop-tweaker/api/tweaker_git_update")%>',
         clearCache: '<%=url("admin/services/podkop-tweaker/api/clear_cache")%>'
-    };
+    }
+};
+</script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
+
+<script>
+(function() {
+    PT.checkStale();
 
     var loadingEl = document.getElementById('ps-sysinfo-loading');
     var tableEl = document.getElementById('ps-sysinfo-table');
@@ -122,10 +127,6 @@ Author: InsaniaQuon
     var tweakerDownloadUrl = '';
     var countdownTimer = null;
 
-    function escapeHtml(s) {
-        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
     function setUpdateStatus(text, color) {
         updateStatus.textContent = text;
         updateStatus.style.color = color || '#888';
@@ -139,8 +140,8 @@ Author: InsaniaQuon
         clearCacheBtn.style.display = 'inline-block';
 
         var podkopCell = document.getElementById('ps-info-podkop');
-        var currentVer = escapeHtml(data.podkop_version);
-        var latestVer = escapeHtml(data.podkop_latest_version);
+        var currentVer = PT.escapeHtml(data.podkop_version);
+        var latestVer = PT.escapeHtml(data.podkop_latest_version);
 
         if (data.update_available) {
             podkopCell.innerHTML = currentVer + ' <span class="ps-ver-outdated">(Outdated)</span>';
@@ -178,7 +179,7 @@ Author: InsaniaQuon
         tweakerLatest = latest;
 
         if (!latest) {
-            cell.innerHTML = 'v' + escapeHtml(ver) +
+            cell.innerHTML = 'v' + PT.escapeHtml(ver) +
                 ' <a href="#" id="ps-tweaker-check-link" style="font-size:12px">Check for updates</a>' +
                 '<span id="ps-tweaker-countdown" style="font-size:12px;color:#ff9800;margin-left:6px"></span>' +
                 '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
@@ -191,14 +192,14 @@ Author: InsaniaQuon
         var gt = versionLt(latest, ver);
 
         if (lt) {
-            cell.innerHTML = 'v' + escapeHtml(ver) + ' <span class="ps-ver-outdated">(Outdated)</span>' +
-                ' <span style="font-size:12px;color:var(--ps-text-muted)">&rarr; v' + escapeHtml(latest) + '</span>' +
+            cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span class="ps-ver-outdated">(Outdated)</span>' +
+                ' <span style="font-size:12px;color:var(--ps-text-muted)">&rarr; v' + PT.escapeHtml(latest) + '</span>' +
                 ' <button class="btn cbi-button cbi-button-apply" id="ps-tweaker-update-btn" style="font-size:12px;padding:2px 8px">Update from Git</button>' +
                 '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
             var btn = document.getElementById('ps-tweaker-update-btn');
             if (btn) btn.addEventListener('click', function() { doUpdateTweaker(false); });
         } else if (gt) {
-            cell.innerHTML = 'v' + escapeHtml(ver) + ' <span style="font-size:12px;color:#ff9800">(Newer than repo v' + escapeHtml(latest) + ')</span>' +
+            cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span style="font-size:12px;color:#ff9800">(Newer than repo v' + PT.escapeHtml(latest) + ')</span>' +
                 ' <button class="btn cbi-button" id="ps-tweaker-downgrade-btn" style="font-size:12px;padding:2px 8px">Downgrade from Git</button>' +
                 ' <a href="#" id="ps-tweaker-check-link" style="font-size:12px;margin-left:6px">Check</a>' +
                 '<span id="ps-tweaker-countdown" style="font-size:12px;color:#ff9800;margin-left:6px"></span>' +
@@ -208,7 +209,7 @@ Author: InsaniaQuon
             var cl = document.getElementById('ps-tweaker-check-link');
             if (cl) cl.addEventListener('click', function(e) { e.preventDefault(); doCheckTweaker(); });
         } else {
-            cell.innerHTML = 'v' + escapeHtml(ver) + ' <span class="ps-ver-latest">(Latest)</span>' +
+            cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span class="ps-ver-latest">(Latest)</span>' +
                 ' <a href="#" id="ps-tweaker-check-link" style="font-size:12px;margin-left:6px">Check</a>' +
                 '<span id="ps-tweaker-countdown" style="font-size:12px;color:#ff9800;margin-left:6px"></span>' +
                 '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
@@ -242,7 +243,7 @@ Author: InsaniaQuon
         actionsEl.style.display = 'none';
 
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.systemInfo);
+        xhr.open('GET', PT.urls.systemInfo);
         xhr.onload = function() {
             if (xhr.status === 200) {
                 try {
@@ -267,12 +268,9 @@ Author: InsaniaQuon
         updatePodkopBtn.disabled = true;
         setUpdateStatus('Starting terminal...', '#2196f3');
 
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.updateStart);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
+        PT.xhrPost(PT.urls.updateStart, '', function(xhr) {
             updatePodkopBtn.disabled = false;
-            if (xhr.status === 200) {
+            if (xhr && xhr.status === 200) {
                 try {
                     var resp = JSON.parse(xhr.responseText);
                     if (resp.success && resp.url) {
@@ -285,14 +283,9 @@ Author: InsaniaQuon
                     setUpdateStatus('Invalid response from server', '#f44336');
                 }
             } else {
-                setUpdateStatus('HTTP error: ' + xhr.status, '#f44336');
+                setUpdateStatus(xhr ? 'HTTP error: ' + xhr.status : 'Network error', '#f44336');
             }
-        };
-        xhr.onerror = function() {
-            updatePodkopBtn.disabled = false;
-            setUpdateStatus('Network error', '#f44336');
-        };
-        xhr.send('token=' + encodeURIComponent(CSRF));
+        });
     }
 
     function formatCountdown(sec) {
@@ -328,7 +321,7 @@ Author: InsaniaQuon
         setTweakerStatus('Checking...', '#2196f3');
 
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.tweakerCheck);
+        xhr.open('GET', PT.urls.tweakerCheck);
         xhr.onload = function() {
             if (xhr.status === 200) {
                 try {
@@ -363,9 +356,9 @@ Author: InsaniaQuon
         if (!tweakerDownloadUrl) return;
         var confirmed;
         if (isDowngrade) {
-            confirmed = confirm('Your version is newer than the repository version (' + tweakerLatest + ').\n\nDowngrade to v' + escapeHtml(tweakerLatest) + '?\n\nThe web interface will restart during the update.');
+            confirmed = confirm('Your version is newer than the repository version (' + tweakerLatest + ').\n\nDowngrade to v' + PT.escapeHtml(tweakerLatest) + '?\n\nThe web interface will restart during the update.');
         } else {
-            confirmed = confirm('Update Podkop Tweaker to v' + escapeHtml(tweakerLatest) + '?\n\nThe web interface will restart during the update.');
+            confirmed = confirm('Update Podkop Tweaker to v' + PT.escapeHtml(tweakerLatest) + '?\n\nThe web interface will restart during the update.');
         }
         if (!confirmed) return;
 
@@ -375,11 +368,11 @@ Author: InsaniaQuon
         if (btn) btn.disabled = true;
         if (statusEl) { statusEl.textContent = 'Downloading...'; statusEl.style.color = '#2196f3'; }
 
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.tweakerUpdate);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
-            if (xhr.status === 200) {
+        var params = 'download_url=' + encodeURIComponent(tweakerDownloadUrl);
+        if (isDowngrade) params += '&force=1';
+
+        PT.xhrPost(PT.urls.tweakerUpdate, params, function(xhr) {
+            if (xhr && xhr.status === 200) {
                 try {
                     var resp = JSON.parse(xhr.responseText);
                     if (resp.success) {
@@ -394,34 +387,19 @@ Author: InsaniaQuon
                     if (btn) btn.disabled = false;
                 }
             } else {
-                if (statusEl) { statusEl.textContent = 'HTTP error: ' + xhr.status; statusEl.style.color = '#f44336'; }
+                if (statusEl) { statusEl.textContent = xhr ? 'HTTP error: ' + xhr.status : 'Network error'; statusEl.style.color = '#f44336'; }
                 if (btn) btn.disabled = false;
             }
-        };
-        xhr.onerror = function() {
-            if (statusEl) { statusEl.textContent = 'Network error'; statusEl.style.color = '#f44336'; }
-            if (btn) btn.disabled = false;
-        };
-        var body = 'token=' + encodeURIComponent(CSRF)
-            + '&download_url=' + encodeURIComponent(tweakerDownloadUrl);
-        if (isDowngrade) body += '&force=1';
-        xhr.send(body);
+        });
     }
 
     clearCacheBtn.addEventListener('click', function() {
         if (!confirm('Clear LuCI cache and restart web interface?\n\nThe page will become unavailable for a few seconds, then reload automatically.')) return;
         clearCacheBtn.disabled = true;
         setUpdateStatus('Clearing cache, restarting...', '#2196f3');
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.clearCache);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
+        PT.xhrPost(PT.urls.clearCache, '', function(xhr) {
             setTimeout(function() { window.location.reload(true); }, 4000);
-        };
-        xhr.onerror = function() {
-            setTimeout(function() { window.location.reload(true); }, 4000);
-        };
-        xhr.send('token=' + encodeURIComponent(CSRF));
+        });
     });
 
     updatePodkopBtn.addEventListener('click', doUpdatePodkop);

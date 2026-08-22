@@ -146,6 +146,32 @@ describe("shell_escape", function()
     end)
 end)
 
+describe("clean_log_field", function()
+    it("keeps normal text intact", function()
+        assert.equal("My Proxy Server", pt.clean_log_field("My Proxy Server"))
+    end)
+
+    it("strips newlines used for log forging", function()
+        assert.equal("a b: updated", pt.clean_log_field("a\nb: updated"))
+    end)
+
+    it("strips tabs and carriage returns", function()
+        assert.equal("a b c", pt.clean_log_field("a\tb\rc"))
+    end)
+
+    it("returns empty string for nil", function()
+        assert.equal("", pt.clean_log_field(nil))
+    end)
+
+    it("handles empty string", function()
+        assert.equal("", pt.clean_log_field(""))
+    end)
+
+    it("coerces numbers", function()
+        assert.equal("42", pt.clean_log_field(42))
+    end)
+end)
+
 describe("parse_subscription_raw", function()
     it("parses plain text proxy list", function()
         local raw = "vless://a@b:1#First\nvmess://c@d:2#Second\nss://e@f:3#Third"
@@ -298,6 +324,14 @@ describe("_is_valid_update_path", function()
 
     it("accepts htm templates in strict mode", function()
         assert.is_true(pt._is_valid_update_path("usr/lib/lua/luci/view/podkop-tweaker/config.htm", false))
+    end)
+
+    it("accepts shared js/css assets in strict mode", function()
+        assert.is_true(pt._is_valid_update_path("www/luci-static/resources/podkop-tweaker/common.js", false))
+        assert.is_true(pt._is_valid_update_path("www/luci-static/resources/podkop-tweaker/common.css", false))
+        assert.is_false(pt._is_valid_update_path("www/luci-static/resources/podkop-tweaker/common.html", false))
+        assert.is_false(pt._is_valid_update_path("www/luci-static/resources/other/app.js", false))
+        assert.is_false(pt._is_valid_update_path("www/luci-static/resources/podkop-tweaker/sub/dir/x.js", false))
     end)
 
     it("accepts json menu and acl in strict mode", function()

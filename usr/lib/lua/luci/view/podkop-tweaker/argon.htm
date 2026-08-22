@@ -110,21 +110,29 @@ Author: InsaniaQuon
     </div>
 </div>
 
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
 <style>
-<% include("podkop-tweaker/podkop-tweaker-css") %>
 .pts-grid label { text-align: right; padding-right: 4px; }
 </style>
 
 <script>
-(function() {
-    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
-    var CSRF = '<%= token or csrf_token or "" %>';
-    var URLS = {
+window.PT = {
+    version: '<%= app_version %>',
+    csrf: '<%= csrf_token %>',
+    urls: {
+        appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>',
         typography: '<%=url("admin/services/podkop-tweaker/api/argon_typography")%>',
         save: '<%=url("admin/services/podkop-tweaker/api/argon_typography_save")%>',
         reset: '<%=url("admin/services/podkop-tweaker/api/argon_typography_reset")%>',
         reinject: '<%=url("admin/services/podkop-tweaker/api/argon_reinject")%>'
-    };
+    }
+};
+</script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
+
+<script>
+(function() {
+    PT.checkStale();
 
     var FONT_FAMILIES = {
         'Google Sans': '"Google Sans", "Microsoft Yahei", "WenQuanYi Micro Hei", sans-serif',
@@ -235,7 +243,7 @@ Author: InsaniaQuon
 
     function loadSettings() {
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.typography);
+        xhr.open('GET', PT.urls.typography);
         xhr.onload = function() {
             if (xhr.status !== 200) return;
             try {
@@ -261,15 +269,6 @@ Author: InsaniaQuon
         xhr.send();
     }
 
-    function xhrPost(url, params, cb) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', url);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() { cb(xhr); };
-        xhr.onerror = function() { cb(null); };
-        xhr.send('token=' + encodeURIComponent(CSRF) + (params ? '&' + params : ''));
-    }
-
     ['fontSize', 'fontFamily', 'fontCustom', 'fontWeight', 'lineHeight', 'letterSpacing', 'menuFontSize', 'menuPadding'].forEach(function(id) {
         var el = els[id];
         if (el) {
@@ -290,7 +289,7 @@ Author: InsaniaQuon
             '&letter_spacing=' + encodeURIComponent(els.letterSpacing.value) +
             '&menu_font_size=' + encodeURIComponent(els.menuFontSize.value) +
             '&menu_padding=' + encodeURIComponent(els.menuPadding.value);
-        xhrPost(URLS.save, params, function(xhr) {
+        PT.xhrPost(PT.urls.save, params, function(xhr) {
             els.saveBtn.disabled = false;
             if (!xhr) { els.status.textContent = 'Network error'; els.status.style.color = '#f44336'; return; }
             try {
@@ -313,7 +312,7 @@ Author: InsaniaQuon
         els.resetBtn.disabled = true;
         els.status.textContent = 'Resetting...';
         els.status.style.color = '#2196f3';
-        xhrPost(URLS.reset, '', function(xhr) {
+        PT.xhrPost(PT.urls.reset, '', function(xhr) {
             els.resetBtn.disabled = false;
             if (!xhr) { els.status.textContent = 'Network error'; els.status.style.color = '#f44336'; return; }
             try {
@@ -329,7 +328,7 @@ Author: InsaniaQuon
 
     els.reinjectBtn.addEventListener('click', function() {
         els.reinjectBtn.disabled = true;
-        xhrPost(URLS.reinject, '', function(xhr) {
+        PT.xhrPost(PT.urls.reinject, '', function(xhr) {
             els.reinjectBtn.disabled = false;
             if (xhr) {
                 try {

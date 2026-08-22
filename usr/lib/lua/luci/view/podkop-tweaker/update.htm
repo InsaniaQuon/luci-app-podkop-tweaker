@@ -39,7 +39,7 @@ Author: InsaniaQuon
             <div class="ps-drop-zone" id="ps-drop-zone">
                 <input type="file" id="ps-file-input" accept=".tar.gz,.tgz" style="display:none" />
                 <div class="ps-drop-zone-icon">&#128194;</div>
-                <div class="ps-drop-zone-text">Drop archive here or click to browse</div>
+                <div class="ps-drop-zone-text">&#11014; Drop archive here or click to browse</div>
             </div>
 
             <div class="ps-update-result" id="ps-update-result" style="display:none">
@@ -59,18 +59,23 @@ Author: InsaniaQuon
     </div>
 </div>
 
-<style>
-<% include("podkop-tweaker/podkop-tweaker-css") %>
-</style>
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
+<script>
+window.PT = {
+    version: '<%= app_version %>',
+    csrf: '<%= csrf_token %>',
+    urls: {
+        appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>',
+        upload: '<%=url("admin/services/podkop-tweaker/api/upload_update")%>',
+        apply: '<%=url("admin/services/podkop-tweaker/api/apply_update")%>'
+    }
+};
+</script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
 
 <script>
 (function() {
-    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
-    var CSRF = '<%= token or csrf_token or "" %>';
-    var URLS = {
-        upload: '<%=url("admin/services/podkop-tweaker/api/upload_update")%>',
-        apply: '<%=url("admin/services/podkop-tweaker/api/apply_update")%>'
-    };
+    PT.checkStale();
 
     var dropZone = document.getElementById('ps-drop-zone');
     var fileInput = document.getElementById('ps-file-input');
@@ -79,12 +84,8 @@ Author: InsaniaQuon
     var archiveVerEl = document.getElementById('ps-archive-ver');
     var actionsEl = document.getElementById('ps-update-actions');
 
-    function escapeHtml(s) {
-        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
     function setStatus(text, color) {
-        actionsEl.innerHTML = '<span class="ps-update-status" style="color:' + (color || '#888') + '">' + escapeHtml(text) + '</span>';
+        actionsEl.innerHTML = '<span class="ps-update-status" style="color:' + (color || '#888') + '">' + PT.escapeHtml(text) + '</span>';
     }
 
     function showResult(data) {
@@ -97,7 +98,7 @@ Author: InsaniaQuon
             actionsEl.innerHTML = '<span class="ps-update-status" style="color:#ff9800">Same version as installed</span>';
         } else if (data.can_update) {
             archiveVerEl.style.color = '#4caf50';
-            actionsEl.innerHTML = '<button class="btn cbi-button cbi-button-apply" id="ps-apply-btn">Update</button>'
+            actionsEl.innerHTML = '<button class="btn cbi-button cbi-button-apply" id="ps-apply-btn">\u2B06 Update</button>'
                 + '<span class="ps-update-status" id="ps-apply-status" style="margin-left:8px"></span>';
             document.getElementById('ps-apply-btn').addEventListener('click', doApply);
         } else {
@@ -110,7 +111,7 @@ Author: InsaniaQuon
         resultEl.style.display = '';
         currentVerEl.textContent = '-';
         archiveVerEl.textContent = '-';
-        actionsEl.innerHTML = '<span class="ps-update-status" style="color:#f44336">' + escapeHtml(text) + '</span>';
+        actionsEl.innerHTML = '<span class="ps-update-status" style="color:#f44336">' + PT.escapeHtml(text) + '</span>';
     }
 
     function uploadFile(file) {
@@ -122,25 +123,21 @@ Author: InsaniaQuon
             var b64 = reader.result.split(',')[1];
             if (!b64) { showError('Failed to read file'); return; }
 
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', URLS.upload);
-            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-            xhr.onload = function() {
-                if (xhr.status === 200) {
-                    try {
-                        var resp = JSON.parse(xhr.responseText);
-                        if (resp.success) {
-                            showResult(resp);
-                        } else {
-                            showError(resp.error || 'Unknown error');
-                        }
-                    } catch (e) { showError('Invalid response'); }
-                } else { showError('HTTP error: ' + xhr.status); }
-            };
-            xhr.onerror = function() { showError('Network error'); };
-            xhr.send('token=' + encodeURIComponent(CSRF)
-                + '&file_data=' + encodeURIComponent(b64)
-                + '&file_name=' + encodeURIComponent(file.name));
+            PT.xhrPost(PT.urls.upload,
+                'file_data=' + encodeURIComponent(b64) +
+                '&file_name=' + encodeURIComponent(file.name),
+                function(xhr) {
+                    if (xhr && xhr.status === 200) {
+                        try {
+                            var resp = JSON.parse(xhr.responseText);
+                            if (resp.success) {
+                                showResult(resp);
+                            } else {
+                                showError(resp.error || 'Unknown error');
+                            }
+                        } catch (e) { showError('Invalid response'); }
+                    } else { showError(xhr ? 'HTTP error: ' + xhr.status : 'Network error'); }
+                });
         };
         reader.readAsDataURL(file);
     }
@@ -154,11 +151,8 @@ Author: InsaniaQuon
         statusEl.textContent = 'Applying update...';
         statusEl.style.color = '#2196f3';
 
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.apply);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
-            if (xhr.status === 200) {
+        PT.xhrPost(PT.urls.apply, '', function(xhr) {
+            if (xhr && xhr.status === 200) {
                 try {
                     var resp = JSON.parse(xhr.responseText);
                     if (resp.success) {
@@ -176,17 +170,11 @@ Author: InsaniaQuon
                     applyBtn.disabled = false;
                 }
             } else {
-                statusEl.textContent = 'HTTP error: ' + xhr.status;
+                statusEl.textContent = xhr ? 'HTTP error: ' + xhr.status : 'Network error';
                 statusEl.style.color = '#f44336';
                 applyBtn.disabled = false;
             }
-        };
-        xhr.onerror = function() {
-            statusEl.textContent = 'Network error';
-            statusEl.style.color = '#f44336';
-            applyBtn.disabled = false;
-        };
-        xhr.send('token=' + encodeURIComponent(CSRF));
+        });
     }
 
     dropZone.addEventListener('click', function() { fileInput.click(); });

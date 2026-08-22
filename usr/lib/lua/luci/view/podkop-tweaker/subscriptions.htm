@@ -112,15 +112,13 @@ Author: InsaniaQuon
     </div>
 </div>
 
-<style>
-<% include("podkop-tweaker/podkop-tweaker-css") %>
-</style>
-
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
 <script>
-(function() {
-    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
-    var CSRF = '<%= token or csrf_token or "" %>';
-    var URLS = {
+window.PT = {
+    version: '<%= app_version %>',
+    csrf: '<%= csrf_token %>',
+    urls: {
+        appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>',
         state: '<%=url("admin/services/podkop-tweaker/api/subscription_state")%>',
         fetch: '<%=url("admin/services/podkop-tweaker/api/subscription_fetch")%>',
         attach: '<%=url("admin/services/podkop-tweaker/api/subscription_attach")%>',
@@ -130,7 +128,14 @@ Author: InsaniaQuon
         settings_save: '<%=url("admin/services/podkop-tweaker/api/settings_save")%>',
         update_all: '<%=url("admin/services/podkop-tweaker/api/update_all_subs")%>',
         read_log: '<%=url("admin/services/podkop-tweaker/api/read_update_log")%>'
-    };
+    }
+};
+</script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
+
+<script>
+(function() {
+    PT.checkStale();
 
     var loadingEl = document.getElementById('ps-subs-loading');
     var contentEl = document.getElementById('ps-subs-content');
@@ -152,14 +157,6 @@ Author: InsaniaQuon
     var currentSection = null;
     var currentIndex = -1;
     var fetchedProxies = [];
-
-    function escapeHtml(s) {
-        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    function escapeAttr(s) {
-        return (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
 
     function setFetchStatus(text, color) {
         subFetchStatus.textContent = text;
@@ -197,52 +194,51 @@ Author: InsaniaQuon
         errorEl.style.display = 'block';
     }
 
+    function fetchState(cb) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', PT.urls.state);
+        xhr.onload = function() {
+            if (xhr.status !== 200) { cb(null, xhr.status, false); return; }
+            var data = null;
+            var parseFailed = false;
+            try { data = JSON.parse(xhr.responseText); } catch (e) { parseFailed = true; }
+            cb(data, xhr.status, parseFailed);
+        };
+        xhr.onerror = function() { cb(null, 0, false); };
+        xhr.send();
+    }
+
     function loadState() {
         loadingEl.style.display = 'block';
         contentEl.style.display = 'none';
         errorEl.style.display = 'none';
 
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.state);
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                try { renderSections(JSON.parse(xhr.responseText)); }
-                catch (e) { renderError('Invalid response'); }
-            } else { renderError('HTTP error: ' + xhr.status); }
-        };
-        xhr.onerror = function() { renderError('Network error'); };
-        xhr.send();
+        fetchState(function(data, status, parseFailed) {
+            if (!data) {
+                renderError(parseFailed ? 'Invalid response'
+                    : (status ? 'HTTP error: ' + status : 'Network error'));
+                return;
+            }
+            renderSections(data);
+        });
     }
 
     function loadStateSilent() {
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.state);
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                try { renderSections(JSON.parse(xhr.responseText)); }
-                catch (e) {}
-            }
-        };
-        xhr.send();
+        fetchState(function(data) {
+            if (data) renderSections(data);
+        });
     }
 
     function loadSectionState(sectionName) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.state);
-        xhr.onload = function() {
-            if (xhr.status !== 200) return;
-            try {
-                var data = JSON.parse(xhr.responseText);
-                if (!data.sections) return;
-                for (var s = 0; s < data.sections.length; s++) {
-                    if (data.sections[s].name === sectionName) {
-                        renderSingleSection(data.sections[s], s);
-                        break;
-                    }
+        fetchState(function(data) {
+            if (!data || !data.sections) return;
+            for (var s = 0; s < data.sections.length; s++) {
+                if (data.sections[s].name === sectionName) {
+                    renderSingleSection(data.sections[s], s);
+                    break;
                 }
-            } catch (e) {}
-        };
-        xhr.send();
+            }
+        });
     }
 
     function buildSectionHTML(sec) {
@@ -252,7 +248,7 @@ Author: InsaniaQuon
 
         var html = '<div class="ps-sub-section">';
         html += '<div class="ps-sub-section-header">';
-        html += '<span class="ps-sub-section-name">' + escapeHtml(sec.name) + '</span>';
+        html += '<span class="ps-sub-section-name">' + PT.escapeHtml(sec.name) + '</span>';
         html += '<span class="ps-sub-section-meta">&mdash; ' + typeLabel + ' &middot; ' + sec.slots.length + ' proxy(ies)</span>';
         html += '</div>';
 
@@ -264,10 +260,10 @@ Author: InsaniaQuon
             html += '<div class="ps-sub-slot">';
             html += '<div class="ps-sub-slot-info">';
             html += '<span class="ps-sub-slot-num">' + (i + 1) + '.</span> ';
-            html += '<span class="ps-sub-slot-name">' + escapeHtml(p.name || 'unknown') + '</span>';
-            html += '<span class="ps-sub-slot-detail">' + escapeHtml(p.server) + (p.port ? ':' + p.port : '') + ' &middot; ' + escapeHtml(p.protocol) + ' &middot; ' + escapeHtml(p.security) + '</span>';
+            html += '<span class="ps-sub-slot-name">' + PT.escapeHtml(p.name || 'unknown') + '</span>';
+            html += '<span class="ps-sub-slot-detail">' + PT.escapeHtml(p.server) + (p.port ? ':' + p.port : '') + ' &middot; ' + PT.escapeHtml(p.protocol) + ' &middot; ' + PT.escapeHtml(p.security) + '</span>';
             if (sub && sub.last_updated) {
-                html += '<span class="ps-sub-slot-updated">Updated: ' + escapeHtml(sub.last_updated) + '</span>';
+                html += '<span class="ps-sub-slot-updated">Updated: ' + PT.escapeHtml(sub.last_updated) + '</span>';
             }
             html += '</div>';
 
@@ -275,13 +271,13 @@ Author: InsaniaQuon
             if (sub && sub.subscription_url) {
                 var shortUrl = sub.subscription_url.length > 50
                     ? sub.subscription_url.substring(0, 47) + '...' : sub.subscription_url;
-                html += '<span class="ps-sub-linked">Sub: ' + escapeHtml(shortUrl) + '</span>';
-                html += '<button class="btn cbi-button ps-sub-btn-update" data-section="' + escapeAttr(sec.name) + '" data-index="' + slot.index + '" data-url="' + escapeAttr(sub.subscription_url) + '" data-pname="' + escapeAttr(sub.proxy_name || '') + '">Update</button>';
-                html += '<button class="btn cbi-button ps-sub-btn-change" data-section="' + escapeAttr(sec.name) + '" data-index="' + slot.index + '" data-url="' + escapeAttr(sub.subscription_url) + '">Change</button>';
-                html += '<button class="btn cbi-button ps-sub-btn-detach" data-section="' + escapeAttr(sec.name) + '" data-index="' + slot.index + '">Detach</button>';
+                html += '<span class="ps-sub-linked">Sub: ' + PT.escapeHtml(shortUrl) + '</span>';
+                html += '<button class="btn cbi-button ps-sub-btn-update" data-section="' + PT.escapeAttr(sec.name) + '" data-index="' + slot.index + '" data-url="' + PT.escapeAttr(sub.subscription_url) + '" data-pname="' + PT.escapeAttr(sub.proxy_name || '') + '">Update</button>';
+                html += '<button class="btn cbi-button ps-sub-btn-change" data-section="' + PT.escapeAttr(sec.name) + '" data-index="' + slot.index + '" data-url="' + PT.escapeAttr(sub.subscription_url) + '">Change</button>';
+                html += '<button class="btn cbi-button ps-sub-btn-detach" data-section="' + PT.escapeAttr(sec.name) + '" data-index="' + slot.index + '">Detach</button>';
             } else {
                 html += '<span class="ps-sub-unlinked">Subscription: not set</span>';
-                html += '<button class="btn cbi-button cbi-button-apply ps-sub-btn-attach" data-section="' + escapeAttr(sec.name) + '" data-index="' + slot.index + '">Attach subscription</button>';
+                html += '<button class="btn cbi-button cbi-button-apply ps-sub-btn-attach" data-section="' + PT.escapeAttr(sec.name) + '" data-index="' + slot.index + '">Attach subscription</button>';
             }
             html += '<span class="ps-sub-slot-status" id="ps-slot-status-' + sec.name + '-' + slot.index + '"></span>';
             html += '</div>';
@@ -365,10 +361,7 @@ Author: InsaniaQuon
         setFetchStatus('Downloading...', '#2196f3');
         subProxiesEl.style.display = 'none';
 
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.fetch);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
+        PT.xhrPost(PT.urls.fetch, 'url=' + encodeURIComponent(url), function(xhr) {
             subFetchBtn.disabled = false;
             subFetchBtn.textContent = 'Fetch';
             if (xhr.status === 200) {
@@ -384,13 +377,7 @@ Author: InsaniaQuon
                     }
                 } catch (e) { setFetchStatus('Invalid response', '#f44336'); }
             } else { setFetchStatus('HTTP error: ' + xhr.status, '#f44336'); }
-        };
-        xhr.onerror = function() {
-            subFetchBtn.disabled = false;
-            subFetchBtn.textContent = 'Fetch';
-            setFetchStatus('Network error', '#f44336');
-        };
-        xhr.send('token=' + encodeURIComponent(CSRF) + '&url=' + encodeURIComponent(url));
+        });
     }
 
     subFetchBtn.addEventListener('click', doFetch);
@@ -405,8 +392,8 @@ Author: InsaniaQuon
         for (var i = 0; i < fetchedProxies.length; i++) {
             var p = fetchedProxies[i];
             html += '<div class="ps-sub-proxy-item" data-idx="' + i + '">';
-            html += '<div class="ps-sub-proxy-name">' + escapeHtml(p.name) + '</div>';
-            html += '<div class="ps-sub-proxy-detail">' + escapeHtml(p.server) + (p.port ? ':' + p.port : '') + ' &middot; ' + escapeHtml(p.protocol) + ' &middot; ' + escapeHtml(p.security) + '</div>';
+            html += '<div class="ps-sub-proxy-name">' + PT.escapeHtml(p.name) + '</div>';
+            html += '<div class="ps-sub-proxy-detail">' + PT.escapeHtml(p.server) + (p.port ? ':' + p.port : '') + ' &middot; ' + PT.escapeHtml(p.protocol) + ' &middot; ' + PT.escapeHtml(p.security) + '</div>';
             html += '</div>';
         }
         subProxyList.innerHTML = html;
@@ -427,7 +414,7 @@ Author: InsaniaQuon
         var attempts = 0, max = 8;
         var iv = setInterval(function() {
             var xhr = new XMLHttpRequest();
-            xhr.open('GET', URLS.service_status);
+            xhr.open('GET', PT.urls.service_status);
             xhr.onload = function() {
                 attempts++;
                 if (xhr.status === 200) {
@@ -457,43 +444,36 @@ Author: InsaniaQuon
 
         setFetchStatus('Applying...', '#2196f3');
 
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.attach);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                try {
-                    var resp = JSON.parse(xhr.responseText);
-                    if (resp.success) {
-                        closeModal();
-                        setGlobalStatus('Restarting service...', '#2196f3');
-                        waitForRestart(function() {
-                            setGlobalStatus('Updated successfully', '#4caf50');
-                            loadSectionState(section);
-                            loadUpdateLog();
-                        });
-                    } else {
-                        setFetchStatus(resp.error || 'Unknown error', '#f44336');
-                    }
-                } catch (e) { setFetchStatus('Invalid response', '#f44336'); }
-            } else { setFetchStatus('HTTP error: ' + xhr.status, '#f44336'); }
-        };
-        xhr.onerror = function() { setFetchStatus('Network error', '#f44336'); };
-        xhr.send('token=' + encodeURIComponent(CSRF)
-            + '&section=' + encodeURIComponent(section)
+        PT.xhrPost(PT.urls.attach,
+            'section=' + encodeURIComponent(section)
             + '&index=' + index
             + '&subscription_url=' + encodeURIComponent(subUrl)
             + '&proxy_name=' + encodeURIComponent(proxy.name || '')
-            + '&link=' + encodeURIComponent(proxy.link || ''));
+            + '&link=' + encodeURIComponent(proxy.link || ''),
+            function(xhr) {
+                if (xhr.status === 200) {
+                    try {
+                        var resp = JSON.parse(xhr.responseText);
+                        if (resp.success) {
+                            closeModal();
+                            setGlobalStatus('Restarting service...', '#2196f3');
+                            waitForRestart(function() {
+                                setGlobalStatus('Updated successfully', '#4caf50');
+                                loadSectionState(section);
+                                loadUpdateLog();
+                            });
+                        } else {
+                            setFetchStatus(resp.error || 'Unknown error', '#f44336');
+                        }
+                    } catch (e) { setFetchStatus('Invalid response', '#f44336'); }
+                } else { setFetchStatus('HTTP error: ' + xhr.status, '#f44336'); }
+            });
     }
 
     function doUpdate(section, index, subUrl, proxyName) {
         setSlotStatus(section, index, 'Updating...', '#2196f3');
 
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.fetch);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
+        PT.xhrPost(PT.urls.fetch, 'url=' + encodeURIComponent(subUrl), function(xhr) {
             if (xhr.status === 200) {
                 try {
                     var resp = JSON.parse(xhr.responseText);
@@ -520,65 +500,55 @@ Author: InsaniaQuon
                     }
                 } catch (e) { setSlotStatus(section, index, 'Invalid response', '#f44336'); }
             } else { setSlotStatus(section, index, 'HTTP error: ' + xhr.status, '#f44336'); }
-        };
-        xhr.onerror = function() { setSlotStatus(section, index, 'Network error', '#f44336'); };
-        xhr.send('token=' + encodeURIComponent(CSRF) + '&url=' + encodeURIComponent(subUrl));
+        });
     }
 
     function doAttachDirect(section, index, subUrl, proxy) {
         setSlotStatus(section, index, 'Applying...', '#2196f3');
 
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.attach);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                try {
-                    var resp = JSON.parse(xhr.responseText);
-                    if (resp.success) {
-                        setSlotStatus(section, index, 'Restarting...', '#2196f3');
-                        waitForRestart(function() {
-                            if (resp.unchanged) {
-                                setSlotStatus(section, index, 'Up to date', '#4caf50');
-                            } else {
-                                setSlotStatus(section, index, 'Updated', '#4caf50');
-                            }
-                            loadSectionState(section);
-                            loadUpdateLog();
-                        });
-                    } else {
-                        setSlotStatus(section, index, resp.error || 'Unknown error', '#f44336');
-                    }
-                } catch (e) { setSlotStatus(section, index, 'Invalid response', '#f44336'); }
-            } else { setSlotStatus(section, index, 'HTTP error: ' + xhr.status, '#f44336'); }
-        };
-        xhr.onerror = function() { setSlotStatus(section, index, 'Network error', '#f44336'); };
-        xhr.send('token=' + encodeURIComponent(CSRF)
-            + '&section=' + encodeURIComponent(section)
+        PT.xhrPost(PT.urls.attach,
+            'section=' + encodeURIComponent(section)
             + '&index=' + index
             + '&subscription_url=' + encodeURIComponent(subUrl)
             + '&proxy_name=' + encodeURIComponent(proxy.name || '')
-            + '&link=' + encodeURIComponent(proxy.link || ''));
+            + '&link=' + encodeURIComponent(proxy.link || ''),
+            function(xhr) {
+                if (xhr.status === 200) {
+                    try {
+                        var resp = JSON.parse(xhr.responseText);
+                        if (resp.success) {
+                            setSlotStatus(section, index, 'Restarting...', '#2196f3');
+                            waitForRestart(function() {
+                                if (resp.unchanged) {
+                                    setSlotStatus(section, index, 'Up to date', '#4caf50');
+                                } else {
+                                    setSlotStatus(section, index, 'Updated', '#4caf50');
+                                }
+                                loadSectionState(section);
+                                loadUpdateLog();
+                            });
+                        } else {
+                            setSlotStatus(section, index, resp.error || 'Unknown error', '#f44336');
+                        }
+                    } catch (e) { setSlotStatus(section, index, 'Invalid response', '#f44336'); }
+                } else { setSlotStatus(section, index, 'HTTP error: ' + xhr.status, '#f44336'); }
+            });
     }
 
     function doDetach(section, index) {
         if (!confirm('Remove subscription association from slot ' + (index + 1) + '?\nThe proxy link will remain in the config.')) return;
 
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.detach);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
-            if (xhr.status === 200) { loadSectionState(section); }
-        };
-        xhr.send('token=' + encodeURIComponent(CSRF)
-            + '&section=' + encodeURIComponent(section)
-            + '&index=' + index);
+        PT.xhrPost(PT.urls.detach,
+            'section=' + encodeURIComponent(section) + '&index=' + index,
+            function(xhr) {
+                if (xhr.status === 200) { loadSectionState(section); }
+            });
     }
 
     // === Options ===
     function loadOptions() {
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.settings_read);
+        xhr.open('GET', PT.urls.settings_read);
         xhr.onload = function() {
             if (xhr.status === 200) {
                 try { renderOptions(JSON.parse(xhr.responseText)); }
@@ -612,7 +582,7 @@ Author: InsaniaQuon
         html += '<label for="ps-opt-cron">Every</label>';
         html += '<input type="text" id="ps-opt-interval" value="' + (cronEnabled ? interval : 6) + '" placeholder="6" style="' + showStyle + '" />';
         html += '<span id="ps-opt-cron-fields" style="' + showStyle + '">hours starting at</span>';
-        html += '<input type="text" id="ps-opt-start" value="' + escapeAttr(startVal) + '" placeholder="02:30" style="' + showStyle + '" />';
+        html += '<input type="text" id="ps-opt-start" value="' + PT.escapeAttr(startVal) + '" placeholder="02:30" style="' + showStyle + '" />';
         html += '<span id="ps-opt-cron-msk" style="' + showStyle + '">(MSK, daily)</span>';
         html += '</div>';
         html += '<div class="ps-options-row" style="font-size:12px;color:var(--ps-text-dim);margin-bottom:0">';
@@ -705,29 +675,25 @@ Author: InsaniaQuon
             statusEl.textContent = 'Saving...';
             statusEl.style.color = '#2196f3';
 
-            var xhr = new XMLHttpRequest();
-            xhr.open('POST', URLS.settings_save);
-            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-            xhr.onload = function() {
-                if (xhr.status === 200) {
-                    try {
-                        var resp = JSON.parse(xhr.responseText);
-                        if (resp.success) {
-                            statusEl.textContent = 'Saved';
-                            statusEl.style.color = '#4caf50';
-                        } else {
-                            statusEl.textContent = resp.error || 'Save failed';
-                            statusEl.style.color = '#f44336';
-                        }
-                    } catch (e) { statusEl.textContent = 'Invalid response'; statusEl.style.color = '#f44336'; }
-                } else { statusEl.textContent = 'HTTP error: ' + xhr.status; statusEl.style.color = '#f44336'; }
-            };
-            xhr.onerror = function() { statusEl.textContent = 'Network error'; statusEl.style.color = '#f44336'; };
-            xhr.send('token=' + encodeURIComponent(CSRF)
-                + '&auto_update_interval=' + (cronChecked ? intervalVal : '0')
+            PT.xhrPost(PT.urls.settings_save,
+                'auto_update_interval=' + (cronChecked ? intervalVal : '0')
                 + '&auto_update_start=' + encodeURIComponent(cronChecked ? startInput : '')
                 + '&auto_update_on_restart=' + (restartChecked ? '1' : '0')
-                + '&log_display_count=' + (document.getElementById('ps-log-display-count') || {}).value);
+                + '&log_display_count=' + (document.getElementById('ps-log-display-count') || {}).value,
+                function(xhr) {
+                    if (xhr.status === 200) {
+                        try {
+                            var resp = JSON.parse(xhr.responseText);
+                            if (resp.success) {
+                                statusEl.textContent = 'Saved';
+                                statusEl.style.color = '#4caf50';
+                            } else {
+                                statusEl.textContent = resp.error || 'Save failed';
+                                statusEl.style.color = '#f44336';
+                            }
+                        } catch (e) { statusEl.textContent = 'Invalid response'; statusEl.style.color = '#f44336'; }
+                    } else { statusEl.textContent = 'HTTP error: ' + xhr.status; statusEl.style.color = '#f44336'; }
+                });
         });
     }
 
@@ -738,10 +704,7 @@ Author: InsaniaQuon
         updateAllBtn.disabled = true;
         setGlobalStatus('Updating subscriptions...', '#2196f3');
 
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.update_all);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
+        PT.xhrPost(PT.urls.update_all, '', function(xhr) {
             if (xhr.status !== 200) {
                 setGlobalStatus('HTTP error: ' + xhr.status, '#f44336');
                 updateAllBtn.disabled = false;
@@ -774,12 +737,7 @@ Author: InsaniaQuon
                 loadStateSilent();
                 loadUpdateLog();
             }
-        };
-        xhr.onerror = function() {
-            setGlobalStatus('Network error', '#f44336');
-            updateAllBtn.disabled = false;
-        };
-        xhr.send('token=' + encodeURIComponent(CSRF));
+        });
     });
 
     refreshBtn.addEventListener('click', function() { loadStateSilent(); });
@@ -816,8 +774,8 @@ Author: InsaniaQuon
             var modeClass = e.mode === 'auto' ? 'ps-log-mode-auto' : 'ps-log-mode-manual';
             html += '<div class="ps-log-event">';
             html += '<div class="ps-log-summary">' + num + ' ' +
-                '<span class="ps-log-ts">' + escapeHtml(e.ts) + '</span> ' +
-                '<span class="' + modeClass + '">' + escapeHtml(e.mode) + '</span> ' +
+                '<span class="ps-log-ts">' + PT.escapeHtml(e.ts) + '</span> ' +
+                '<span class="' + modeClass + '">' + PT.escapeHtml(e.mode) + '</span> ' +
                 '<span class="ps-log-stats">updated=' + e.updated + ' unchanged=' + e.unchanged + ' failed=' + e.failed + '</span></div>';
             if (e.detailLines.length > 0) {
                 html += '<div class="ps-log-details">';
@@ -827,7 +785,7 @@ Author: InsaniaQuon
                     else if (e.detailLines[j].indexOf(': failed') !== -1) cls += ' ps-status-failed';
                     else if (e.detailLines[j].indexOf(': unchanged') !== -1) cls += ' ps-status-unchanged';
                     else cls += ' ps-log-detail-section';
-                    html += '<div class="' + cls + '">' + escapeHtml(e.detailLines[j]) + '</div>';
+                    html += '<div class="' + cls + '">' + PT.escapeHtml(e.detailLines[j]) + '</div>';
                 }
                 html += '</div>';
             }
@@ -840,7 +798,7 @@ Author: InsaniaQuon
         var wrap = document.getElementById('ps-log-wrap');
         var fullLogBtn = document.getElementById('ps-full-log-btn');
         var xhr = new XMLHttpRequest();
-        xhr.open('GET', URLS.read_log);
+        xhr.open('GET', PT.urls.read_log);
         xhr.onload = function() {
             if (xhr.status !== 200) {
                 wrap.innerHTML = '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">Failed to load log</div>';
@@ -880,28 +838,29 @@ Author: InsaniaQuon
         var count = parseInt(document.getElementById('ps-log-display-count').value) || 10;
         logSettingsStatus.textContent = 'Saving...';
         logSettingsStatus.style.color = '#2196f3';
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', URLS.settings_save);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                try {
-                    var resp = JSON.parse(xhr.responseText);
-                    if (resp.success) {
-                        logSettingsStatus.textContent = 'Saved';
-                        logSettingsStatus.style.color = '#4caf50';
-                        loadUpdateLog();
-                    } else {
-                        logSettingsStatus.textContent = resp.error || 'Save failed';
-                        logSettingsStatus.style.color = '#f44336';
-                    }
-                } catch (e) { logSettingsStatus.textContent = 'Invalid response'; logSettingsStatus.style.color = '#f44336'; }
-            } else { logSettingsStatus.textContent = 'HTTP error'; logSettingsStatus.style.color = '#f44336'; }
-        };
-        xhr.onerror = function() { logSettingsStatus.textContent = 'Network error'; logSettingsStatus.style.color = '#f44336'; };
-        xhr.send('token=' + encodeURIComponent(CSRF)
-            + '&auto_update_interval=0&auto_update_start=&auto_update_on_restart=0'
-            + '&log_display_count=' + count);
+        PT.getJson(PT.urls.settings_read, function(current) {
+            current = current || {};
+            PT.xhrPost(PT.urls.settings_save,
+                'auto_update_interval=' + (current.auto_update_interval || 0)
+                + '&auto_update_start=' + encodeURIComponent(current.auto_update_start || '')
+                + '&auto_update_on_restart=' + (current.auto_update_on_restart ? '1' : '0')
+                + '&log_display_count=' + count,
+                function(xhr) {
+                    if (xhr && xhr.status === 200) {
+                        try {
+                            var resp = JSON.parse(xhr.responseText);
+                            if (resp.success) {
+                                logSettingsStatus.textContent = 'Saved';
+                                logSettingsStatus.style.color = '#4caf50';
+                                loadUpdateLog();
+                            } else {
+                                logSettingsStatus.textContent = resp.error || 'Save failed';
+                                logSettingsStatus.style.color = '#f44336';
+                            }
+                        } catch (e) { logSettingsStatus.textContent = 'Invalid response'; logSettingsStatus.style.color = '#f44336'; }
+                    } else { logSettingsStatus.textContent = xhr ? 'HTTP error' : 'Network error'; logSettingsStatus.style.color = '#f44336'; }
+                });
+        });
     });
 
     var fullLogModal = document.getElementById('ps-full-log-modal');

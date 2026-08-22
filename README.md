@@ -34,6 +34,14 @@ tar -xzf luci-app-podkop-tweaker-vX.Y.Z.tar.gz -C /
 
 No ipk package build required — files are copied as-is.
 
+**Upgrading from v3.x (or any earlier version):** since v4.0.0 static assets live in `www/luci-static/resources/podkop-tweaker/`. The archive contains them, so a plain extraction is enough. One legacy file may remain on the router from older installs — it is inert and can be removed:
+
+```bash
+rm -f /usr/lib/lua/luci/view/podkop-tweaker/podkop-tweaker-css.htm
+```
+
+After updating, restart the web interface (`/etc/init.d/uhttpd restart`) or use the built-in "Clear LuCI Cache" button.
+
 ## Argon Config (optional)
 
 The Argon Config tab is **hidden by default**. It provides typography settings (font size, font family, font weight, line height, letter spacing, sidebar menu font size and padding) for the [Argon theme](https://github.com/jerrykuku/luci-theme-argon) with live preview. Settings are stored in `/etc/config/argon` and applied by appending a CSS block to `/www/luci-static/argon/css/cascade.css`.

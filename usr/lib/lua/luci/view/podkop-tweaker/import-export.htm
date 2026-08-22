@@ -39,7 +39,7 @@ Author: InsaniaQuon
                     </div>
                     <div class="ps-ie-actions">
                         <button class="btn cbi-button cbi-button-apply" id="ps-export-open">
-                            Export Bundle...
+                            &#11015; Export Bundle...
                         </button>
                     </div>
                 </div>
@@ -53,9 +53,9 @@ Author: InsaniaQuon
                     </div>
                     <div class="ps-ie-actions" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                         <input type="file" id="ps-import-file" accept=".json,.conf,.config,.txt,.bak" hidden />
-                        <button class="btn cbi-button" id="ps-import-pick">Choose File</button>
+                        <button class="btn cbi-button" id="ps-import-pick">&#11014; Choose File</button>
                         <span class="ps-import-fname" id="ps-import-fname">No file selected</span>
-                        <button class="btn cbi-button cbi-button-apply" id="ps-import-open" disabled>Review &amp; Import...</button>
+                        <button class="btn cbi-button cbi-button-apply" id="ps-import-open" disabled>&#11014; Review &amp; Import...</button>
                         <span class="ps-config-status" id="ps-import-status"></span>
                     </div>
                 </div>
@@ -86,7 +86,7 @@ Author: InsaniaQuon
                 </td>
                 <td>
                     <% if auto_backup_time then %>
-                        <button class="btn cbi-button" data-action="backup-auto">Download</button>
+                        <button class="btn cbi-button" data-action="backup-auto">&#11015; Download</button>
                     <% end %>
                 </td>
             </tr>
@@ -101,7 +101,7 @@ Author: InsaniaQuon
                 </td>
                 <td>
                     <% if auto_sub_backup_time then %>
-                        <button class="btn cbi-button" data-action="backup-sub">Download</button>
+                        <button class="btn cbi-button" data-action="backup-sub">&#11015; Download</button>
                     <% end %>
                 </td>
             </tr>
@@ -116,7 +116,7 @@ Author: InsaniaQuon
                 </td>
                 <td>
                     <% if stubby_backup_time then %>
-                        <button class="btn cbi-button" data-action="backup-stubby">Download</button>
+                        <button class="btn cbi-button" data-action="backup-stubby">&#11015; Download</button>
                     <% end %>
                 </td>
             </tr>
@@ -131,7 +131,7 @@ Author: InsaniaQuon
                 </td>
                 <td>
                     <% if singbox_backup_time then %>
-                        <button class="btn cbi-button" data-action="backup-singbox">Download</button>
+                        <button class="btn cbi-button" data-action="backup-singbox">&#11015; Download</button>
                     <% end %>
                 </td>
             </tr>
@@ -185,8 +185,8 @@ Author: InsaniaQuon
         <div class="ps-check-list" id="ps-export-list">
             <label class="ps-check-item"><input type="checkbox" value="podkop" checked /><span>Podkop config</span><span class="ps-check-note">contains credentials</span></label>
             <label class="ps-check-item"><input type="checkbox" value="stubby" checked /><span>Stubby config</span></label>
-            <label class="ps-check-item"><input type="checkbox" value="singbox" checked /><span>Sing-box config</span></label>
-            <label class="ps-check-item"><input type="checkbox" value="fragment" checked /><span>Fragment settings</span></label>
+            <label class="ps-check-item"><input type="checkbox" value="singbox" /><span>Sing-box config</span></label>
+            <label class="ps-check-item"><input type="checkbox" value="fragment" /><span>Fragment settings</span></label>
 <% if show_argon then %>
             <label class="ps-check-item"><input type="checkbox" value="argon" checked /><span>Argon typography</span></label>
 <% end %>
@@ -200,7 +200,7 @@ Author: InsaniaQuon
             <button class="btn cbi-button" id="ps-export-all">Select all / none</button>
             <span style="flex:1"></span>
             <button class="btn cbi-button" id="ps-export-cancel">Cancel</button>
-            <button class="btn cbi-button cbi-button-apply" id="ps-export-confirm">Download Bundle</button>
+            <button class="btn cbi-button cbi-button-apply" id="ps-export-confirm">&#11015; Download Bundle</button>
         </div>
     </div>
 </div>
@@ -228,7 +228,7 @@ Author: InsaniaQuon
             <button class="btn cbi-button ps-rollback-btn" id="ps-import-rollback" style="display:none">Rollback Podkop</button>
             <span style="flex:1"></span>
             <button class="btn cbi-button" id="ps-import-cancel">Cancel</button>
-            <button class="btn cbi-button cbi-button-apply" id="ps-import-confirm">Import</button>
+            <button class="btn cbi-button cbi-button-apply" id="ps-import-confirm">&#11014; Import</button>
             <button class="btn cbi-button" id="ps-import-close" style="display:none;">Close</button>
         </div>
     </div>
@@ -244,15 +244,13 @@ Author: InsaniaQuon
     </div>
 </div>
 
-<style>
-<% include("podkop-tweaker/podkop-tweaker-css") %>
-</style>
-
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
 <script>
-(function() {
-    var _pv='<%= app_version %>';var _sb=document.getElementById('ps-stale-banner');if(_pv&&_sb){var _xh=new XMLHttpRequest();_xh.open('GET','<%=url("admin/services/podkop-tweaker/api/app_version")%>');_xh.onload=function(){try{var _r=JSON.parse(_xh.responseText);if(_r.version&&_r.version!==_pv)_sb.classList.add('ps-stale-visible');}catch(e){}};_xh.send();}
-    var CSRF = '<%= token or csrf_token or "" %>';
-    var URLS = {
+window.PT = {
+    version: '<%= app_version %>',
+    csrf: '<%= csrf_token %>',
+    urls: {
+        appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>',
         importCfg: '<%=url("admin/services/podkop-tweaker/api/import_config")%>',
         importStubby: '<%=url("admin/services/podkop-tweaker/api/import_stubby_config")%>',
         importSingbox: '<%=url("admin/services/podkop-tweaker/api/import_singbox_config")%>',
@@ -265,7 +263,14 @@ Author: InsaniaQuon
         status: '<%=url("admin/services/podkop-tweaker/api/service_status")%>',
         stubbyStatus: '<%=url("admin/services/podkop-tweaker/api/stubby_service_status")%>',
         rollback: '<%=url("admin/services/podkop-tweaker/api/rollback")%>'
-    };
+    }
+};
+</script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
+
+<script>
+(function() {
+    PT.checkStale();
 
     var ITEM_LABELS = {
         podkop: 'Podkop config',
@@ -290,113 +295,33 @@ Author: InsaniaQuon
     var errorModal = document.getElementById('ps-error-modal');
     var errorDetails = document.getElementById('ps-error-details');
     var errorClose = document.getElementById('ps-error-close');
-    var statusDot = document.getElementById('ps-podkop-dot');
-    var statusText = document.getElementById('ps-podkop-text');
-    var stubbyDot = document.getElementById('ps-stubby-dot');
-    var stubbyText = document.getElementById('ps-stubby-text');
 
-    var _lastError = null;
-    var _errorTimer = null;
-    var ERROR_TTL = 600000;
-    var _pollTimer = null;
+    var errors = PT.errorReporter(errorBtn, errorModal, errorDetails, errorClose);
 
     function pushError(shortMsg, fullDetails) {
-        var ts = new Date();
-        var t = [ts.getHours(), ts.getMinutes(), ts.getSeconds()].map(function(v) {
-            return String(v).padStart(2, '0');
-        }).join(':');
-        _lastError = '[' + t + '] ' + (fullDetails || shortMsg);
-        errorBtn.style.display = 'inline-block';
-        if (_errorTimer) clearTimeout(_errorTimer);
-        _errorTimer = setTimeout(function() {
-            _lastError = null;
-            errorBtn.style.display = 'none';
-        }, ERROR_TTL);
+        errors.push(shortMsg, fullDetails);
     }
 
-    function xhrPost(url, params, cb) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', url);
-        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = function() { cb(xhr); };
-        xhr.onerror = function() { cb(null); };
-        xhr.send('token=' + encodeURIComponent(CSRF) + (params ? '&' + params : ''));
-    }
-
-    function checkJson(url, cb) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', url);
-        xhr.onload = function() {
-            if (xhr.status === 200) {
-                try {
-                    var r = JSON.parse(xhr.responseText);
-                    cb(r.running, r.pid);
-                } catch (e) { cb(false, null); }
-            } else { cb(false, null); }
-        };
-        xhr.onerror = function() { cb(false, null); };
-        xhr.send();
-    }
-
-    function checkStatus(cb) {
-        checkJson(URLS.status, cb);
-    }
-
-    function checkStubbyStatus(cb) {
-        checkJson(URLS.stubbyStatus, cb);
-    }
-
-    function makeStatusUpdater(dotEl, textEl) {
-        return function(running, pid) {
-            dotEl.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
-            textEl.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
-            textEl.style.color = running ? '#4caf50' : '#f44336';
-        };
-    }
-
-    var updateStatusUI = makeStatusUpdater(statusDot, statusText);
-    var updateStubbyUI = makeStatusUpdater(stubbyDot, stubbyText);
+    var podkopWatcher = PT.statusWatcher(PT.urls.status,
+        document.getElementById('ps-podkop-dot'),
+        document.getElementById('ps-podkop-text'));
+    var stubbyWatcher = PT.statusWatcher(PT.urls.stubbyStatus,
+        document.getElementById('ps-stubby-dot'),
+        document.getElementById('ps-stubby-text'));
 
     function refreshStubbyStatus() {
-        checkStubbyStatus(updateStubbyUI);
+        stubbyWatcher.refresh();
     }
-
-    function pollStatus(onSuccess, onTimeout, attempts) {
-        if (_pollTimer) clearTimeout(_pollTimer);
-        attempts = attempts || 0;
-        if (attempts >= 8) {
-            onTimeout();
-            return;
-        }
-        _pollTimer = setTimeout(function() {
-            checkStatus(function(running, pid) {
-                updateStatusUI(running, pid);
-                if (running) {
-                    onSuccess();
-                } else {
-                    pollStatus(onSuccess, onTimeout, attempts + 1);
-                }
-            });
-        }, 2000);
-    }
-
-    errorBtn.addEventListener('click', function() {
-        if (!_lastError) return;
-        errorDetails.textContent = _lastError;
-        errorModal.style.display = 'flex';
-    });
-    errorClose.addEventListener('click', function() { errorModal.style.display = 'none'; });
-    errorModal.addEventListener('click', function(e) { if (e.target === errorModal) errorModal.style.display = 'none'; });
 
     document.querySelectorAll('[data-action]').forEach(function(btn) {
         btn.addEventListener('click', function(e) {
             e.preventDefault();
             var action = btn.getAttribute('data-action');
             switch (action) {
-                case 'backup-auto': window.location.href = URLS.backup; break;
-                case 'backup-sub': window.location.href = URLS.backupSub; break;
-                case 'backup-stubby': window.location.href = URLS.backupStubby; break;
-                case 'backup-singbox': window.location.href = URLS.backupSingbox; break;
+                case 'backup-auto': window.location.href = PT.urls.backup; break;
+                case 'backup-sub': window.location.href = PT.urls.backupSub; break;
+                case 'backup-stubby': window.location.href = PT.urls.backupStubby; break;
+                case 'backup-singbox': window.location.href = PT.urls.backupSingbox; break;
             }
         });
     });
@@ -432,7 +357,7 @@ Author: InsaniaQuon
         });
         if (selected.length === 0) return;
         exportModal.style.display = 'none';
-        window.location.href = URLS.exportBundle + '?items=' + encodeURIComponent(selected.join(','));
+        window.location.href = PT.urls.exportBundle + '?items=' + encodeURIComponent(selected.join(','));
     });
 
     /* === Import: file pick + format detection === */
@@ -530,7 +455,7 @@ Author: InsaniaQuon
         reviewRollbackBtn.style.display = 'none';
         reviewConfirmBtn.style.display = '';
         reviewConfirmBtn.disabled = false;
-        reviewConfirmBtn.textContent = 'Import';
+        reviewConfirmBtn.textContent = '\u2B06 Import';
         reviewCancelBtn.style.display = '';
         reviewCloseBtn.style.display = 'none';
     }
@@ -616,9 +541,9 @@ Author: InsaniaQuon
     }
 
     var RAW_TARGETS = {
-        podkop: { url: URLS.importCfg, name: 'Podkop', poll: true, conseq: '/etc/config/podkop, create backup, restart Podkop' },
-        stubby: { url: URLS.importStubby, name: 'Stubby', poll: false, conseq: '/etc/config/stubby, create backup, restart Stubby' },
-        singbox: { url: URLS.importSingbox, name: 'Sing-box', poll: false, conseq: '/etc/sing-box/config.json, sing-box check, backup, restart sing-box' }
+        podkop: { url: function() { return PT.urls.importCfg; }, name: 'Podkop', poll: true, conseq: '/etc/config/podkop, create backup, restart Podkop' },
+        stubby: { url: function() { return PT.urls.importStubby; }, name: 'Stubby', poll: false, conseq: '/etc/config/stubby, create backup, restart Stubby' },
+        singbox: { url: function() { return PT.urls.importSingbox; }, name: 'Sing-box', poll: false, conseq: '/etc/sing-box/config.json, sing-box check, backup, restart sing-box' }
     };
 
     function openRawReview(text, guess) {
@@ -726,12 +651,12 @@ Author: InsaniaQuon
         reviewStatusEl.textContent = 'Applying...';
         reviewStatusEl.style.color = '#2196f3';
 
-        xhrPost(URLS.importBundle,
+        PT.xhrPost(PT.urls.importBundle,
             'content=' + encodeURIComponent(_pendingBundle.raw) +
             '&items=' + encodeURIComponent(selected.join(',')),
             function(xhr) {
                 reviewConfirmBtn.disabled = false;
-                reviewConfirmBtn.textContent = 'Import';
+                reviewConfirmBtn.textContent = '\u2B06 Import';
                 if (!xhr) { modalFail('Network error'); return; }
                 var resp = null;
                 try { resp = JSON.parse(xhr.responseText); } catch (e) {}
@@ -741,7 +666,7 @@ Author: InsaniaQuon
                 if (resp.restarting) {
                     reviewStatusEl.textContent = 'Podkop restarting...';
                     reviewStatusEl.style.color = '#2196f3';
-                    pollStatus(
+                    podkopWatcher.poll(
                         function() {
                             reviewStatusEl.textContent = 'Imported. Podkop is running.';
                             reviewStatusEl.style.color = '#4caf50';
@@ -771,9 +696,9 @@ Author: InsaniaQuon
         reviewStatusEl.textContent = 'Importing ' + t.name.toLowerCase() + '...';
         reviewStatusEl.style.color = '#2196f3';
 
-        xhrPost(t.url, 'content=' + encodeURIComponent(_pendingRaw.raw), function(xhr) {
+        PT.xhrPost(t.url(), 'content=' + encodeURIComponent(_pendingRaw.raw), function(xhr) {
             reviewConfirmBtn.disabled = false;
-            reviewConfirmBtn.textContent = 'Import';
+            reviewConfirmBtn.textContent = '\u2B06 Import';
             if (!xhr) { modalFail('Network error'); return; }
             var resp = null;
             try { resp = JSON.parse(xhr.responseText); } catch (e) {}
@@ -785,7 +710,7 @@ Author: InsaniaQuon
             }
             if (resp.success && resp.restarting && t.poll) {
                 reviewStatusEl.textContent = 'Restarting ' + t.name.toLowerCase() + '...';
-                pollStatus(
+                podkopWatcher.poll(
                     function() {
                         reviewStatusEl.textContent = 'Imported successfully. Podkop is running.';
                         reviewStatusEl.style.color = '#4caf50';
@@ -810,7 +735,7 @@ Author: InsaniaQuon
         reviewRollbackBtn.style.display = 'none';
         reviewStatusEl.textContent = 'Rolling back...';
         reviewStatusEl.style.color = '#2196f3';
-        xhrPost(URLS.rollback, '', function(xhr) {
+        PT.xhrPost(PT.urls.rollback, '', function(xhr) {
             if (!xhr) {
                 reviewStatusEl.textContent = 'Rollback network error';
                 reviewStatusEl.style.color = '#f44336';
@@ -821,7 +746,7 @@ Author: InsaniaQuon
                 if (resp.success) {
                     reviewStatusEl.textContent = 'Rolled back. Restarting...';
                     reviewStatusEl.style.color = '#2196f3';
-                    pollStatus(
+                    podkopWatcher.poll(
                         function() {
                             reviewStatusEl.textContent = 'Rolled back successfully.';
                             reviewStatusEl.style.color = '#4caf50';
@@ -842,7 +767,7 @@ Author: InsaniaQuon
         });
     });
 
-    checkStatus(updateStatusUI);
+    podkopWatcher.refresh();
     refreshStubbyStatus();
 })();
 </script>

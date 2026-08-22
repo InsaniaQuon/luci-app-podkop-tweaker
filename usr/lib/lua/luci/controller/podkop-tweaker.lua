@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v3.7.0 | 20.08.2026 | Bundle import/export with picker UI (legacy blocks kept in <details>)
+-- Podkop Tweaker | v4.0.0 | 22.08.2026 | Modularization: lib/services/subsched/argon/diag/bundle modules, shared JS/CSS assets
 
-local APP_VERSION = "3.7.0"
+local APP_VERSION = "4.0.0"
 
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
@@ -16,30 +16,22 @@ local BUNDLE_FORMAT = "podkop-tweaker-bundle"
 local BUNDLE_VERSION = 1
 local BUNDLE_MAX_SIZE = 4194304
 
-local ARGON_CASCADE_CSS = "/www/luci-static/argon/css/cascade.css"
-local ARGON_CSS_MARKER_START = "/* === Podkop Tweaker Typography === */"
-local ARGON_CSS_MARKER_END = "/* === End Podkop Tweaker Typography === */"
-
-local ARGON_FONT_FAMILIES = {
-    ["Google Sans"] = '"Google Sans", "Microsoft Yahei", "WenQuanYi Micro Hei", sans-serif',
-    ["system-ui"] = "system-ui, -apple-system, sans-serif",
-    ["Arial"] = "Arial, Helvetica, sans-serif",
-    ["Verdana"] = "Verdana, Geneva, sans-serif",
-    ["Tahoma"] = "Tahoma, Geneva, sans-serif",
-    ["monospace"] = '"Cascadia Code", "JetBrains Mono", "Fira Code", monospace',
-}
+local PT_CSRF_FILE = "/etc/podkop-tweaker.token"
 
 local S = require("pt-subs-lib")
+local LIB = require("podkop-tweaker.lib")
+local SRV = require("podkop-tweaker.services")
+local SCHED = require("podkop-tweaker.subsched")
+local AR = require("podkop-tweaker.argon")
+local DIAG = require("podkop-tweaker.diag")
+local BUNDLE = require("podkop-tweaker.bundle")
 
-local function generate_random_password(length)
-    local chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    math.randomseed(os.time(), os.clock())
-    local password = {}
-    for i = 1, length do
-        password[i] = chars:sub(math.random(1, #chars), math.random(1, #chars))
-    end
-    return table.concat(password)
-end
+local sanitize_section_name = LIB.sanitize_section_name
+local version_lt = LIB.version_lt
+local validate_uci_config = LIB.validate_uci_config
+
+local SINGBOX_CONFIG = SRV.SINGBOX_CONFIG
+local SINGBOX_BACKUP = SRV.SINGBOX_BACKUP
 
 local function set_no_cache_headers()
     local http = require("luci.http")
@@ -48,10 +40,27 @@ local function set_no_cache_headers()
     http.header("Expires", "0")
 end
 
-local function sanitize_section_name(name)
-    if not name or name == "" then return nil end
-    if not name:match("^[a-zA-Z0-9_%-]+$") then return nil end
-    return name
+local function ensure_csrf_token()
+    local fd = io.open(PT_CSRF_FILE, "r")
+    if fd then
+        local tok = fd:read("*l") or ""
+        fd:close()
+        tok = tok:match("^%s*(.-)%s*$")
+        if tok ~= "" then return tok end
+    end
+    local rnd = io.open("/dev/urandom", "rb")
+    if not rnd then return "" end
+    local raw = rnd:read(32)
+    rnd:close()
+    if not raw or #raw < 32 then return "" end
+    local tok = raw:gsub(".", function(c) return string.format("%02x", c:byte()) end)
+    if #tok ~= 64 then return "" end
+    local wfd = io.open(PT_CSRF_FILE, "w")
+    if not wfd then return "" end
+    wfd:write(tok)
+    wfd:close()
+    os.execute("chmod 600 " .. PT_CSRF_FILE .. " 2>/dev/null")
+    return tok
 end
 
 module("luci.controller.podkop-tweaker", package.seeall)
@@ -285,11 +294,10 @@ function index()
 end
 
 local function render_page(template_name, extra)
-    local disp = require("luci.dispatcher")
     local uci = require("luci.model.uci").cursor()
     local vars = {
         app_version = APP_VERSION,
-        csrf_token = (disp.context and disp.context.token) or "",
+        csrf_token = ensure_csrf_token(),
         show_argon = (uci:get("podkop-tweaker", "settings", "show_argon_tab") == "1")
     }
     if extra then for k, v in pairs(extra) do vars[k] = v end end
@@ -361,19 +369,8 @@ end
 
 local function verify_csrf()
     local http = require("luci.http")
-    local disp = require("luci.dispatcher")
-    local expected = disp.context and disp.context.token
-    if not expected or expected == "" then
-        local cookie = http.getenv("HTTP_COOKIE") or ""
-        local referer = http.getenv("HTTP_REFERER") or ""
-        local server_name = http.getenv("SERVER_NAME") or ""
-        local content_type = http.getenv("CONTENT_TYPE") or ""
-        local ct_ok = content_type:match("^application/x%-www%-form%-urlencoded")
-            or content_type:match("^multipart/form%-data")
-        if ct_ok and cookie ~= "" and server_name ~= "" and referer ~= ""
-            and referer:match("^https?://" .. server_name:gsub("%-", "%%-") .. "[:/]") then
-            return true
-        end
+    local expected = ensure_csrf_token()
+    if expected == "" then
         http.prepare_content("application/json")
         http.status(403, "Forbidden")
         http.write_json({ error = "CSRF token not available" })
@@ -394,100 +391,24 @@ local function get_service_pid(process_name)
     return sys.exec("pidof " .. process_name .. " 2>/dev/null"):match("(%d+)")
 end
 
-local function validate_uci_config(content)
-    if not content or content == "" then
-        return false, "Configuration is empty"
-    end
-    if #content > 1048576 then
-        return false, "Config too large (max 1MB)"
-    end
-    if not content:match("config%s+") then
-        return false, "Invalid UCI format: no 'config' declarations found"
-    end
-    if content:find("\0", 1, true) then
-        return false, "Invalid content: contains null bytes"
-    end
-    local line_no = 0
-    local in_sq = false
-    local dq_total = 0
-    for line in content:gmatch("[^\r\n]+") do
-        line_no = line_no + 1
-        if not in_sq then
-            local trimmed = line:match("^%s*(.-)%s*$")
-            if trimmed ~= "" and not trimmed:match("^#") then
-                if not trimmed:match("^config%s")
-                    and not trimmed:match("^option%s")
-                    and not trimmed:match("^list%s") then
-                    return false, "Invalid UCI syntax at line " .. line_no .. ": unexpected token"
-                end
-            end
-        end
-        for ci = 1, #line do
-            local b = line:byte(ci)
-            if b < 9 or (b > 13 and b < 32) then
-                return false, "Invalid character at line " .. line_no .. ", column " .. ci
-            end
-            local c = line:sub(ci, ci)
-            if c == "'" then in_sq = not in_sq
-            elseif c == '"' then dq_total = dq_total + 1
-            end
-        end
-    end
-    if in_sq then
-        return false, "Unmatched single quote"
-    end
-    if dq_total % 2 ~= 0 then
-        return false, "Unmatched double quote"
-    end
-    return true
-end
-
 local function backup_config()
     return S.backup_config()
 end
 
 local function save_and_restart(content)
     local sys = require("luci.sys")
-    local config_path = "/etc/config/podkop"
-    local tmp_path = config_path .. ".tmp-write"
 
     if not backup_config() then
         return false, "Cannot create backup"
     end
 
-    local tmpfd = io.open(tmp_path, "w")
-    if not tmpfd then
-        return false, "Cannot write temporary file"
-    end
-    tmpfd:write(content)
-    tmpfd:close()
-
-    local ok, err = os.rename(tmp_path, config_path)
+    local ok, err = SRV.write_file_atomic(SRV.podkop.config, content)
     if not ok then
-        return false, "Cannot apply config: " .. (err or "unknown error")
+        return false, err
     end
 
     sys.exec("/etc/init.d/podkop restart 2>&1")
     return true
-end
-
-local function parse_version(ver)
-    if not ver then return nil end
-    ver = ver:gsub("^v", "")
-    local major, minor, patch = ver:match("^(%d+)%.(%d+)%.(%d+)")
-    if not major then return nil end
-    return { tonumber(major), tonumber(minor), tonumber(patch) }
-end
-
-local function version_lt(a, b)
-    local va = parse_version(a)
-    local vb = parse_version(b)
-    if not va or not vb then return false end
-    for i = 1, 3 do
-        if (va[i] or 0) < (vb[i] or 0) then return true end
-        if (va[i] or 0) > (vb[i] or 0) then return false end
-    end
-    return false
 end
 
 function api_system_info()
@@ -751,7 +672,7 @@ function api_subscription_attach()
                 return
             end
             local log_text = os.date("%H:%M %d.%m.%Y") .. "|manual|updated=0|unchanged=1|failed=0"
-                .. "\n  " .. section_name .. ":\n    " .. proxy_name .. ": unchanged"
+                .. "\n  " .. section_name .. ":\n    " .. S.clean_log_field(proxy_name) .. ": unchanged"
             S.append_log(UPDATE_LOG_FILE, UPDATE_LOG_MAX, log_text)
             http.write_json({ success = true, unchanged = true })
             return
@@ -782,7 +703,7 @@ function api_subscription_attach()
 
         sys.exec("nohup /etc/init.d/podkop restart >/dev/null 2>&1 &")
         local log_text = os.date("%H:%M %d.%m.%Y") .. "|manual|updated=1|unchanged=0|failed=0"
-            .. "\n  " .. section_name .. ":\n    " .. proxy_name .. ": updated"
+            .. "\n  " .. section_name .. ":\n    " .. S.clean_log_field(proxy_name) .. ": updated"
         S.append_log(UPDATE_LOG_FILE, UPDATE_LOG_MAX, log_text)
         http.write_json({ success = true, restarting = true })
     end)
@@ -947,29 +868,15 @@ end
 function api_rollback()
     if not verify_csrf() then return end
     local http = require("luci.http")
-    local nixio = require("nixio")
     local sys = require("luci.sys")
     http.prepare_content("application/json")
     set_no_cache_headers()
-    local config_path = "/etc/config/podkop"
-    local backup_path = "/etc/config/podkop.auto-backup"
-    if not nixio.fs.stat(backup_path) then
-        http.write_json({ error = "Backup file not found" })
+    local ok, err = SRV.restore_backup(SRV.podkop)
+    if not ok then
+        http.write_json({ error = (err == "not_found") and "Backup file not found" or "Cannot write config" })
         return
     end
-    local data = nixio.fs.readfile(backup_path)
-    if not data then
-        http.write_json({ error = "Cannot read backup" })
-        return
-    end
-    local fd = io.open(config_path, "w")
-    if not fd then
-        http.write_json({ error = "Cannot write config" })
-        return
-    end
-    fd:write(data)
-    fd:close()
-    sys.exec("/etc/init.d/podkop restart 2>&1")
+    sys.exec(SRV.podkop.restart_cmd)
     http.write_json({ success = true, restarting = true })
 end
 
@@ -1001,32 +908,23 @@ function api_save_stubby_config()
         http.write_json({ error = err })
         return
     end
-    local config_path = "/etc/config/stubby"
-    local backup_path = "/etc/config/stubby.auto-backup"
-    local rfd = io.open(config_path, "r")
-    if rfd then
-        local orig = rfd:read("*a")
-        rfd:close()
+    local orig = SRV.read_file(SRV.stubby.config)
+    if orig then
         if orig == content then
             http.write_json({ success = true, unchanged = true })
             return
         end
-        local bfd = io.open(backup_path, "w")
-        if bfd then
-            bfd:write(orig)
-            bfd:close()
+        if not SRV.backup_current(SRV.stubby) then
+            http.write_json({ error = "Cannot create backup" })
+            return
         end
     end
-    local tmp_path = config_path .. ".tmp-write"
-    local tmpfd = io.open(tmp_path, "w")
-    if not tmpfd then
-        http.write_json({ error = "Cannot write temporary file" })
+    ok, err = SRV.write_file_atomic(SRV.stubby.config, content)
+    if not ok then
+        http.write_json({ error = err })
         return
     end
-    tmpfd:write(content)
-    tmpfd:close()
-    os.rename(tmp_path, config_path)
-    sys.exec("/etc/init.d/stubby restart 2>&1")
+    sys.exec(SRV.stubby.restart_cmd)
     http.write_json({ success = true, restarting = true })
 end
 
@@ -1063,29 +961,15 @@ end
 function api_rollback_stubby()
     if not verify_csrf() then return end
     local http = require("luci.http")
-    local nixio = require("nixio")
     local sys = require("luci.sys")
     http.prepare_content("application/json")
     set_no_cache_headers()
-    local config_path = "/etc/config/stubby"
-    local backup_path = "/etc/config/stubby.auto-backup"
-    if not nixio.fs.stat(backup_path) then
-        http.write_json({ error = "Backup file not found" })
+    local ok, err = SRV.restore_backup(SRV.stubby)
+    if not ok then
+        http.write_json({ error = (err == "not_found") and "Backup file not found" or "Cannot write config" })
         return
     end
-    local data = nixio.fs.readfile(backup_path)
-    if not data then
-        http.write_json({ error = "Cannot read backup" })
-        return
-    end
-    local fd = io.open(config_path, "w")
-    if not fd then
-        http.write_json({ error = "Cannot write config" })
-        return
-    end
-    fd:write(data)
-    fd:close()
-    sys.exec("/etc/init.d/stubby restart 2>&1")
+    sys.exec(SRV.stubby.restart_cmd)
     http.write_json({ success = true, restarting = true })
 end
 
@@ -1242,17 +1126,12 @@ function api_import_stubby_config()
         http.write_json({ error = "Cannot create backup" })
         return
     end
-    local config_path = "/etc/config/stubby"
-    local tmp_path = config_path .. ".tmp-write"
-    local tmpfd = io.open(tmp_path, "w")
-    if not tmpfd then
-        http.write_json({ error = "Cannot write config" })
+    ok, err = SRV.write_file_atomic(SRV.stubby.config, content)
+    if not ok then
+        http.write_json({ error = err })
         return
     end
-    tmpfd:write(content)
-    tmpfd:close()
-    os.rename(tmp_path, config_path)
-    sys.exec("/etc/init.d/stubby restart 2>&1")
+    sys.exec(SRV.stubby.restart_cmd)
     http.write_json({ success = true, restarting = true })
 end
 
@@ -1306,78 +1185,16 @@ function api_apply_recommended_stubby()
         http.write_json({ error = "Cannot create backup" })
         return
     end
-    local config_path = "/etc/config/stubby"
-    local tmp_path = config_path .. ".tmp-write"
-    local tmpfd = io.open(tmp_path, "w")
-    if not tmpfd then
-        http.write_json({ error = "Cannot write config" })
+    local ok, err = SRV.write_file_atomic(SRV.stubby.config, STUBBY_RECOMMENDED)
+    if not ok then
+        http.write_json({ error = err })
         return
     end
-    tmpfd:write(STUBBY_RECOMMENDED)
-    tmpfd:close()
-    os.rename(tmp_path, config_path)
-    sys.exec("/etc/init.d/stubby restart 2>&1")
+    sys.exec(SRV.stubby.restart_cmd)
     http.write_json({ success = true, restarting = true })
 end
 
 -- === Settings & Auto-Update ===
-
--- interval: hours between updates (1-24)
--- start_time: "HH:MM" in MSK, the first run time
--- generates cron hours: start_hour, start_hour+interval, start_hour+2*interval, ... while <= 23
--- examples:
---   interval=4, start="02:00" -> 2,6,10,14,18,22 -> "0 2,6,10,14,18,22 * * *"
---   interval=8, start="03:00" -> 3,11,19          -> "0 3,11,19 * * *"
---   interval=24, start="04:00" -> 4               -> "0 4 * * *"
-local function setup_cron(interval, start_time)
-    local sys = require("luci.sys")
-    sys.exec("(crontab -l 2>/dev/null | grep -v pt-auto-update; true) | crontab -")
-    if not interval or interval <= 0 or not start_time or start_time == "" then return end
-
-    local hh, mm = start_time:match("^(%d+):(%d+)$")
-    if not hh or not mm then return end
-    hh, mm = tonumber(hh), tonumber(mm)
-    if not hh or hh > 23 or not mm or mm > 59 then return end
-    if interval < 1 then interval = 1 end
-    if interval > 24 then interval = 24 end
-
-    local hours = {}
-    local h = hh
-    while h <= 23 do
-        table.insert(hours, tostring(h))
-        h = h + interval
-    end
-
-    local cron_hours = table.concat(hours, ",")
-    sys.exec("(crontab -l 2>/dev/null; echo '" .. mm .. " " .. cron_hours .. " * * * /usr/bin/pt-auto-update') | crontab -")
-end
-
-local function setup_hotplug(enabled)
-    local hp_path = "/etc/hotplug.d/iface/99-pt-subs"
-    if enabled then
-        os.execute("mkdir -p /etc/hotplug.d/iface 2>/dev/null")
-        local fd = io.open(hp_path, "w")
-        if fd then
-            fd:write("#!/bin/sh\n")
-            fd:write('[ "$ACTION" = "ifup" ] && [ "$INTERFACE" = "wan" ] && (sleep 30; /usr/bin/pt-auto-update) >/dev/null 2>&1 &\n')
-            fd:close()
-            os.execute("chmod +x " .. hp_path .. " 2>/dev/null")
-        end
-    else
-        os.execute("rm -f " .. hp_path .. " 2>/dev/null")
-    end
-end
-
-local function create_auto_update_script()
-    local script_path = "/usr/bin/pt-auto-update"
-    local fd = io.open(script_path, "w")
-    if not fd then return false end
-    fd:write("#!/bin/sh\n")
-    fd:write("lua /usr/lib/lua/pt-auto-update.lua\n")
-    fd:close()
-    os.execute("chmod +x " .. script_path .. " 2>/dev/null")
-    return true
-end
 
 function api_settings_read()
     local http = require("luci.http")
@@ -1441,10 +1258,10 @@ function api_settings_save()
             return
         end
 
-        create_auto_update_script()
+        SCHED.create_auto_update_script()
 
-        setup_cron(interval, start_time)
-        setup_hotplug(on_restart)
+        SCHED.setup_cron(interval, start_time)
+        SCHED.setup_hotplug(on_restart)
 
         http.write_json({ success = true })
     end)
@@ -1913,58 +1730,7 @@ function api_tweaker_git_update()
     end
 end
 
-local function nslookup(domain, server)
-    if not server:match("^%d+%.%d+%.%d+%.%d+$") then
-        return { ip = "", status = "FAIL", raw = "Invalid server address" }
-    end
-    if not domain:match("^[%w%.%-]+%.%w+$") then
-        return { ip = "", status = "FAIL", raw = "Invalid domain" }
-    end
-    local cmd = "nslookup " .. domain .. " " .. server .. " 2>&1"
-    local fd = io.popen(cmd)
-    local raw = fd:read("*a")
-    fd:close()
-    local ip = ""
-    for addr in raw:gmatch("Address:%s*([%d%.]+)") do
-        ip = addr
-    end
-    local fail = raw:find("can't find") or raw:find("timed out") or raw:find("refused") or raw:find("SERVFAIL") or raw:find("no servers")
-    return {
-        ip = ip,
-        status = fail and "FAIL" or (ip ~= "" and "OK" or "FAIL"),
-        raw = raw
-    }
-end
-
-local function get_singbox_inbounds()
-    local uci = require("luci.model.uci").cursor()
-    local config_path = "/etc/sing-box/config.json"
-    uci:foreach("podkop", "section", function(s)
-        if s.config_path and s.config_path ~= "" then
-            config_path = s.config_path
-        end
-    end)
-    local fd = io.open(config_path, "r")
-    if not fd then return {} end
-    local content = fd:read("*a")
-    fd:close()
-    local inbounds = {}
-    for ib in content:gmatch('"inbounds"%s*:%s*%[(.-)%]') do
-        for block in ib:gmatch("%{(.-)%}") do
-            local t = block:match('"type"%s*:%s*"([^"]+)"')
-            local port = block:match('"listen_port"%s*:%s*(%d+)')
-            local listen = block:match('"listen"%s*:%s*"([^"]+)"')
-            if t and port then
-                table.insert(inbounds, {
-                    type = t,
-                    listen = listen or "127.0.0.1",
-                    port = tonumber(port)
-                })
-            end
-        end
-    end
-    return inbounds
-end
+-- === Diagnostics ===
 
 function api_diag_dns()
     local http = require("luci.http")
@@ -1989,7 +1755,7 @@ function api_diag_dns()
     end)
 
     for _, up in ipairs(upstreams) do
-        local r = nslookup(domain, up.address)
+        local r = DIAG.nslookup(domain, up.address)
         table.insert(results, {
             source = up.label,
             target = up.address,
@@ -2010,7 +1776,7 @@ function api_diag_dns()
         end
     end)
 
-    local r_stub = nslookup(domain, stubby_listen)
+    local r_stub = DIAG.nslookup(domain, stubby_listen)
     table.insert(results, {
         source = "Via Stubby",
         target = stubby_listen,
@@ -2018,7 +1784,7 @@ function api_diag_dns()
         status = r_stub.status
     })
 
-    local r_dnsmasq = nslookup(domain, "127.0.0.1")
+    local r_dnsmasq = DIAG.nslookup(domain, "127.0.0.1")
     table.insert(results, {
         source = "Via dnsmasq",
         target = "127.0.0.1",
@@ -2038,7 +1804,7 @@ function api_diag_proxy()
 
     local results = {}
 
-    local inbounds = get_singbox_inbounds()
+    local inbounds = DIAG.get_singbox_inbounds()
     local mixed_port = nil
     for _, ib in ipairs(inbounds) do
         if ib.type == "mixed" then
@@ -2130,12 +1896,12 @@ function api_diag_dns_leak()
 
     local upstream_ok = false
     if #upstreams > 0 then
-        local r_up = nslookup(domain, upstreams[1])
+        local r_up = DIAG.nslookup(domain, upstreams[1])
         upstream_ip = r_up.ip
         upstream_ok = (r_up.status == "OK")
     end
 
-    local r_dnsmasq = nslookup(domain, "127.0.0.1")
+    local r_dnsmasq = DIAG.nslookup(domain, "127.0.0.1")
     local dnsmasq_ok = (r_dnsmasq.status == "OK")
 
     local leak_detected = false
@@ -2165,9 +1931,6 @@ end
 
 -- === Sing-box Config ===
 
-local SINGBOX_CONFIG = "/etc/sing-box/config.json"
-local SINGBOX_BACKUP = SINGBOX_CONFIG .. ".auto-backup"
-
 function api_read_singbox_config()
     local http = require("luci.http")
     http.prepare_content("text/plain")
@@ -2189,16 +1952,9 @@ function api_save_singbox_config()
     http.prepare_content("application/json")
     set_no_cache_headers()
     local content = http.formvalue("content") or ""
-    if content == "" then
-        http.write_json({ error = "Configuration is empty" })
-        return
-    end
-    if #content > 2097152 then
-        http.write_json({ error = "Config too large (max 2MB)" })
-        return
-    end
-    if content:find("\0", 1, true) then
-        http.write_json({ error = "Invalid content: contains null bytes" })
+    local ok, err = SRV.singbox_content_check(content, "Configuration is empty")
+    if not ok then
+        http.write_json({ error = err })
         return
     end
     local rfd = io.open(SINGBOX_CONFIG, "r")
@@ -2270,21 +2026,12 @@ function api_rollback_singbox()
     local sys = require("luci.sys")
     http.prepare_content("application/json")
     set_no_cache_headers()
-    local fd = io.open(SINGBOX_BACKUP, "r")
-    if not fd then
-        http.write_json({ error = "Backup file not found" })
+    local ok, err = SRV.restore_backup(SRV.singbox)
+    if not ok then
+        http.write_json({ error = (err == "not_found") and "Backup file not found" or "Cannot write config" })
         return
     end
-    local data = fd:read("*a")
-    fd:close()
-    local wfd = io.open(SINGBOX_CONFIG, "w")
-    if not wfd then
-        http.write_json({ error = "Cannot write config" })
-        return
-    end
-    wfd:write(data)
-    wfd:close()
-    sys.exec("/etc/init.d/sing-box restart 2>&1")
+    sys.exec(SRV.singbox.restart_cmd)
     http.write_json({ success = true, restarting = true })
 end
 
@@ -2331,16 +2078,9 @@ function api_import_singbox_config()
     http.prepare_content("application/json")
     set_no_cache_headers()
     local content = http.formvalue("content") or ""
-    if content == "" then
-        http.write_json({ error = "Empty content" })
-        return
-    end
-    if #content > 2097152 then
-        http.write_json({ error = "Config too large (max 2MB)" })
-        return
-    end
-    if content:find("\0", 1, true) then
-        http.write_json({ error = "Invalid content: contains null bytes" })
+    local ok, err = SRV.singbox_content_check(content, "Empty content")
+    if not ok then
+        http.write_json({ error = err })
         return
     end
     local tmp_path = SINGBOX_CONFIG .. ".tmp-import"
@@ -2659,114 +2399,10 @@ end
 
 -- === Argon Typography ===
 
-local function argon_read_settings()
-    local uci = require("luci.model.uci").cursor()
-    return {
-        font_size = uci:get("argon", "typography", "font_size") or "",
-        font_family = uci:get("argon", "typography", "font_family") or "Google Sans",
-        font_family_custom = uci:get("argon", "typography", "font_family_custom") or "",
-        font_weight = uci:get("argon", "typography", "font_weight") or "400",
-        line_height = uci:get("argon", "typography", "line_height") or "",
-        letter_spacing = uci:get("argon", "typography", "letter_spacing") or "",
-        menu_font_size = uci:get("argon", "typography", "menu_font_size") or "",
-        menu_padding = uci:get("argon", "typography", "menu_padding") or ""
-    }
-end
-
-local function argon_check_stale()
-    local fd = io.open(ARGON_CASCADE_CSS, "r")
-    if not fd then return true end
-    local content = fd:read("*a")
-    fd:close()
-    return not content:find("Podkop Tweaker Typography", 1, true)
-end
-
-local function argon_generate_css(s)
-    local lines = {}
-    table.insert(lines, ARGON_CSS_MARKER_START)
-    local root_lines = {}
-    if s.font_size and s.font_size ~= "" then
-        table.insert(root_lines, "  font-size: " .. tonumber(s.font_size) .. "px;")
-    end
-    local family_css
-    if s.font_family == "custom" then
-        family_css = s.font_family_custom
-    else
-        family_css = ARGON_FONT_FAMILIES[s.font_family]
-    end
-    if family_css and family_css ~= "" then
-        table.insert(root_lines, '  --font-family-sans-serif: ' .. family_css .. ';')
-    end
-    if #root_lines > 0 then
-        table.insert(lines, ":root {")
-        for _, l in ipairs(root_lines) do table.insert(lines, l) end
-        table.insert(lines, "}")
-    end
-    local body_lines = {}
-    if s.font_weight and s.font_weight ~= "" then
-        table.insert(body_lines, "  font-weight: " .. tonumber(s.font_weight) .. ";")
-    end
-    if s.line_height and s.line_height ~= "" then
-        table.insert(body_lines, "  line-height: " .. tonumber(s.line_height) .. ";")
-    end
-    if s.letter_spacing and s.letter_spacing ~= "" then
-        table.insert(body_lines, "  letter-spacing: " .. tonumber(s.letter_spacing) .. "px;")
-    end
-    if #body_lines > 0 then
-        table.insert(lines, "body {")
-        for _, l in ipairs(body_lines) do table.insert(lines, l) end
-        table.insert(lines, "}")
-    end
-    local menu_lines = {}
-    if s.menu_font_size and s.menu_font_size ~= "" then
-        table.insert(menu_lines, "font-size: " .. tonumber(s.menu_font_size) .. "rem;")
-    end
-    if s.menu_padding and s.menu_padding ~= "" then
-        table.insert(menu_lines, "padding-top: " .. tonumber(s.menu_padding) .. "px;")
-        table.insert(menu_lines, "padding-bottom: " .. tonumber(s.menu_padding) .. "px;")
-    end
-    if #menu_lines > 0 then
-        table.insert(lines, ".main-left .nav li a { " .. table.concat(menu_lines, " ") .. " }")
-    end
-    table.insert(lines, ARGON_CSS_MARKER_END)
-    return table.concat(lines, "\n")
-end
-
-local function argon_inject_css(css_block)
-    local fd = io.open(ARGON_CASCADE_CSS, "r")
-    if not fd then return false end
-    local content = fd:read("*a")
-    fd:close()
-    local start_pos = content:find(ARGON_CSS_MARKER_START, 1, true)
-    if start_pos then
-        local end_pos = content:find(ARGON_CSS_MARKER_END, start_pos, true)
-        if end_pos then
-            end_pos = end_pos + #ARGON_CSS_MARKER_END
-            while content:sub(end_pos, end_pos):match("[\r\n]") do
-                end_pos = end_pos + 1
-            end
-            content = content:sub(1, start_pos - 1):gsub("[\r\n]+$", "") .. "\n" .. css_block .. "\n" .. content:sub(end_pos)
-        end
-    else
-        content = content:gsub("[\r\n]+$", "") .. "\n" .. css_block .. "\n"
-    end
-    local wfd = io.open(ARGON_CASCADE_CSS, "w")
-    if not wfd then return false end
-    wfd:write(content)
-    wfd:close()
-    return true
-end
-
-local function argon_apply()
-    local settings = argon_read_settings()
-    local css = argon_generate_css(settings)
-    return argon_inject_css(css)
-end
-
-local function argon_tab_disabled()
-    local uci = require("luci.model.uci").cursor()
-    return uci:get("podkop-tweaker", "settings", "show_argon_tab") ~= "1"
-end
+local argon_read_settings = AR.read_settings
+local argon_check_stale = AR.check_stale
+local argon_apply = AR.apply
+local argon_tab_disabled = AR.tab_disabled
 
 function api_argon_typography()
     local http = require("luci.http")
@@ -2779,7 +2415,7 @@ function api_argon_typography()
     end
     local settings = argon_read_settings()
     local families = {}
-    for k, _ in pairs(ARGON_FONT_FAMILIES) do
+    for k, _ in pairs(LIB.ARGON_FONT_FAMILIES) do
         table.insert(families, k)
     end
     table.sort(families)
@@ -2807,7 +2443,7 @@ function api_argon_typography_save()
     end
     local font_family = http.formvalue("font_family") or "Google Sans"
     local font_family_custom = http.formvalue("font_family_custom") or ""
-    font_family_custom = font_family_custom:gsub("[\"';\\]", "")
+    font_family_custom = font_family_custom:gsub("[^%w%s,'%-]", "")
     local font_weight = http.formvalue("font_weight") or "400"
     if not font_weight:match("^[0-9]+$") then font_weight = "400" end
     local line_height = http.formvalue("line_height") or ""
@@ -2864,24 +2500,7 @@ function api_argon_typography_reset()
     uci:set("argon", "typography", "menu_font_size", "")
     uci:set("argon", "typography", "menu_padding", "")
     uci:commit("argon")
-    local fd = io.open(ARGON_CASCADE_CSS, "r")
-    if fd then
-        local content = fd:read("*a")
-        fd:close()
-        local start_pos = content:find(ARGON_CSS_MARKER_START, 1, true)
-        if start_pos then
-            local end_pos = content:find(ARGON_CSS_MARKER_END, start_pos, true)
-            if end_pos then
-                end_pos = end_pos + #ARGON_CSS_MARKER_END
-                while content:sub(end_pos, end_pos):match("[\r\n]") do
-                    end_pos = end_pos + 1
-                end
-                content = content:sub(1, start_pos - 1):gsub("[\r\n]+$", "") .. "\n"
-                local wfd = io.open(ARGON_CASCADE_CSS, "w")
-                if wfd then wfd:write(content) wfd:close() end
-            end
-        end
-    end
+    AR.remove_css()
     http.write_json({ success = true, stale = true })
 end
 
@@ -2900,148 +2519,12 @@ end
 
 -- === Bundle Import/Export ===
 
-local BUNDLE_ITEMS = { "podkop", "stubby", "singbox", "fragment", "argon", "tweaker", "subs" }
-
-local function bundle_is_known_item(name)
-    for _, v in ipairs(BUNDLE_ITEMS) do
-        if name == v then return true end
-    end
-    return false
-end
-
-local function bundle_read_file(path)
-    local fd = io.open(path, "r")
-    if not fd then return nil end
-    local content = fd:read("*a")
-    fd:close()
-    return content
-end
-
-local function bundle_write_file(path, content)
-    local tmp = path .. ".tmp-write"
-    local tmpfd = io.open(tmp, "w")
-    if not tmpfd then
-        return false, "Cannot write temporary file"
-    end
-    tmpfd:write(content)
-    tmpfd:close()
-    local ok, err = os.rename(tmp, path)
-    if not ok then
-        os.remove(tmp)
-        return false, "Cannot apply: " .. (err or "unknown error")
-    end
-    return true
-end
-
-local function bundle_backup_file(path)
-    local data = bundle_read_file(path)
-    if not data then return true end
-    local bfd = io.open(path .. ".bundle-backup", "w")
-    if not bfd then return false end
-    bfd:write(data)
-    bfd:close()
-    return true
-end
-
-local function bundle_apply_argon(settings)
-    if type(settings) ~= "table" then
-        return false, "Invalid argon settings"
-    end
-    local function clamp_str(v, min, max)
-        if v == nil or v == "" then return "" end
-        v = tostring(v)
-        local n = tonumber(v)
-        if not n or n < min or n > max then return "" end
-        return v
-    end
-    local uci = require("luci.model.uci").cursor()
-    local font_size = clamp_str(settings.font_size, 13, 20)
-    local font_family = tostring(settings.font_family or "Google Sans")
-    if not ARGON_FONT_FAMILIES[font_family] and font_family ~= "custom" then
-        font_family = "Google Sans"
-    end
-    local font_family_custom = tostring(settings.font_family_custom or ""):gsub("[\"';\\]", "")
-    local font_weight = tostring(settings.font_weight or "400")
-    if not font_weight:match("^[0-9]+$") then font_weight = "400" end
-    local line_height = clamp_str(settings.line_height, 1.0, 2.0)
-    local letter_spacing = clamp_str(settings.letter_spacing, -0.5, 2.0)
-    local menu_font_size = clamp_str(settings.menu_font_size, 0.7, 1.2)
-    local menu_padding = clamp_str(settings.menu_padding, 5, 20)
-    uci:set("argon", "typography", "typography")
-    uci:set("argon", "typography", "font_size", font_size)
-    uci:set("argon", "typography", "font_family", font_family)
-    uci:set("argon", "typography", "font_family_custom", font_family_custom)
-    uci:set("argon", "typography", "font_weight", font_weight)
-    uci:set("argon", "typography", "line_height", line_height)
-    uci:set("argon", "typography", "letter_spacing", letter_spacing)
-    uci:set("argon", "typography", "menu_font_size", menu_font_size)
-    uci:set("argon", "typography", "menu_padding", menu_padding)
-    uci:commit("argon")
-    if not argon_apply() then
-        return false, "CSS injection failed"
-    end
-    return true
-end
-
-local function bundle_apply_subs(data)
-    if type(data) ~= "table" then
-        return false, "Invalid subscriptions data"
-    end
-    local clean = {}
-    for key, val in pairs(data) do
-        if key ~= "version" then
-            if key == "settings" then
-                if val ~= nil and type(val) ~= "table" then
-                    return false, "Invalid subscriptions settings"
-                end
-                clean.settings = val
-            elseif type(key) == "string" and key ~= "" and key:match("^[a-zA-Z0-9_%-]+$") then
-                if type(val) ~= "table" then
-                    return false, "Invalid section data: " .. key
-                end
-                local slots = {}
-                for i, entry in ipairs(val) do
-                    if entry ~= nil and type(entry) ~= "table" then
-                        return false, "Invalid slot data in section: " .. key
-                    end
-                    if type(entry) == "table" then
-                        local sub_url = tostring(entry.subscription_url or "")
-                        if sub_url ~= "" and not sub_url:match("^https?://") then
-                            return false, "Invalid subscription URL in section: " .. key
-                        end
-                    end
-                    slots[i] = entry
-                end
-                clean[key] = slots
-            end
-        end
-    end
-    if not bundle_backup_file(SUBS_FILE) then
-        return false, "Cannot create backup"
-    end
-    if not S.write_subs(clean, SUBS_FILE) then
-        return false, "Cannot write subscriptions file"
-    end
-    if type(clean.settings) == "table" then
-        local interval = tonumber(clean.settings.auto_update_interval) or 0
-        local start_time = tostring(clean.settings.auto_update_start or "")
-        if interval > 0 and not start_time:match("^%d%d:%d%d$") then
-            interval = 0
-            start_time = ""
-        end
-        create_auto_update_script()
-        setup_cron(interval, start_time)
-        setup_hotplug(clean.settings.auto_update_on_restart == true)
-    end
-    return true
-end
-
 function api_export_bundle()
     local http = require("luci.http")
     local requested = {}
     local items_param = http.formvalue("items") or ""
     for it in items_param:gmatch("[%w%-]+") do
-        if bundle_is_known_item(it) then requested[it] = true end
+        if BUNDLE.is_known_item(it) then requested[it] = true end
     end
 
     local bundle = {
@@ -3053,26 +2536,26 @@ function api_export_bundle()
     }
 
     if requested.podkop then
-        local c = bundle_read_file("/etc/config/podkop")
+        local c = BUNDLE.read_file("/etc/config/podkop")
         if c then bundle.items.podkop = { content = c } end
     end
     if requested.stubby then
-        local c = bundle_read_file("/etc/config/stubby")
+        local c = BUNDLE.read_file("/etc/config/stubby")
         if c then bundle.items.stubby = { content = c } end
     end
     if requested.singbox then
-        local c = bundle_read_file(SINGBOX_CONFIG)
+        local c = BUNDLE.read_file(SINGBOX_CONFIG)
         if c then bundle.items.singbox = { content = c } end
     end
     if requested.fragment then
-        local c = bundle_read_file("/etc/config/podkop-fragment")
+        local c = BUNDLE.read_file("/etc/config/podkop-fragment")
         if c then bundle.items.fragment = { content = c } end
     end
     if requested.argon and not argon_tab_disabled() then
         bundle.items.argon = { settings = argon_read_settings() }
     end
     if requested.tweaker then
-        local c = bundle_read_file("/etc/config/podkop-tweaker")
+        local c = BUNDLE.read_file("/etc/config/podkop-tweaker")
         if c then bundle.items.tweaker = { content = c } end
     end
     if requested.subs then
@@ -3097,7 +2580,7 @@ function api_export_bundle()
     http.prepare_content("application/octet-stream")
     set_no_cache_headers()
     http.header("Content-Disposition",
-        'attachment; filename="podkop-tweaker-bundle-' .. os.date("%Y-%m-%d") .. '.json"')
+        'attachment; filename="' .. os.date("%d.%m.%Y") .. '-podkop-tweaker-bundle-backup.json"')
     http.write(str)
 end
 
@@ -3155,113 +2638,27 @@ function api_import_bundle()
 
     local skipped = {}
     for name, _ in pairs(bundle.items) do
-        if not bundle_is_known_item(name)
+        if not BUNDLE.is_known_item(name)
             or (selection_used and not selected[name]) then
             table.insert(skipped, name)
         end
     end
 
     local results = {}
-    local restart_podkop = false
-    local restart_stubby = false
-    local restart_singbox = false
+    local env = { subs_file = SUBS_FILE }
 
-    local function apply_item(name)
-        local item = bundle.items[name]
-        if type(item) ~= "table" then
-            return false, "Invalid item data"
-        end
-        if name == "podkop" then
-            local c = item.content or ""
-            local ok, err = validate_uci_config(c)
-            if not ok then return false, err end
-            if not S.backup_config() then
-                return false, "Cannot create backup"
-            end
-            ok, err = bundle_write_file("/etc/config/podkop", c)
-            if not ok then return false, err end
-            restart_podkop = true
-            return true
-        elseif name == "stubby" then
-            local c = item.content or ""
-            local ok, err = validate_uci_config(c)
-            if not ok then return false, err end
-            if not S.backup_stubby_config() then
-                return false, "Cannot create backup"
-            end
-            ok, err = bundle_write_file("/etc/config/stubby", c)
-            if not ok then return false, err end
-            restart_stubby = true
-            return true
-        elseif name == "singbox" then
-            local c = item.content or ""
-            if c == "" then return false, "Empty sing-box config" end
-            if #c > 2097152 then return false, "Config too large (max 2MB)" end
-            local tmp_path = SINGBOX_CONFIG .. ".tmp-import"
-            local tmpfd = io.open(tmp_path, "w")
-            if not tmpfd then
-                return false, "Cannot write temporary file"
-            end
-            tmpfd:write(c)
-            tmpfd:close()
-            local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
-            if check and check ~= "" then
-                os.remove(tmp_path)
-                return false, "sing-box check failed: " .. check
-            end
-            local orig = bundle_read_file(SINGBOX_CONFIG)
-            if orig then
-                local bfd = io.open(SINGBOX_BACKUP, "w")
-                if bfd then
-                    bfd:write(orig)
-                    bfd:close()
-                end
-            end
-            os.rename(tmp_path, SINGBOX_CONFIG)
-            restart_singbox = true
-            return true
-        elseif name == "fragment" then
-            local c = item.content or ""
-            local ok, err = validate_uci_config(c)
-            if not ok then return false, err end
-            if not bundle_backup_file("/etc/config/podkop-fragment") then
-                return false, "Cannot create backup"
-            end
-            ok, err = bundle_write_file("/etc/config/podkop-fragment", c)
-            if not ok then return false, err end
-            return true
-        elseif name == "tweaker" then
-            local c = item.content or ""
-            local ok, err = validate_uci_config(c)
-            if not ok then return false, err end
-            if not bundle_backup_file("/etc/config/podkop-tweaker") then
-                return false, "Cannot create backup"
-            end
-            ok, err = bundle_write_file("/etc/config/podkop-tweaker", c)
-            if not ok then return false, err end
-            return true
-        elseif name == "argon" then
-            if argon_tab_disabled() then
-                return false, "Argon tab is disabled"
-            end
-            return bundle_apply_argon(item.settings)
-        elseif name == "subs" then
-            return bundle_apply_subs(item.data)
-        end
-        return false, "Unknown item"
-    end
-
-    for _, name in ipairs(BUNDLE_ITEMS) do
+    for _, name in ipairs(BUNDLE.ITEMS) do
         if type(bundle.items[name]) == "table"
             and (not selection_used or selected[name]) then
-            local ok, err = apply_item(name)
+            local ok, err = BUNDLE.apply_item(name, bundle.items[name], env)
             results[name] = { ok = (ok == true), error = err }
         end
     end
 
-    if restart_podkop then sys.exec("/etc/init.d/podkop restart 2>&1") end
-    if restart_stubby then sys.exec("/etc/init.d/stubby restart 2>&1") end
-    if restart_singbox then sys.exec("/etc/init.d/sing-box restart 2>&1") end
+    if env.restart_podkop then sys.exec("/etc/init.d/podkop restart 2>&1") end
+    if env.restart_stubby then sys.exec("/etc/init.d/stubby restart 2>&1") end
+    if env.restart_singbox then sys.exec("/etc/init.d/sing-box restart 2>&1") end
+    local restart_podkop = env.restart_podkop or false
 
     local any_ok = false
     for _, r in pairs(results) do
