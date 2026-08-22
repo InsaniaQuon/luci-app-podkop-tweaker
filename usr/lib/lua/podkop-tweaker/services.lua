@@ -24,6 +24,10 @@ M.singbox = {
 M.SINGBOX_CONFIG = M.singbox.config
 M.SINGBOX_BACKUP = M.singbox.backup
 
+M.SUBS_FILE = "/etc/config/podkop-tweaker-subs.json"
+M.UPDATE_LOG_FILE = "/etc/config/pt-update.log"
+M.UPDATE_LOG_MAX = 25
+
 function M.singbox_content_check(content, empty_msg)
     if content == "" then return false, empty_msg end
     if #content > 2097152 then return false, "Config too large (max 2MB)" end
