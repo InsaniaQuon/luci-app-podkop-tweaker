@@ -151,30 +151,104 @@ window.PT = window.PT || {};
 		return { push: push };
 	};
 
-	PT.buildDiff = function (oldText, newText, statsEl) {
+	PT._diffRows = function (oldText, newText) {
 		var oldLines = oldText.split('\n');
 		var newLines = newText.split('\n');
-		var html = '';
+		var rows = [];
 		var added = 0, removed = 0;
-		var max = Math.max(oldLines.length, newLines.length);
-		for (var i = 0; i < max; i++) {
-			var o = oldLines[i];
-			var n = newLines[i];
-			if (o === n) {
-				html += '<div class="ps-diff-line ps-diff-same"><span class="ps-diff-num">' + (i + 1) + '</span> ' + PT.escapeHtml(o || '') + '</div>';
-			} else {
-				if (o !== undefined) {
-					removed++;
-					html += '<div class="ps-diff-line ps-diff-del"><span class="ps-diff-num">' + (i + 1) + '</span><span class="ps-diff-mark">-</span> ' + PT.escapeHtml(o) + '</div>';
-				}
-				if (n !== undefined) {
-					added++;
-					html += '<div class="ps-diff-line ps-diff-add"><span class="ps-diff-num">' + (i + 1) + '</span><span class="ps-diff-mark">+</span> ' + PT.escapeHtml(n) + '</div>';
+		var MAX_CELLS = 4000000;
+
+		function sameRow(num, text) { rows.push({ t: 'same', num: num, text: text }); }
+		function delRow(num, text) { removed++; rows.push({ t: 'del', num: num, text: text }); }
+		function addRow(num, text) { added++; rows.push({ t: 'add', num: num, text: text }); }
+
+		var pre = 0;
+		while (pre < oldLines.length && pre < newLines.length && oldLines[pre] === newLines[pre]) pre++;
+		var endOld = oldLines.length, endNew = newLines.length;
+		while (endOld > pre && endNew > pre && oldLines[endOld - 1] === newLines[endNew - 1]) { endOld--; endNew--; }
+
+		for (var p = 0; p < pre; p++) sameRow(p + 1, oldLines[p]);
+
+		var n = endOld - pre, m = endNew - pre;
+		var i, j;
+
+		if (n === 0 || m === 0 || n * m > MAX_CELLS) {
+			for (i = 0; i < n; i++) delRow(pre + i + 1, oldLines[pre + i]);
+			for (j = 0; j < m; j++) addRow(pre + j + 1, newLines[pre + j]);
+		} else {
+			var a = oldLines.slice(pre, endOld);
+			var b = newLines.slice(pre, endNew);
+			var lcs = [];
+			for (i = 0; i <= n; i++) lcs.push(new Array(m + 1));
+			for (i = n - 1; i >= 0; i--) {
+				for (j = m - 1; j >= 0; j--) {
+					if (a[i] === b[j]) lcs[i][j] = 1 + (lcs[i + 1][j + 1] || 0);
+					else {
+						var down = lcs[i + 1][j] || 0;
+						var right = lcs[i][j + 1] || 0;
+						lcs[i][j] = down >= right ? down : right;
+					}
 				}
 			}
+			i = 0; j = 0;
+			var ops = [];
+			while (i < n && j < m) {
+				if (a[i] === b[j]) { ops.push('='); i++; j++; }
+				else if ((lcs[i + 1][j] || 0) >= (lcs[i][j + 1] || 0)) { ops.push('-'); i++; }
+				else { ops.push('+'); j++; }
+			}
+			while (i < n) { ops.push('-'); i++; }
+			while (j < m) { ops.push('+'); j++; }
+
+			i = 0; j = 0;
+			for (var q = 0; q < ops.length; q++) {
+				var op = ops[q];
+				if (op === '=') { sameRow(pre + j + 1, b[j]); i++; j++; }
+				else if (op === '-') { delRow(pre + i + 1, a[i]); i++; }
+				else { addRow(pre + j + 1, b[j]); j++; }
+			}
 		}
-		if (statsEl) statsEl.textContent = added + ' added, ' + removed + ' removed (' + newLines.length + ' lines total)';
-		return html;
+
+		for (var s2 = endNew; s2 < newLines.length; s2++) sameRow(s2 + 1, newLines[s2]);
+
+		return { rows: rows, added: added, removed: removed, total: newLines.length };
+	};
+
+	PT._renderRows = function (rows, collapsed) {
+		function lineHtml(r) {
+			if (r.t === 'same') return '<div class="ps-diff-line ps-diff-same"><span class="ps-diff-num">' + r.num + '</span> ' + PT.escapeHtml(r.text) + '</div>';
+			if (r.t === 'del') return '<div class="ps-diff-line ps-diff-del"><span class="ps-diff-num">' + r.num + '</span><span class="ps-diff-mark">-</span> ' + PT.escapeHtml(r.text) + '</div>';
+			return '<div class="ps-diff-line ps-diff-add"><span class="ps-diff-num">' + r.num + '</span><span class="ps-diff-mark">+</span> ' + PT.escapeHtml(r.text) + '</div>';
+		}
+		function skipHtml(from, to) {
+			var count = to - from + 1;
+			return '<div class="ps-diff-skip">⋯ ' + count + ' unchanged (lines ' + from + '–' + to + ')</div>';
+		}
+
+		var out = [];
+		var i = 0, len = rows.length;
+		while (i < len) {
+			if (!collapsed || rows[i].t !== 'same') { out.push(lineHtml(rows[i])); i++; continue; }
+			var start = i;
+			while (i < len && rows[i].t === 'same') i++;
+			var run = i - start;
+			var keepHead = (start === 0) ? 0 : 2;
+			var keepTail = (i === len) ? 0 : 2;
+			if (run < 7 || run < keepHead + keepTail + 3) {
+				for (var k = start; k < start + run; k++) out.push(lineHtml(rows[k]));
+			} else {
+				for (var k2 = start; k2 < start + keepHead; k2++) out.push(lineHtml(rows[k2]));
+				out.push(skipHtml(rows[start + keepHead].num, rows[start + run - 1 - keepTail].num));
+				for (var k3 = start + run - keepTail; k3 < start + run; k3++) out.push(lineHtml(rows[k3]));
+			}
+		}
+		return out.join('');
+	};
+
+	PT.buildDiff = function (oldText, newText, statsEl) {
+		var d = PT._diffRows(oldText, newText);
+		if (statsEl) statsEl.textContent = d.added + ' added, ' + d.removed + ' removed (' + d.total + ' lines total)';
+		return PT._renderRows(d.rows, false);
 	};
 
 	PT.editorPage = function (cfg) {
@@ -442,10 +516,31 @@ window.PT = window.PT || {};
 			});
 		});
 
+		var diffToggleWrap = document.createElement('label');
+		diffToggleWrap.className = 'ps-diff-toggle';
+		diffToggleWrap.innerHTML = '<input type="checkbox" checked> Only changed';
+		var diffToggle = diffToggleWrap.firstChild;
+		g('ps-diff-stats').parentNode.insertBefore(diffToggleWrap, g('ps-diff-stats').nextSibling);
+
+		var diffCache = { old: null, cur: null, rows: null, added: 0, removed: 0, total: 0 };
+
+		function renderDiffPreview() {
+			if (diffCache.old !== originalContent || diffCache.cur !== editor.value) {
+				var d = PT._diffRows(originalContent, editor.value);
+				diffCache = { old: originalContent, cur: editor.value, rows: d.rows, added: d.added, removed: d.removed, total: d.total };
+			}
+			g('ps-diff-stats').textContent = diffCache.added + ' added, ' + diffCache.removed + ' removed (' + diffCache.total + ' lines total)';
+			g('ps-diff-body').innerHTML = PT._renderRows(diffCache.rows, diffToggle.checked);
+		}
+
 		diffBtn.addEventListener('click', function () {
 			if (!isDirty) return;
-			g('ps-diff-body').innerHTML = PT.buildDiff(originalContent, editor.value, g('ps-diff-stats'));
+			renderDiffPreview();
 			g('ps-diff-modal').style.display = 'flex';
+		});
+
+		diffToggle.addEventListener('change', function () {
+			if (g('ps-diff-modal').style.display !== 'none') renderDiffPreview();
 		});
 
 		g('ps-diff-close').addEventListener('click', function () {

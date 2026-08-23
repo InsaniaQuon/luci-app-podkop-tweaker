@@ -204,6 +204,16 @@ describe("api_update.apply", function()
         local r = UPD.apply()
         assert.equal(1, r.files_copied)
     end)
+
+    it("deprecated orphan file removed after successful apply", function()
+        local ORPHAN = "/usr/lib/lua/luci/view/podkop-tweaker/podkop-tweaker-css.htm"
+        local rels = { CTRL_REL }
+        local UPD = begin_upd({ sys = { find_out(TMP, rels) } })
+        seed_tree(TMP, rels, "4.2.0")
+        H.vfs_write(ORPHAN, "stale css partial from 3.x")
+        assert.truthy(UPD.apply().success)
+        assert.falsy(H.vfs_exists(ORPHAN))
+    end)
 end)
 
 describe("api_update.clear_cache", function()
@@ -369,5 +379,25 @@ describe("api_update.git_update", function()
         H.vfs_write(GTMP .. "/download.tar.gz", "z")
         local r = UPD.git_update(GOOD_URL, nil)
         assert.same({ success = true, new_version = "4.3.0", files_copied = 1 }, r)
+    end)
+
+    it("deprecated orphan removed after successful git_update; kept on version-gate failure", function()
+        local ORPHAN = "/usr/lib/lua/luci/view/podkop-tweaker/podkop-tweaker-css.htm"
+        local rels = { CTRL_REL }
+        local UPD = begin_upd({ sys = { find_out(GTMP, rels) } })
+        seed_tree(GTMP, rels, "4.3.0")
+        H.vfs_write(GTMP .. "/download.tar.gz", "z")
+        H.vfs_write(ORPHAN, "stale")
+        assert.truthy(UPD.git_update(GOOD_URL, nil).success)
+        assert.falsy(H.vfs_exists(ORPHAN))
+
+        H.finish()
+        local UPD2 = begin_upd({ sys = { find_out(GTMP, rels) } })
+        seed_tree(GTMP, rels, "4.1.0")
+        H.vfs_write(GTMP .. "/download.tar.gz", "z")
+        H.vfs_write(ORPHAN, "stale")
+        assert.same({ error = "Archive version is not newer than installed" },
+            UPD2.git_update(GOOD_URL, nil))
+        assert.truthy(H.vfs_exists(ORPHAN))
     end)
 end)

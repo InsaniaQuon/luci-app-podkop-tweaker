@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure-handlers: JSON endpoints via json_api adapter, transport endpoints remain hybrid
+-- Podkop Tweaker | v4.3.0 | 23.08.2026 | LCS diff + collapse toggle in editor preview; deprecated-path cleanup on self-update; pt-auto-update tests
 
-local APP_VERSION = "4.2.0"
+local APP_VERSION = "4.3.0"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")

@@ -14,7 +14,7 @@ local CLEAR_LOADED_IDS = {
     "podkop-tweaker.bundle", "podkop-tweaker.api_diag", "podkop-tweaker.api_argon",
     "podkop-tweaker.api_stubby", "podkop-tweaker.api_podkop", "podkop-tweaker.api_subs",
     "podkop-tweaker.api_singbox", "podkop-tweaker.api_bundle", "podkop-tweaker.api_update",
-    "pt-subs-lib", "luci.sys", "luci.model.uci", "luci.http",
+    "pt-subs-lib", "pt-auto-update", "luci.sys", "luci.model.uci", "luci.http",
     "luci.jsonc", "luci.json", "cjson", "nixio", "nixio.fs"
 }
 

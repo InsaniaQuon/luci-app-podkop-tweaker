@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
+-- Podkop Tweaker | v4.3.0 | 23.08.2026 | self-update now removes DEPRECATED_PATHS orphans after successful apply
 
 local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
@@ -10,6 +10,17 @@ local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
 local CHECK_CACHE_FILE = "/tmp/tweaker_check_cache.json"
 local CHECK_CACHE_TTL = 900
+
+-- Files removed in newer versions; cleaned up after every successful self-update
+local DEPRECATED_PATHS = {
+    "/usr/lib/lua/luci/view/podkop-tweaker/podkop-tweaker-css.htm"
+}
+
+local function cleanup_deprecated()
+    for _, p in ipairs(DEPRECATED_PATHS) do
+        os.remove(p)
+    end
+end
 
 local VERSION = ""
 
@@ -177,6 +188,7 @@ function M.apply()
     end
 
     local copied = S.apply_files_from_dir(extract_dir, false)
+    cleanup_deprecated()
 
     sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
     sys.exec("rm -rf /tmp/luci-modulecache 2>/dev/null")
@@ -346,6 +358,7 @@ function M.git_update(download_url, force_raw)
     end
 
     local copied = S.apply_files_from_dir(extract_dir, true)
+    cleanup_deprecated()
 
     sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
     sys.exec("rm -rf /tmp/luci-modulecache 2>/dev/null")
