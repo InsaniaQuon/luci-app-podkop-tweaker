@@ -1,7 +1,6 @@
--- Podkop Tweaker | Stubby config + service API handlers
--- Author: InsaniaQuon
+-- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
+-- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
-local H = require("podkop-tweaker.http")
 local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
 local S = require("pt-subs-lib")
@@ -51,7 +50,7 @@ config resolver
 function M.read_config()
     local http = require("luci.http")
     http.prepare_content("text/plain")
-    H.no_cache()
+    require("podkop-tweaker.http").no_cache()
     local fd = io.open("/etc/config/stubby", "r")
     if fd then
         local content = fd:read("*a")
@@ -62,87 +61,62 @@ function M.read_config()
     end
 end
 
-function M.save_config()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local content = http.formvalue("content") or ""
+function M.save_config(content)
     local ok, err = LIB.validate_uci_config(content)
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
     local orig = SRV.read_file(SRV.stubby.config)
     if orig then
         if orig == content then
-            http.write_json({ success = true, unchanged = true })
-            return
+            return { success = true, unchanged = true }
         end
         if not SRV.backup_current(SRV.stubby) then
-            http.write_json({ error = "Cannot create backup" })
-            return
+            return { error = "Cannot create backup" }
         end
     end
     ok, err = SRV.write_file_atomic(SRV.stubby.config, content)
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
-    sys.exec(SRV.stubby.restart_cmd)
-    http.write_json({ success = true, restarting = true })
+    require("luci.sys").exec(SRV.stubby.restart_cmd)
+    return { success = true, restarting = true }
 end
 
 function M.service_status()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local pid = H.get_service_pid("stubby")
-    http.write_json({
+    local pid = require("podkop-tweaker.http").get_service_pid("stubby")
+    return {
         running = (pid ~= nil),
         pid = pid
-    })
+    }
 end
 
-function M.service_toggle()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local action = http.formvalue("action") or ""
+function M.service_toggle(action)
     if action ~= "start" and action ~= "stop" then
-        http.write_json({ error = "Invalid action" })
-        return
+        return { error = "Invalid action" }
     end
+    local sys = require("luci.sys")
     sys.exec("/etc/init.d/stubby " .. action .. " 2>&1")
-    local pid = H.get_service_pid("stubby")
-    http.write_json({
+    local pid = require("podkop-tweaker.http").get_service_pid("stubby")
+    return {
         success = true,
         running = (pid ~= nil)
-    })
+    }
 end
 
 function M.rollback()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
     local ok, err = SRV.restore_backup(SRV.stubby)
     if not ok then
-        http.write_json({ error = (err == "not_found") and "Backup file not found" or "Cannot write config" })
-        return
+        return { error = (err == "not_found") and "Backup file not found" or "Cannot write config" }
     end
-    sys.exec(SRV.stubby.restart_cmd)
-    http.write_json({ success = true, restarting = true })
+    require("luci.sys").exec(SRV.stubby.restart_cmd)
+    return { success = true, restarting = true }
 end
 
 function M.export_config()
     local http = require("luci.http")
     http.prepare_content("text/plain")
-    H.no_cache()
+    require("podkop-tweaker.http").no_cache()
     http.header("Content-Disposition", 'attachment; filename="stubby-config.txt"')
     local fd = io.open("/etc/config/stubby", "r")
     if fd then
@@ -159,7 +133,7 @@ function M.download_backup()
     local http = require("luci.http")
     local nixio = require("nixio")
     http.prepare_content("text/plain")
-    H.no_cache()
+    require("podkop-tweaker.http").no_cache()
     local backup_path = "/etc/config/stubby.auto-backup"
     if not nixio.fs.stat(backup_path) then
         http.status(404, "Not Found")
@@ -176,10 +150,6 @@ function M.download_backup()
 end
 
 function M.chain_info()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
-
     local uci = require("luci.model.uci").cursor()
 
     local stubby_listen = ""
@@ -210,144 +180,104 @@ function M.chain_info()
         end
     end)
 
-    http.write_json({
+    return {
         stubby_listen = stubby_listen,
         resolvers = resolvers,
         podkop_dns = podkop_dns
-    })
+    }
 end
 
 function M.init_check()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
-
     local fd = io.open("/etc/init.d/stubby", "r")
     if not fd then
-        http.write_json({ status = "not_installed" })
-        return
+        return { status = "not_installed" }
     end
     local content = fd:read("*a")
     fd:close()
 
     if content:match("procd_set_param user stubby") then
-        http.write_json({ status = "needs_fix" })
-    else
-        http.write_json({ status = "fixed" })
+        return { status = "needs_fix" }
     end
+    return { status = "fixed" }
 end
 
 function M.init_fix()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
     local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
 
     local fd = io.open("/etc/init.d/stubby", "r")
     if not fd then
-        http.write_json({ error = "Init script not found" })
-        return
+        return { error = "Init script not found" }
     end
     local content = fd:read("*a")
     fd:close()
 
     if not content:match("procd_set_param user stubby") then
-        http.write_json({ success = true, message = "Already fixed" })
-        return
+        return { success = true, message = "Already fixed" }
     end
 
     content = content:gsub("procd_set_param user stubby", "procd_set_param user root")
     local tmp_path = "/etc/init.d/stubby.tmp-fix"
     local tmpfd = io.open(tmp_path, "w")
     if not tmpfd then
-        http.write_json({ error = "Cannot write init script" })
-        return
+        return { error = "Cannot write init script" }
     end
     tmpfd:write(content)
     tmpfd:close()
     sys.exec("chmod +x " .. tmp_path .. " && mv " .. tmp_path .. " /etc/init.d/stubby 2>/dev/null")
     sys.exec("/etc/init.d/stubby restart 2>&1")
 
-    http.write_json({ success = true })
+    return { success = true }
 end
 
-function M.import_config()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local content = http.formvalue("content") or ""
+function M.import_config(content)
     if content == "" then
-        http.write_json({ error = "Empty content" })
-        return
+        return { error = "Empty content" }
     end
     local ok, err = LIB.validate_uci_config(content)
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
     if not S.backup_stubby_config() then
-        http.write_json({ error = "Cannot create backup" })
-        return
+        return { error = "Cannot create backup" }
     end
     ok, err = SRV.write_file_atomic(SRV.stubby.config, content)
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
-    sys.exec(SRV.stubby.restart_cmd)
-    http.write_json({ success = true, restarting = true })
+    require("luci.sys").exec(SRV.stubby.restart_cmd)
+    return { success = true, restarting = true }
 end
 
 function M.apply_recommended()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
     if not S.backup_stubby_config() then
-        http.write_json({ error = "Cannot create backup" })
-        return
+        return { error = "Cannot create backup" }
     end
     local ok, err = SRV.write_file_atomic(SRV.stubby.config, STUBBY_RECOMMENDED)
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
-    sys.exec(SRV.stubby.restart_cmd)
-    http.write_json({ success = true, restarting = true })
+    require("luci.sys").exec(SRV.stubby.restart_cmd)
+    return { success = true, restarting = true }
 end
 
 function M.autostart()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local sys = require("luci.sys")
-    local links = sys.exec("ls /etc/rc.d/S*stubby 2>/dev/null")
-    http.write_json({
+    local links = require("luci.sys").exec("ls /etc/rc.d/S*stubby 2>/dev/null")
+    return {
         enabled = (links and links ~= "")
-    })
+    }
 end
 
-function M.autostart_toggle()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local action = http.formvalue("action") or ""
+function M.autostart_toggle(action)
     if action ~= "enable" and action ~= "disable" then
-        http.write_json({ error = "Invalid action" })
-        return
+        return { error = "Invalid action" }
     end
+    local sys = require("luci.sys")
     sys.exec("/etc/init.d/stubby " .. action .. " 2>&1")
     local links = sys.exec("ls /etc/rc.d/S*stubby 2>/dev/null")
-    http.write_json({
+    return {
         success = true,
         enabled = (links and links ~= "")
-    })
+    }
 end
 
 return M

@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.1.0 | 22.08.2026 | Controller split: dispatcher only, endpoint logic in podkop-tweaker/api_* modules
+-- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure-handlers: JSON endpoints via json_api adapter, transport endpoints remain hybrid
 
-local APP_VERSION = "4.1.0"
+local APP_VERSION = "4.2.0"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")
@@ -326,89 +326,210 @@ function api_app_version()
     http.write_json({ version = APP_VERSION })
 end
 
+-- V2 adapter: uniform JSON envelope for pure handlers
+local function json_api(csrf, fn, ...)
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    H.no_cache()
+    if csrf and not H.verify_csrf() then return end
+    local ok, resp = pcall(fn, ...)
+    if not ok then resp = { error = "Internal error" } end
+    http.write_json(resp)
+end
+
 -- === Podkop ===
 
-function api_system_info() return PDK.system_info() end
-function api_update_start() return PDK.update_start() end
 function api_read_config() return PDK.read_config() end
-function api_save_config() return PDK.save_config() end
 function api_export_config() return PDK.export_config() end
 function api_download_backup() return PDK.download_backup() end
-function api_import_config() return PDK.import_config() end
-function api_service_status() return PDK.service_status() end
-function api_rollback() return PDK.rollback() end
-function api_podkop_service_toggle() return PDK.service_toggle() end
-function api_podkop_autostart() return PDK.autostart() end
-function api_podkop_autostart_toggle() return PDK.autostart_toggle() end
+
+function api_system_info() json_api(false, PDK.system_info) end
+function api_update_start() json_api(true, PDK.update_start) end
+function api_save_config()
+    local http = require("luci.http")
+    json_api(true, PDK.save_config, http.formvalue("content") or "")
+end
+function api_import_config()
+    local http = require("luci.http")
+    json_api(true, PDK.import_config, http.formvalue("content") or "", http.formvalue("file"))
+end
+function api_service_status() json_api(false, PDK.service_status) end
+function api_rollback() json_api(true, PDK.rollback) end
+function api_podkop_service_toggle()
+    local http = require("luci.http")
+    json_api(true, PDK.service_toggle, http.formvalue("action") or "")
+end
+function api_podkop_autostart() json_api(false, PDK.autostart) end
+function api_podkop_autostart_toggle()
+    local http = require("luci.http")
+    json_api(true, PDK.autostart_toggle, http.formvalue("action") or "")
+end
 
 -- === Subscriptions ===
 
-function api_subscription_state() return SUB.subscription_state() end
-function api_subscription_fetch() return SUB.subscription_fetch() end
-function api_subscription_attach() return SUB.subscription_attach() end
-function api_subscription_detach() return SUB.subscription_detach() end
-function api_settings_read() return SUB.settings_read() end
-function api_settings_save() return SUB.settings_save() end
-function api_update_all_subs() return SUB.update_all() end
+function api_subscription_state() json_api(false, SUB.subscription_state) end
 function api_download_sub_backup() return SUB.download_sub_backup() end
+
+function api_subscription_fetch()
+    local http = require("luci.http")
+    json_api(true, SUB.subscription_fetch, http.formvalue("url") or "")
+end
+function api_subscription_attach()
+    local http = require("luci.http")
+    json_api(true, SUB.subscription_attach,
+        http.formvalue("section") or "",
+        http.formvalue("index"),
+        http.formvalue("subscription_url") or "",
+        http.formvalue("proxy_name") or "",
+        http.formvalue("link") or "")
+end
+function api_subscription_detach()
+    local http = require("luci.http")
+    json_api(true, SUB.subscription_detach,
+        http.formvalue("section") or "",
+        http.formvalue("index"))
+end
+function api_settings_read() json_api(false, SUB.settings_read) end
+function api_settings_save()
+    local http = require("luci.http")
+    json_api(true, SUB.settings_save,
+        http.formvalue("auto_update_interval"),
+        http.formvalue("auto_update_start") or "",
+        http.formvalue("auto_update_on_restart") == "1",
+        http.formvalue("log_display_count"))
+end
+function api_update_all_subs() json_api(true, SUB.update_all) end
 
 -- === Stubby ===
 
 function api_read_stubby_config() return STB.read_config() end
-function api_save_stubby_config() return STB.save_config() end
-function api_stubby_service_status() return STB.service_status() end
-function api_stubby_service_toggle() return STB.service_toggle() end
-function api_rollback_stubby() return STB.rollback() end
 function api_export_stubby_config() return STB.export_config() end
 function api_download_stubby_backup() return STB.download_backup() end
-function api_stubby_chain_info() return STB.chain_info() end
-function api_stubby_init_check() return STB.init_check() end
-function api_stubby_init_fix() return STB.init_fix() end
-function api_import_stubby_config() return STB.import_config() end
-function api_apply_recommended_stubby() return STB.apply_recommended() end
-function api_stubby_autostart() return STB.autostart() end
-function api_stubby_autostart_toggle() return STB.autostart_toggle() end
+
+function api_save_stubby_config()
+    local http = require("luci.http")
+    json_api(true, STB.save_config, http.formvalue("content") or "")
+end
+function api_stubby_service_status() json_api(false, STB.service_status) end
+function api_stubby_service_toggle()
+    local http = require("luci.http")
+    json_api(true, STB.service_toggle, http.formvalue("action") or "")
+end
+function api_rollback_stubby() json_api(true, STB.rollback) end
+function api_stubby_chain_info() json_api(false, STB.chain_info) end
+function api_stubby_init_check() json_api(false, STB.init_check) end
+function api_stubby_init_fix() json_api(true, STB.init_fix) end
+function api_import_stubby_config()
+    local http = require("luci.http")
+    json_api(true, STB.import_config, http.formvalue("content") or "")
+end
+function api_apply_recommended_stubby() json_api(true, STB.apply_recommended) end
+function api_stubby_autostart() json_api(false, STB.autostart) end
+function api_stubby_autostart_toggle()
+    local http = require("luci.http")
+    json_api(true, STB.autostart_toggle, http.formvalue("action") or "")
+end
 
 -- === Sing-box ===
 
 function api_read_singbox_config() return SBX.read_config() end
-function api_save_singbox_config() return SBX.save_config() end
-function api_singbox_service_status() return SBX.service_status() end
-function api_singbox_service_toggle() return SBX.service_toggle() end
-function api_rollback_singbox() return SBX.rollback() end
 function api_export_singbox_config() return SBX.export_config() end
 function api_download_singbox_backup() return SBX.download_backup() end
-function api_import_singbox_config() return SBX.import_config() end
-function api_singbox_outbounds() return SBX.outbounds() end
-function api_singbox_patch_fragment() return SBX.patch_fragment() end
-function api_wrapper_status() return SBX.wrapper_status() end
-function api_wrapper_toggle() return SBX.wrapper_toggle() end
-function api_fragment_settings() return SBX.fragment_settings() end
+
+function api_save_singbox_config()
+    local http = require("luci.http")
+    json_api(true, SBX.save_config, http.formvalue("content") or "")
+end
+function api_singbox_service_status() json_api(false, SBX.service_status) end
+function api_singbox_service_toggle()
+    local http = require("luci.http")
+    json_api(true, SBX.service_toggle, http.formvalue("action") or "")
+end
+function api_rollback_singbox() json_api(true, SBX.rollback) end
+function api_import_singbox_config()
+    local http = require("luci.http")
+    json_api(true, SBX.import_config, http.formvalue("content") or "")
+end
+function api_singbox_outbounds() json_api(false, SBX.outbounds) end
+
+function api_singbox_patch_fragment()
+    local http = require("luci.http")
+    json_api(true, SBX.patch_fragment,
+        http.formvalue("tags"),
+        http.formvalue("mode"),
+        http.formvalue("fragment"),
+        http.formvalue("record_fragment"),
+        http.formvalue("fallback_delay"))
+end
+
+function api_wrapper_status() json_api(false, SBX.wrapper_status) end
+
+function api_wrapper_toggle()
+    local http = require("luci.http")
+    json_api(true, SBX.wrapper_toggle,
+        http.formvalue("action") or "",
+        http.formvalue("fragment"),
+        http.formvalue("record_fragment"),
+        http.formvalue("fallback_delay"))
+end
+
+function api_fragment_settings() json_api(false, SBX.fragment_settings) end
 
 -- === Diagnostics ===
 
-function api_diag_dns() return DIA.dns() end
-function api_diag_proxy() return DIA.proxy() end
-function api_diag_e2e() return DIA.e2e() end
-function api_diag_dns_leak() return DIA.dns_leak() end
+function api_diag_dns() json_api(true, DIA.dns) end
+function api_diag_proxy() json_api(true, DIA.proxy) end
+function api_diag_e2e() json_api(true, DIA.e2e) end
+function api_diag_dns_leak() json_api(true, DIA.dns_leak) end
 
 -- === Argon ===
 
-function api_argon_typography() return ARG.typography() end
-function api_argon_typography_save() return ARG.typography_save() end
-function api_argon_typography_reset() return ARG.typography_reset() end
-function api_argon_reinject() return ARG.reinject() end
+function api_argon_typography() json_api(false, ARG.typography) end
+
+function api_argon_typography_save()
+    local http = require("luci.http")
+    json_api(true, ARG.typography_save, {
+        font_size = http.formvalue("font_size"),
+        font_family = http.formvalue("font_family"),
+        font_family_custom = http.formvalue("font_family_custom"),
+        font_weight = http.formvalue("font_weight"),
+        line_height = http.formvalue("line_height"),
+        letter_spacing = http.formvalue("letter_spacing"),
+        menu_font_size = http.formvalue("menu_font_size"),
+        menu_padding = http.formvalue("menu_padding")
+    })
+end
+
+function api_argon_typography_reset() json_api(true, ARG.typography_reset) end
+function api_argon_reinject() json_api(true, ARG.reinject) end
 
 -- === Bundle ===
 
 function api_export_bundle() return BND.export() end
-function api_import_bundle() return BND.import() end
+
+function api_import_bundle()
+    local http = require("luci.http")
+    json_api(true, BND.import,
+        http.formvalue("content") or "",
+        http.formvalue("file"),
+        http.formvalue("items"))
+end
 
 -- === Update ===
 
-function api_upload_update() return UPD.upload() end
-function api_apply_update() return UPD.apply() end
-function api_clear_cache() return UPD.clear_cache() end
-function api_read_update_log() return UPD.read_log() end
-function api_tweaker_check_update() return UPD.check_update() end
-function api_tweaker_git_update() return UPD.git_update() end
+function api_upload_update()
+    local http = require("luci.http")
+    json_api(true, UPD.upload,
+        http.formvalue("file_data") or "",
+        http.formvalue("file_name") or "")
+end
+function api_apply_update() json_api(true, UPD.apply) end
+function api_clear_cache() json_api(true, UPD.clear_cache) end
+function api_read_update_log() json_api(false, UPD.read_log) end
+function api_tweaker_check_update() json_api(false, UPD.check_update) end
+function api_tweaker_git_update()
+    local http = require("luci.http")
+    json_api(true, UPD.git_update,
+        http.formvalue("download_url") or "",
+        http.formvalue("force"))
+end

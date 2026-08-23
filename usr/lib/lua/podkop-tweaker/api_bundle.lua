@@ -1,5 +1,5 @@
--- Podkop Tweaker | Bundle import/export API handlers
--- Author: InsaniaQuon
+-- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handler for import: args in -> response table out; HTTP layer moved to controller adapter
+-- Hybrid exception kept as-is: export (transport endpoint)
 
 local H = require("podkop-tweaker.http")
 local SRV = require("podkop-tweaker.services")
@@ -79,54 +79,41 @@ function M.export()
     http.write(str)
 end
 
-function M.import()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
+function M.import(content, file_raw, sel_param)
     local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
 
-    local content = http.formvalue("content") or ""
     if content == "" then
-        local fdupload = http.formvalue("file")
-        if type(fdupload) == "table" and fdupload.data then
-            content = fdupload.data
-        elseif type(fdupload) == "string" then
-            content = fdupload
+        if type(file_raw) == "table" and file_raw.data then
+            content = file_raw.data
+        elseif type(file_raw) == "string" then
+            content = file_raw
         end
     end
     if content == "" then
-        http.write_json({ error = "Bundle content is empty" })
-        return
+        return { error = "Bundle content is empty" }
     end
     if #content > BUNDLE_MAX_SIZE then
-        http.write_json({ error = "Bundle too large (max 4MB)" })
-        return
+        return { error = "Bundle too large (max 4MB)" }
     end
     if content:find("\0", 1, true) then
-        http.write_json({ error = "Invalid content: contains null bytes" })
-        return
+        return { error = "Invalid content: contains null bytes" }
     end
 
     local bundle = S.json_parse(content)
     if type(bundle) ~= "table" or bundle.format ~= BUNDLE_FORMAT then
-        http.write_json({ error = "Not a valid Podkop Tweaker bundle" })
-        return
+        return { error = "Not a valid Podkop Tweaker bundle" }
     end
     local bundle_ver = tonumber(bundle.version) or 0
     if bundle_ver < 1 or bundle_ver > BUNDLE_VERSION then
-        http.write_json({ error = "Unsupported bundle version: " .. tostring(bundle.version) })
-        return
+        return { error = "Unsupported bundle version: " .. tostring(bundle.version) }
     end
     if type(bundle.items) ~= "table" or not next(bundle.items) then
-        http.write_json({ error = "Bundle has no items" })
-        return
+        return { error = "Bundle has no items" }
     end
 
     local selection_used = false
     local selected = {}
-    local sel_param = http.formvalue("items") or ""
-    if sel_param ~= "" then
+    if sel_param and sel_param ~= "" then
         selection_used = true
         for it in sel_param:gmatch("[%w%-]+") do selected[it] = true end
     end
@@ -160,12 +147,12 @@ function M.import()
         if r.ok then any_ok = true end
     end
 
-    http.write_json({
+    return {
         success = any_ok,
         restarting = restart_podkop,
         results = results,
         skipped = skipped
-    })
+    }
 end
 
 return M

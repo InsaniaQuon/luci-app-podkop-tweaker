@@ -1,5 +1,5 @@
--- Podkop Tweaker | Sing-box config + fragment wrapper API handlers
--- Author: InsaniaQuon
+-- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
+-- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local H = require("podkop-tweaker.http")
 local SRV = require("podkop-tweaker.services")
@@ -20,25 +20,18 @@ function M.read_config()
     end
 end
 
-function M.save_config()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
+function M.save_config(content)
     local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local content = http.formvalue("content") or ""
     local ok, err = SRV.singbox_content_check(content, "Configuration is empty")
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
     local rfd = io.open(SRV.SINGBOX_CONFIG, "r")
     if rfd then
         local orig = rfd:read("*a")
         rfd:close()
         if orig == content then
-            http.write_json({ success = true, unchanged = true })
-            return
+            return { success = true, unchanged = true }
         end
         local bfd = io.open(SRV.SINGBOX_BACKUP, "w")
         if bfd then
@@ -49,65 +42,48 @@ function M.save_config()
     local tmp_path = SRV.SINGBOX_CONFIG .. ".tmp-write"
     local tmpfd = io.open(tmp_path, "w")
     if not tmpfd then
-        http.write_json({ error = "Cannot write temporary file" })
-        return
+        return { error = "Cannot write temporary file" }
     end
     tmpfd:write(content)
     tmpfd:close()
     local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
     if check and check ~= "" then
         os.remove(tmp_path)
-        http.write_json({ error = "sing-box check failed", details = check })
-        return
+        return { error = "sing-box check failed", details = check }
     end
     os.rename(tmp_path, SRV.SINGBOX_CONFIG)
     sys.exec("/etc/init.d/sing-box restart 2>&1")
-    http.write_json({ success = true, restarting = true })
+    return { success = true, restarting = true }
 end
 
 function M.service_status()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
     local pid = H.get_service_pid("sing-box")
-    http.write_json({
+    return {
         running = (pid ~= nil),
         pid = pid
-    })
+    }
 end
 
-function M.service_toggle()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local action = http.formvalue("action") or ""
+function M.service_toggle(action)
     if action ~= "start" and action ~= "stop" then
-        http.write_json({ error = "Invalid action" })
-        return
+        return { error = "Invalid action" }
     end
+    local sys = require("luci.sys")
     sys.exec("/etc/init.d/sing-box " .. action .. " 2>&1")
     local pid = H.get_service_pid("sing-box")
-    http.write_json({
+    return {
         success = true,
         running = (pid ~= nil)
-    })
+    }
 end
 
 function M.rollback()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
     local ok, err = SRV.restore_backup(SRV.singbox)
     if not ok then
-        http.write_json({ error = (err == "not_found") and "Backup file not found" or "Cannot write config" })
-        return
+        return { error = (err == "not_found") and "Backup file not found" or "Cannot write config" }
     end
-    sys.exec(SRV.singbox.restart_cmd)
-    http.write_json({ success = true, restarting = true })
+    require("luci.sys").exec(SRV.singbox.restart_cmd)
+    return { success = true, restarting = true }
 end
 
 function M.export_config()
@@ -146,31 +122,23 @@ function M.download_backup()
     end
 end
 
-function M.import_config()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
+function M.import_config(content)
     local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local content = http.formvalue("content") or ""
     local ok, err = SRV.singbox_content_check(content, "Empty content")
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
     local tmp_path = SRV.SINGBOX_CONFIG .. ".tmp-import"
     local tmpfd = io.open(tmp_path, "w")
     if not tmpfd then
-        http.write_json({ error = "Cannot write temporary file" })
-        return
+        return { error = "Cannot write temporary file" }
     end
     tmpfd:write(content)
     tmpfd:close()
     local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
     if check and check ~= "" then
         os.remove(tmp_path)
-        http.write_json({ error = "sing-box check failed", details = check })
-        return
+        return { error = "sing-box check failed", details = check }
     end
     local rfd = io.open(SRV.SINGBOX_CONFIG, "r")
     if rfd then
@@ -184,18 +152,14 @@ function M.import_config()
     end
     os.rename(tmp_path, SRV.SINGBOX_CONFIG)
     sys.exec("/etc/init.d/sing-box restart 2>&1")
-    http.write_json({ success = true, restarting = true })
+    return { success = true, restarting = true }
 end
 
 function M.outbounds()
-    local http = require("luci.http")
     local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
     local raw = sys.exec("jq '.outbounds[] | {tag, type, server: (.server // \"\"), tls_enabled: (.tls.enabled // false), has_fragment: ((.tls.fragment // false) or (.tls.record_fragment // false))}' " .. SRV.SINGBOX_CONFIG .. " 2>/dev/null")
     if not raw or raw == "" then
-        http.write_json({ outbounds = {} })
-        return
+        return { outbounds = {} }
     end
     local outbounds = {}
     local cur = {}
@@ -219,33 +183,26 @@ function M.outbounds()
             cur = {}
         end
     end
-    http.write_json({ outbounds = outbounds })
+    return { outbounds = outbounds }
 end
 
-function M.patch_fragment()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
+function M.patch_fragment(tags_raw, mode_raw, use_fragment_raw, use_record_fragment_raw, fallback_delay_raw)
     local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
     local json = require("luci.jsonc")
-    local tags_raw = http.formvalue("tags") or "[]"
-    local tags = json.parse(tags_raw)
+
+    local tags = json.parse(tags_raw or "[]")
     if not tags or type(tags) ~= "table" or #tags == 0 then
-        http.write_json({ error = "No outbounds selected" })
-        return
+        return { error = "No outbounds selected" }
     end
     for i, t in ipairs(tags) do
         if type(t) ~= "string" or not t:match("^[a-zA-Z0-9_%-%.]+$") then
-            http.write_json({ error = "Invalid tag value" })
-            return
+            return { error = "Invalid tag value" }
         end
     end
-    local mode = http.formvalue("mode") or "apply"
+    local mode = mode_raw or "apply"
     local rfd = io.open(SRV.SINGBOX_CONFIG, "r")
     if not rfd then
-        http.write_json({ error = "Cannot read config" })
-        return
+        return { error = "Cannot read config" }
     end
     local orig = rfd:read("*a")
     rfd:close()
@@ -265,16 +222,14 @@ function M.patch_fragment()
     if mode == "remove" then
         jq_expr = '(.outbounds[] | select(' .. jq_select .. ') | .tls) |= del(.fragment, .record_fragment, .fragment_fallback_delay)'
     else
-        local use_fragment = http.formvalue("fragment") == "1"
-        local use_record_fragment = http.formvalue("record_fragment") == "1"
+        local use_fragment = use_fragment_raw == "1"
+        local use_record_fragment = use_record_fragment_raw == "1"
         if not use_fragment and not use_record_fragment then
-            http.write_json({ error = "Select at least one fragment method" })
-            return
+            return { error = "Select at least one fragment method" }
         end
-        local fallback_delay = http.formvalue("fallback_delay") or "500ms"
+        local fallback_delay = fallback_delay_raw or "500ms"
         if not fallback_delay:match("^%d+%a+$") then
-            http.write_json({ error = "Invalid fallback_delay format" })
-            return
+            return { error = "Invalid fallback_delay format" }
         end
         if use_fragment then
             local rf_val = use_record_fragment and "true" or "false"
@@ -285,32 +240,26 @@ function M.patch_fragment()
     end
     local patched = sys.exec("jq " .. jq_args .. " '" .. jq_expr .. "' " .. SRV.SINGBOX_CONFIG .. " 2>/dev/null")
     if not patched or patched == "" then
-        http.write_json({ error = "jq patch failed" })
-        return
+        return { error = "jq patch failed" }
     end
     local tmp_path = SRV.SINGBOX_CONFIG .. ".tmp-patch"
     local tmpfd = io.open(tmp_path, "w")
     if not tmpfd then
-        http.write_json({ error = "Cannot write temporary file" })
-        return
+        return { error = "Cannot write temporary file" }
     end
     tmpfd:write(patched)
     tmpfd:close()
     local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
     if check and check ~= "" then
         os.remove(tmp_path)
-        http.write_json({ error = "sing-box check failed after patch", details = check })
-        return
+        return { error = "sing-box check failed after patch", details = check }
     end
     os.rename(tmp_path, SRV.SINGBOX_CONFIG)
     sys.exec("/etc/init.d/sing-box restart 2>&1")
-    http.write_json({ success = true, restarting = true })
+    return { success = true, restarting = true }
 end
 
 function M.wrapper_status()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
     local fd = io.open("/etc/init.d/podkop.orig", "r")
     local installed = (fd ~= nil)
     if fd then fd:close() end
@@ -325,30 +274,25 @@ function M.wrapper_status()
             end
         end
     end
-    http.write_json({
+    return {
         installed = installed,
         stale = stale
-    })
+    }
 end
 
-function M.wrapper_toggle()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
+function M.wrapper_toggle(action, fragment_raw, record_fragment_raw, fallback_delay_raw)
     local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local action = http.formvalue("action") or ""
+
     if action ~= "enable" and action ~= "disable" and action ~= "reinstall" then
-        http.write_json({ error = "Invalid action" })
-        return
+        return { error = "Invalid action" }
     end
     if action == "reinstall" then
         os.remove("/etc/init.d/podkop.orig")
     elseif action == "enable" then
         local uci = require("luci.model.uci").cursor()
-        local fragment = http.formvalue("fragment") == "1"
-        local record_fragment = http.formvalue("record_fragment") == "1"
-        local fallback_delay = http.formvalue("fallback_delay") or "500ms"
+        local fragment = fragment_raw == "1"
+        local record_fragment = record_fragment_raw == "1"
+        local fallback_delay = fallback_delay_raw or "500ms"
         if not fallback_delay:match("^%d+%a+$") then
             fallback_delay = "500ms"
         end
@@ -362,30 +306,27 @@ function M.wrapper_toggle()
     local exit_code = output:match("EXIT:(%d+)") or "1"
     if exit_code ~= "0" then
         local err_msg = output:gsub("EXIT:%d+%s*$", ""):match("^%s*(.-)%s*$") or "Command failed"
-        http.write_json({ success = false, error = err_msg })
-        return
+        return { success = false, error = err_msg }
     end
     local fd = io.open("/etc/init.d/podkop.orig", "r")
-    http.write_json({
+    local resp = {
         success = true,
         installed = (fd ~= nil)
-    })
+    }
     if fd then fd:close() end
+    return resp
 end
 
 function M.fragment_settings()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
     local uci = require("luci.model.uci").cursor()
     local fragment = uci:get("podkop-fragment", "settings", "fragment") or "false"
     local record_fragment = uci:get("podkop-fragment", "settings", "record_fragment") or "true"
     local fallback_delay = uci:get("podkop-fragment", "settings", "fragment_fallback_delay") or "500ms"
-    http.write_json({
+    return {
         fragment = (fragment == "true"),
         record_fragment = (record_fragment == "true"),
         fallback_delay = fallback_delay
-    })
+    }
 end
 
 return M

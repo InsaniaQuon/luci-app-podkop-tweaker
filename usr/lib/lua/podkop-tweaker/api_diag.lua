@@ -1,18 +1,10 @@
--- Podkop Tweaker | Diagnostics API handlers
--- Author: InsaniaQuon
+-- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
 
-local H = require("podkop-tweaker.http")
 local DIAG = require("podkop-tweaker.diag")
 
 local M = {}
 
 function M.dns()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local ok = H.verify_csrf()
-    if not ok then return end
-
     local uci = require("luci.model.uci").cursor()
     local results = {}
     local domain = "google.com"
@@ -66,16 +58,10 @@ function M.dns()
         status = r_dnsmasq.status
     })
 
-    http.write_json({ results = results })
+    return { results = results }
 end
 
 function M.proxy()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local ok = H.verify_csrf()
-    if not ok then return end
-
     local results = {}
 
     local inbounds = DIAG.get_singbox_inbounds()
@@ -88,14 +74,12 @@ function M.proxy()
     end
 
     if not mixed_port then
-        http.write_json({ results = {}, error = "No mixed inbound found in sing-box config" })
-        return
+        return { results = {}, error = "No mixed inbound found in sing-box config" }
     end
 
-    local pid = H.get_service_pid("sing-box")
+    local pid = require("podkop-tweaker.http").get_service_pid("sing-box")
     if not pid then
-        http.write_json({ results = {}, error = "sing-box is not running" })
-        return
+        return { results = {}, error = "sing-box is not running" }
     end
 
     local proxy_url = "http://127.0.0.1:" .. mixed_port
@@ -117,16 +101,10 @@ function M.proxy()
         status = (code and tonumber(code) >= 200 and tonumber(code) < 400) and "OK" or "FAIL"
     })
 
-    http.write_json({ results = results })
+    return { results = results }
 end
 
 function M.e2e()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local ok = H.verify_csrf()
-    if not ok then return end
-
     local results = {}
 
     local fd = io.popen("curl -s -m 10 https://api.ipify.org 2>&1")
@@ -147,16 +125,10 @@ function M.e2e()
     results.time_ms = time_ms
     results.status = (code and tonumber(code) >= 200 and tonumber(code) < 400) and "OK" or "FAIL"
 
-    http.write_json(results)
+    return results
 end
 
 function M.dns_leak()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local ok = H.verify_csrf()
-    if not ok then return end
-
     local uci = require("luci.model.uci").cursor()
     local results = {}
     local domain = "google.com"
@@ -201,7 +173,7 @@ function M.dns_leak()
     results.detail = detail
     results.dnsmasq_status = r_dnsmasq.status
 
-    http.write_json(results)
+    return results
 end
 
 return M

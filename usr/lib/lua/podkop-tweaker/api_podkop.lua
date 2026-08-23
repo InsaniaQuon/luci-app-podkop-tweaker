@@ -1,5 +1,5 @@
--- Podkop Tweaker | Podkop config/service/system API handlers
--- Author: InsaniaQuon
+-- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
+-- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local H = require("podkop-tweaker.http")
 local SRV = require("podkop-tweaker.services")
@@ -29,9 +29,6 @@ end
 
 function M.system_info()
     local sys = require("luci.sys")
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
 
     local raw = sys.exec("podkop get_system_info 2>/dev/null")
 
@@ -51,7 +48,7 @@ function M.system_info()
     end
 
     if not info or not info.podkop_version then
-        http.write_json({
+        return {
             podkop_version = "unknown",
             podkop_latest_version = "unknown",
             luci_app_version = "unknown",
@@ -62,8 +59,7 @@ function M.system_info()
             tweaker_version = UPD.get_version(),
             tweaker_latest = nil,
             error = "Failed to get system info from podkop"
-        })
-        return
+        }
     end
 
     local update_available = false
@@ -75,7 +71,7 @@ function M.system_info()
 
     local stubby_ver = sys.exec("stubby -V 2>/dev/null"):match("Stubby%s+(%S+)") or "not installed"
 
-    http.write_json({
+    return {
         podkop_version = info.podkop_version or "unknown",
         podkop_latest_version = info.podkop_latest_version or "unknown",
         luci_app_version = info.luci_app_version or "unknown",
@@ -86,26 +82,21 @@ function M.system_info()
         update_available = update_available,
         tweaker_version = UPD.get_version(),
         tweaker_latest = UPD.cached_latest()
-    })
+    }
 end
 
 function M.update_start()
-    if not H.verify_csrf() then return end
     local sys = require("luci.sys")
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
 
     if not S.backup_config() then
-        http.write_json({ error = "Cannot create backup before update" })
-        return
+        return { error = "Cannot create backup before update" }
     end
 
     sys.exec("pkill -f 'ttyd.*7682' 2>/dev/null")
 
-    local host = http.getenv("SERVER_NAME") or "127.0.0.1"
+    local host = require("luci.http").getenv("SERVER_NAME") or "127.0.0.1"
     if not host:match("^[%w%.%-]+:%d+$") and not host:match("^[%w%.%-]+$") then
-        host = http.getenv("SERVER_NAME") or "127.0.0.1"
+        host = require("luci.http").getenv("SERVER_NAME") or "127.0.0.1"
     end
     local port = "7682"
 
@@ -120,7 +111,7 @@ function M.update_start()
     cmd = cmd .. "' >/dev/null 2>&1 &"
     sys.exec(cmd)
 
-    http.write_json({ success = true, url = "http://" .. host .. ":" .. port })
+    return { success = true, url = "http://" .. host .. ":" .. port }
 end
 
 function M.read_config()
@@ -137,23 +128,16 @@ function M.read_config()
     end
 end
 
-function M.save_config()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local content = http.formvalue("content") or ""
+function M.save_config(content)
     local ok, err = LIB.validate_uci_config(content)
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
     ok, err = save_and_restart(content)
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
-    http.write_json({ success = true, restarting = true })
+    return { success = true, restarting = true }
 end
 
 function M.export_config()
@@ -199,107 +183,76 @@ function M.download_backup()
     end
 end
 
-function M.import_config()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local upload_content = http.formvalue("content") or ""
+function M.import_config(upload_content, upload_file)
     if upload_content == "" then
-        local fdupload = http.formvalue("file")
-        if type(fdupload) == "table" and fdupload.data then
-            upload_content = fdupload.data
-        elseif type(fdupload) == "string" then
-            upload_content = fdupload
+        if type(upload_file) == "table" and upload_file.data then
+            upload_content = upload_file.data
+        elseif type(upload_file) == "string" then
+            upload_content = upload_file
         end
     end
     local ok, err = LIB.validate_uci_config(upload_content)
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
     ok, err = save_and_restart(upload_content)
     if not ok then
-        http.write_json({ error = err })
-        return
+        return { error = err }
     end
-    http.write_json({ success = true, restarting = true })
+    return { success = true, restarting = true }
 end
 
 function M.service_status()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
     local pid = H.get_service_pid("sing-box")
-    http.write_json({
+    return {
         running = (pid ~= nil),
         pid = pid
-    })
+    }
 end
 
 function M.rollback()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
     local ok, err = SRV.restore_backup(SRV.podkop)
     if not ok then
-        http.write_json({ error = (err == "not_found") and "Backup file not found" or "Cannot write config" })
-        return
+        return { error = (err == "not_found") and "Backup file not found" or "Cannot write config" }
     end
-    sys.exec(SRV.podkop.restart_cmd)
-    http.write_json({ success = true, restarting = true })
+    require("luci.sys").exec(SRV.podkop.restart_cmd)
+    return { success = true, restarting = true }
 end
 
-function M.service_toggle()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local action = http.formvalue("action") or ""
+function M.service_toggle(action)
     if action ~= "start" and action ~= "stop" then
-        http.write_json({ error = "Invalid action" })
-        return
+        return { error = "Invalid action" }
     end
+    local sys = require("luci.sys")
     sys.exec("/etc/init.d/podkop " .. action .. " 2>&1")
     local pid = H.get_service_pid("sing-box")
-    http.write_json({
+    return {
         success = true,
         running = (pid ~= nil)
-    })
+    }
 end
 
 function M.autostart()
-    local http = require("luci.http")
-    http.prepare_content("application/json")
-    H.no_cache()
     local fd = io.open("/etc/rc.d/S99podkop", "r")
-    http.write_json({
+    local resp = {
         enabled = (fd ~= nil)
-    })
+    }
     if fd then fd:close() end
+    return resp
 end
 
-function M.autostart_toggle()
-    if not H.verify_csrf() then return end
-    local http = require("luci.http")
-    local sys = require("luci.sys")
-    http.prepare_content("application/json")
-    H.no_cache()
-    local action = http.formvalue("action") or ""
+function M.autostart_toggle(action)
     if action ~= "enable" and action ~= "disable" then
-        http.write_json({ error = "Invalid action" })
-        return
+        return { error = "Invalid action" }
     end
-    sys.exec("/etc/init.d/podkop " .. action .. " 2>&1")
+    require("luci.sys").exec("/etc/init.d/podkop " .. action .. " 2>&1")
     local fd = io.open("/etc/rc.d/S99podkop", "r")
-    http.write_json({
+    local resp = {
         success = true,
         enabled = (fd ~= nil)
-    })
+    }
     if fd then fd:close() end
+    return resp
 end
 
 return M
