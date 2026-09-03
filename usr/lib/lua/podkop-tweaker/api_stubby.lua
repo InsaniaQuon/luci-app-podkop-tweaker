@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
+-- Podkop Tweaker | v4.4.0 | 30.08.2026 | transport via http.lua helpers, init_fix checks mv exit code
 -- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local SRV = require("podkop-tweaker.services")
@@ -45,20 +45,20 @@ config resolver
 	option address '149.112.112.112'
 	option tls_auth_name 'dns.quad9.net'
 	option tls_port '853'
+
+config resolver
+	option address '185.222.222.222'
+	option tls_auth_name 'dns.sb'
+	option tls_port '853'
+
+config resolver
+	option address '45.11.45.11'
+	option tls_auth_name 'dns.sb'
+	option tls_port '853'
 ]]
 
 function M.read_config()
-    local http = require("luci.http")
-    http.prepare_content("text/plain")
-    require("podkop-tweaker.http").no_cache()
-    local fd = io.open("/etc/config/stubby", "r")
-    if fd then
-        local content = fd:read("*a")
-        fd:close()
-        http.write(content)
-    else
-        http.write("")
-    end
+    require("podkop-tweaker.http").send_text_file("/etc/config/stubby")
 end
 
 function M.save_config(content)
@@ -84,69 +84,23 @@ function M.save_config(content)
 end
 
 function M.service_status()
-    local pid = require("podkop-tweaker.http").get_service_pid("stubby")
-    return {
-        running = (pid ~= nil),
-        pid = pid
-    }
+    return SRV.service_status(SRV.ops.stubby)
 end
 
 function M.service_toggle(action)
-    if action ~= "start" and action ~= "stop" then
-        return { error = "Invalid action" }
-    end
-    local sys = require("luci.sys")
-    sys.exec("/etc/init.d/stubby " .. action .. " 2>&1")
-    local pid = require("podkop-tweaker.http").get_service_pid("stubby")
-    return {
-        success = true,
-        running = (pid ~= nil)
-    }
+    return SRV.service_toggle(SRV.ops.stubby, action)
 end
 
 function M.rollback()
-    local ok, err = SRV.restore_backup(SRV.stubby)
-    if not ok then
-        return { error = (err == "not_found") and "Backup file not found" or "Cannot write config" }
-    end
-    require("luci.sys").exec(SRV.stubby.restart_cmd)
-    return { success = true, restarting = true }
+    return SRV.rollback(SRV.ops.stubby)
 end
 
 function M.export_config()
-    local http = require("luci.http")
-    http.prepare_content("text/plain")
-    require("podkop-tweaker.http").no_cache()
-    http.header("Content-Disposition", 'attachment; filename="stubby-config.txt"')
-    local fd = io.open("/etc/config/stubby", "r")
-    if fd then
-        local content = fd:read("*a")
-        fd:close()
-        http.write(content)
-    else
-        http.status(404, "Not Found")
-        http.write("")
-    end
+    require("podkop-tweaker.http").send_download("/etc/config/stubby", "stubby-config.txt", "Not Found")
 end
 
 function M.download_backup()
-    local http = require("luci.http")
-    local nixio = require("nixio")
-    http.prepare_content("text/plain")
-    require("podkop-tweaker.http").no_cache()
-    local backup_path = "/etc/config/stubby.auto-backup"
-    if not nixio.fs.stat(backup_path) then
-        http.status(404, "Not Found")
-        http.write_json({ error = "No stubby backup found" })
-        return
-    end
-    http.header("Content-Disposition", 'attachment; filename="stubby-backup.txt"')
-    local data = nixio.fs.readfile(backup_path)
-    if data then
-        http.write(data)
-    else
-        http.write("")
-    end
+    require("podkop-tweaker.http").send_download("/etc/config/stubby.auto-backup", "stubby-backup.txt", "No stubby backup found")
 end
 
 function M.chain_info()
@@ -223,7 +177,12 @@ function M.init_fix()
     end
     tmpfd:write(content)
     tmpfd:close()
-    sys.exec("chmod +x " .. tmp_path .. " && mv " .. tmp_path .. " /etc/init.d/stubby 2>/dev/null")
+    local output = sys.exec("chmod +x " .. tmp_path .. " && mv " .. tmp_path .. " /etc/init.d/stubby 2>&1; echo EXIT:$?")
+    local exit_code = output:match("EXIT:(%d+)") or "1"
+    if exit_code ~= "0" then
+        os.remove(tmp_path)
+        return { error = "Cannot apply init script fix" }
+    end
     sys.exec("/etc/init.d/stubby restart 2>&1")
 
     return { success = true }

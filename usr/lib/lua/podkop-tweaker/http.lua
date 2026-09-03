@@ -54,6 +54,39 @@ function M.no_cache()
     http.header("Expires", "0")
 end
 
+-- Transport helper: stream a file as text/plain (empty string when missing)
+function M.send_text_file(path)
+    local http = require("luci.http")
+    http.prepare_content("text/plain")
+    M.no_cache()
+    local fd = io.open(path, "r")
+    if fd then
+        local content = fd:read("*a")
+        fd:close()
+        http.write(content)
+    else
+        http.write("")
+    end
+end
+
+-- Transport helper: download a file as octet-stream (404 + JSON error when missing)
+function M.send_download(path, filename, not_found_msg)
+    local http = require("luci.http")
+    local fd = io.open(path, "r")
+    if not fd then
+        http.prepare_content("application/json")
+        http.status(404, not_found_msg or "Not Found")
+        http.write_json({ error = not_found_msg or "File not found" })
+        return
+    end
+    local content = fd:read("*a")
+    fd:close()
+    http.prepare_content("application/octet-stream")
+    M.no_cache()
+    http.header("Content-Disposition", 'attachment; filename="' .. filename .. '"')
+    http.write(content)
+end
+
 function M.get_service_pid(process_name)
     local sys = require("luci.sys")
     return sys.exec("pidof " .. process_name .. " 2>/dev/null"):match("(%d+)")

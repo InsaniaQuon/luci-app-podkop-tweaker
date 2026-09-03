@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.3.0 | 23.08.2026 | self-update now removes DEPRECATED_PATHS orphans after successful apply
+-- Podkop Tweaker | v4.4.0 | 30.08.2026 | tar -tzf member whitelist check before extraction; shared apply pipeline
 
 local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
@@ -22,6 +22,19 @@ local function cleanup_deprecated()
     end
 end
 
+local function cleanup_tmp(tmp_dir)
+    local sys = require("luci.sys")
+    sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+end
+
+local function read_cache()
+    local fd = io.open(CHECK_CACHE_FILE, "r")
+    if not fd then return nil end
+    local raw = fd:read("*a")
+    fd:close()
+    return S.json_parse(raw)
+end
+
 local VERSION = ""
 
 function M.init(version)
@@ -34,20 +47,11 @@ end
 
 function M.cached_latest()
     local latest = nil
-    local cache_fd = io.open(CHECK_CACHE_FILE, "r")
-    if cache_fd then
-        local raw_cache = cache_fd:read("*a")
-        cache_fd:close()
-        local tweaker_cache = nil
-        pcall(function()
-            local json = require("luci.jsonc")
-            tweaker_cache = json.parse(raw_cache)
-        end)
-        if tweaker_cache and tweaker_cache.latest_version and tweaker_cache.cached_at then
-            local elapsed = os.time() - tweaker_cache.cached_at
-            if elapsed < CHECK_CACHE_TTL then
-                latest = tweaker_cache.latest_version
-            end
+    local tweaker_cache = read_cache()
+    if tweaker_cache and tweaker_cache.latest_version and tweaker_cache.cached_at then
+        local elapsed = os.time() - tweaker_cache.cached_at
+        if elapsed < CHECK_CACHE_TTL then
+            latest = tweaker_cache.latest_version
         end
     end
     return latest
@@ -98,6 +102,24 @@ local function validate_archive_structure(dir_prefix, relaxed)
     return true, count .. " file(s) validated"
 end
 
+-- Validate archive member paths BEFORE extraction: traversal members (../, absolute)
+-- would already be written outside tmp dir by the time find-based checks run.
+local function validate_archive_members(archive_path, relaxed)
+    local sys = require("luci.sys")
+    local raw = sys.exec("tar -tzf '" .. archive_path .. "' 2>/dev/null")
+    if not raw or raw == "" then return false end
+    for line in raw:gmatch("[^\r\n]+") do
+        line = line:match("^%s*(.-)%s*$"):gsub("/$", "")
+        if line ~= "" and line ~= "." then
+            local rel = line:gsub("^%./", "")
+            if rel ~= "" and not S._is_valid_update_path(rel, relaxed) then
+                return false
+            end
+        end
+    end
+    return true
+end
+
 function M.upload(file_data_b64, file_name)
     local sys = require("luci.sys")
 
@@ -130,6 +152,11 @@ function M.upload(file_data_b64, file_name)
     fd:write(file_data)
     fd:close()
 
+    if not validate_archive_members(archive_path, false) then
+        sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+        return { error = "Invalid archive" }
+    end
+
     sys.exec("cd " .. tmp_dir .. " && tar -xzf upload.tar.gz 2>&1")
     sys.exec("rm -f " .. archive_path .. " 2>/dev/null")
 
@@ -141,7 +168,7 @@ function M.upload(file_data_b64, file_name)
     end
     stat:close()
 
-    local valid, verr = validate_archive_structure(extract_dir, false)
+    local valid = validate_archive_structure(extract_dir, false)
     if not valid then
         sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
         return { error = "Invalid archive" }
@@ -166,6 +193,17 @@ function M.upload(file_data_b64, file_name)
     }
 end
 
+-- Shared apply pipeline: copy files, drop deprecated orphans, clean tmp + caches, restart uhttpd
+local function apply_extracted(extract_dir, tmp_dir, relaxed)
+    local sys = require("luci.sys")
+    local copied = S.apply_files_from_dir(extract_dir, relaxed)
+    cleanup_deprecated()
+    cleanup_tmp(tmp_dir)
+    sys.exec("rm -rf /tmp/luci-modulecache 2>/dev/null")
+    sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
+    return copied
+end
+
 function M.apply()
     local sys = require("luci.sys")
     local nixio = require("nixio")
@@ -179,7 +217,7 @@ function M.apply()
 
     local archive_ver = extract_version_from_file(extract_dir)
     if not archive_ver then
-        sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+        cleanup_tmp(tmp_dir)
         return { error = "Invalid archive" }
     end
 
@@ -187,12 +225,7 @@ function M.apply()
         return { error = "Archive version is not newer than installed" }
     end
 
-    local copied = S.apply_files_from_dir(extract_dir, false)
-    cleanup_deprecated()
-
-    sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
-    sys.exec("rm -rf /tmp/luci-modulecache 2>/dev/null")
-    sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
+    local copied = apply_extracted(extract_dir, tmp_dir, false)
 
     return {
         success = true,
@@ -229,19 +262,14 @@ end
 function M.check_update()
     local sys = require("luci.sys")
 
-    local cache_fd = io.open(CHECK_CACHE_FILE, "r")
-    if cache_fd then
-        local cache_data = cache_fd:read("*a")
-        cache_fd:close()
-        local cache = S.json_parse(cache_data)
-        if cache and cache.cached_at then
-            local elapsed = os.time() - cache.cached_at
-            if elapsed < CHECK_CACHE_TTL then
-                return {
-                    error = "rate_limited",
-                    retry_after = CHECK_CACHE_TTL - elapsed
-                }
-            end
+    local cache = read_cache()
+    if cache and cache.cached_at then
+        local elapsed = os.time() - cache.cached_at
+        if elapsed < CHECK_CACHE_TTL then
+            return {
+                error = "rate_limited",
+                retry_after = CHECK_CACHE_TTL - elapsed
+            }
         end
     end
 
@@ -319,14 +347,19 @@ function M.git_update(download_url, force_raw)
 
     local st = io.open(archive_path, "r")
     if not st then
-        sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+        cleanup_tmp(tmp_dir)
         return { error = "Failed to download archive" }
     end
     local archive_size = st:seek("end")
     st:close()
     if archive_size > 512000 then
-        sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+        cleanup_tmp(tmp_dir)
         return { error = "Archive too large" }
+    end
+
+    if not validate_archive_members(archive_path, true) then
+        cleanup_tmp(tmp_dir)
+        return { error = "Invalid archive" }
     end
 
     sys.exec("cd " .. tmp_dir .. " && tar -xzf download.tar.gz 2>&1")
@@ -335,36 +368,30 @@ function M.git_update(download_url, force_raw)
     local extract_dir = tmp_dir
     local ctrl = io.open(extract_dir .. "/usr/lib/lua/luci/controller/podkop-tweaker.lua", "r")
     if not ctrl then
-        sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+        cleanup_tmp(tmp_dir)
         return { error = "Invalid archive" }
     end
     ctrl:close()
 
-    local valid, verr = validate_archive_structure(extract_dir, true)
+    local valid = validate_archive_structure(extract_dir, true)
     if not valid then
-        sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+        cleanup_tmp(tmp_dir)
         return { error = "Invalid archive" }
     end
 
     local archive_ver = extract_version_from_file(extract_dir)
     if not archive_ver then
-        sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+        cleanup_tmp(tmp_dir)
         return { error = "Invalid archive" }
     end
 
     if not force and not LIB.version_lt(VERSION, archive_ver) then
-        sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
+        cleanup_tmp(tmp_dir)
         return { error = "Archive version is not newer than installed" }
     end
 
-    local copied = S.apply_files_from_dir(extract_dir, true)
-    cleanup_deprecated()
-
-    sys.exec("rm -rf " .. tmp_dir .. " 2>/dev/null")
-    sys.exec("rm -rf /tmp/luci-modulecache 2>/dev/null")
+    local copied = apply_extracted(extract_dir, tmp_dir, true)
     os.remove(CHECK_CACHE_FILE)
-
-    sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
 
     return {
         success = true,

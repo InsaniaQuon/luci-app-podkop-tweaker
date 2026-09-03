@@ -4,15 +4,15 @@ LuCI web interface for managing Podkop proxy client on OpenWrt routers.
 
 ## Features
 
-- **Config Editor** — web-based Podkop configuration editor with syntax highlighting
-- **Stubby Config** — Stubby DNS-over-TLS configuration editor with init script fix and service start/stop
-- **Sing-box Config** — sing-box config.json editor with validation, start/stop
-- **Diagnostics** — DNS chain visualization with live test coloring, DNS resolution test, proxy connectivity test, end-to-end test, DNS leak test
-- **Import/Export** — config file import/export with automatic backup and one-click rollback
-- **System Information** — Podkop and system version info with update via ttyd terminal
-- **Subscriptions** — proxy subscription manager (vless/vmess/ss/trojan) with auto-update scheduling
-- **Self-Update** — update Podkop Tweaker from GitHub Releases or local archive
-- **Argon Config** (optional, disabled by default) — typography settings for the Argon LuCI theme: font size, family, weight, line height, letter spacing, sidebar menu tuning with live preview
+- **Podkop Config** — web-based editor for `/etc/config/podkop` with diff preview (LCS diff, collapsed unchanged lines, "only changed" toggle) and one-click rollback
+- **Stubby Config** — Stubby DNS-over-TLS editor with a recommended template (six DoT upstreams across three independent providers, round-robin), init script fix, service start/stop and autostart
+- **Sing-box Config** — sing-box `config.json` editor with `sing-box check` validation, rollback, plus the fragment patch module (TLS fragment / record fragment on selected outbounds, wrapper auto-reinstall after Podkop updates)
+- **Diagnostics** — DNS chain visualization with live test coloring, DNS resolution / proxy connectivity / end-to-end / DNS leak tests, and a per-run log with JSON export
+- **Subscriptions** — proxy subscription manager (vless/vmess/ss/trojan): attach per slot, manual and scheduled auto-updates (cron + hotplug), update journal
+- **Import/Export** — JSON bundle backup of selected items (podkop, stubby, sing-box, fragment, argon, tweaker settings, subscriptions + schedule), review modal before applying, per-item results, automatic pre-apply backups, service status panel; single raw config files are supported as well
+- **System Information** — Podkop and system versions, update via ttyd terminal
+- **Local Update / Git Update** — self-update from GitHub Releases or a local archive, with LuCI cache cleanup
+- **Argon Config** (optional, hidden by default) — typography settings for the Argon LuCI theme: font size, family, weight, line height, letter spacing, sidebar menu tuning with live preview
 
 ## Requirements
 
@@ -32,15 +32,7 @@ Extract the release archive to the router root filesystem:
 tar -xzf luci-app-podkop-tweaker-vX.Y.Z.tar.gz -C /
 ```
 
-No ipk package build required — files are copied as-is.
-
-**Upgrading from v3.x (or any earlier version):** since v4.0.0 static assets live in `www/luci-static/resources/podkop-tweaker/`. The archive contains them, so a plain extraction is enough. One legacy file may remain on the router from older installs — it is inert and can be removed:
-
-```bash
-rm -f /usr/lib/lua/luci/view/podkop-tweaker/podkop-tweaker-css.htm
-```
-
-After updating, restart the web interface (`/etc/init.d/uhttpd restart`) or use the built-in "Clear LuCI Cache" button.
+No ipk package build required — files are copied as-is. After installing (or updating), restart the web interface (`/etc/init.d/uhttpd restart`) or use the built-in "Clear LuCI Cache" button.
 
 ## Argon Config (optional)
 

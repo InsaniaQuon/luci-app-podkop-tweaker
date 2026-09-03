@@ -64,6 +64,17 @@ window.PT = window.PT || {};
 		xhr.send();
 	};
 
+	// Wire the standard modal close behavior: close button + backdrop click.
+	// Returns the hide function so callers can close programmatically.
+	PT.bindModal = function (modal, closeBtn) {
+		function hide() { modal.style.display = 'none'; }
+		if (closeBtn) closeBtn.addEventListener('click', hide);
+		modal.addEventListener('click', function (e) {
+			if (e.target === modal) hide();
+		});
+		return hide;
+	};
+
 	PT.downloadJson = function (filename, obj) {
 		var blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
 		var url = URL.createObjectURL(blob);
@@ -243,12 +254,6 @@ window.PT = window.PT || {};
 			}
 		}
 		return out.join('');
-	};
-
-	PT.buildDiff = function (oldText, newText, statsEl) {
-		var d = PT._diffRows(oldText, newText);
-		if (statsEl) statsEl.textContent = d.added + ' added, ' + d.removed + ' removed (' + d.total + ' lines total)';
-		return PT._renderRows(d.rows, false);
 	};
 
 	PT.editorPage = function (cfg) {

@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
+-- Podkop Tweaker | v4.4.0 | 30.08.2026 | write flow via services.singbox_apply_checked (checked rename)
 -- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local H = require("podkop-tweaker.http")
@@ -7,17 +7,7 @@ local SRV = require("podkop-tweaker.services")
 local M = {}
 
 function M.read_config()
-    local http = require("luci.http")
-    http.prepare_content("text/plain")
-    H.no_cache()
-    local fd = io.open(SRV.SINGBOX_CONFIG, "r")
-    if fd then
-        local content = fd:read("*a")
-        fd:close()
-        http.write(content)
-    else
-        http.write("")
-    end
+    H.send_text_file(SRV.SINGBOX_CONFIG)
 end
 
 function M.save_config(content)
@@ -33,93 +23,37 @@ function M.save_config(content)
         if orig == content then
             return { success = true, unchanged = true }
         end
-        local bfd = io.open(SRV.SINGBOX_BACKUP, "w")
-        if bfd then
-            bfd:write(orig)
-            bfd:close()
+    end
+    local details
+    ok, err, details = SRV.singbox_apply_checked(content, ".tmp-write", "sing-box check failed")
+    if not ok then
+        if details then
+            return { error = err, details = details }
         end
+        return { error = err }
     end
-    local tmp_path = SRV.SINGBOX_CONFIG .. ".tmp-write"
-    local tmpfd = io.open(tmp_path, "w")
-    if not tmpfd then
-        return { error = "Cannot write temporary file" }
-    end
-    tmpfd:write(content)
-    tmpfd:close()
-    local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
-    if check and check ~= "" then
-        os.remove(tmp_path)
-        return { error = "sing-box check failed", details = check }
-    end
-    os.rename(tmp_path, SRV.SINGBOX_CONFIG)
     sys.exec("/etc/init.d/sing-box restart 2>&1")
     return { success = true, restarting = true }
 end
 
 function M.service_status()
-    local pid = H.get_service_pid("sing-box")
-    return {
-        running = (pid ~= nil),
-        pid = pid
-    }
+    return SRV.service_status(SRV.ops.singbox)
 end
 
 function M.service_toggle(action)
-    if action ~= "start" and action ~= "stop" then
-        return { error = "Invalid action" }
-    end
-    local sys = require("luci.sys")
-    sys.exec("/etc/init.d/sing-box " .. action .. " 2>&1")
-    local pid = H.get_service_pid("sing-box")
-    return {
-        success = true,
-        running = (pid ~= nil)
-    }
+    return SRV.service_toggle(SRV.ops.singbox, action)
 end
 
 function M.rollback()
-    local ok, err = SRV.restore_backup(SRV.singbox)
-    if not ok then
-        return { error = (err == "not_found") and "Backup file not found" or "Cannot write config" }
-    end
-    require("luci.sys").exec(SRV.singbox.restart_cmd)
-    return { success = true, restarting = true }
+    return SRV.rollback(SRV.ops.singbox)
 end
 
 function M.export_config()
-    local http = require("luci.http")
-    http.prepare_content("application/octet-stream")
-    H.no_cache()
-    http.header("Content-Disposition", 'attachment; filename="singbox-config.json"')
-    local fd = io.open(SRV.SINGBOX_CONFIG, "r")
-    if fd then
-        local content = fd:read("*a")
-        fd:close()
-        http.write(content)
-    else
-        http.status(404, "Not Found")
-        http.write("")
-    end
+    H.send_download(SRV.SINGBOX_CONFIG, "singbox-config.json", "Not Found")
 end
 
 function M.download_backup()
-    local http = require("luci.http")
-    http.prepare_content("application/octet-stream")
-    H.no_cache()
-    if not io.open(SRV.SINGBOX_BACKUP, "r") then
-        http.status(404, "Not Found")
-        http.write_json({ error = "No sing-box backup found" })
-        return
-    end
-    http.header("Content-Disposition", 'attachment; filename="singbox-backup.json"')
-    local fd = io.open(SRV.SINGBOX_BACKUP, "r")
-    if fd then
-        local data = fd:read("*a")
-        fd:close()
-        http.write(data)
-    else
-        http.write("")
-    end
+    H.send_download(SRV.SINGBOX_BACKUP, "singbox-backup.json", "No sing-box backup found")
 end
 
 function M.import_config(content)
@@ -128,29 +62,14 @@ function M.import_config(content)
     if not ok then
         return { error = err }
     end
-    local tmp_path = SRV.SINGBOX_CONFIG .. ".tmp-import"
-    local tmpfd = io.open(tmp_path, "w")
-    if not tmpfd then
-        return { error = "Cannot write temporary file" }
-    end
-    tmpfd:write(content)
-    tmpfd:close()
-    local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
-    if check and check ~= "" then
-        os.remove(tmp_path)
-        return { error = "sing-box check failed", details = check }
-    end
-    local rfd = io.open(SRV.SINGBOX_CONFIG, "r")
-    if rfd then
-        local orig = rfd:read("*a")
-        rfd:close()
-        local bfd = io.open(SRV.SINGBOX_BACKUP, "w")
-        if bfd then
-            bfd:write(orig)
-            bfd:close()
+    local details
+    ok, err, details = SRV.singbox_apply_checked(content, ".tmp-import", "sing-box check failed")
+    if not ok then
+        if details then
+            return { error = err, details = details }
         end
+        return { error = err }
     end
-    os.rename(tmp_path, SRV.SINGBOX_CONFIG)
     sys.exec("/etc/init.d/sing-box restart 2>&1")
     return { success = true, restarting = true }
 end
@@ -242,19 +161,13 @@ function M.patch_fragment(tags_raw, mode_raw, use_fragment_raw, use_record_fragm
     if not patched or patched == "" then
         return { error = "jq patch failed" }
     end
-    local tmp_path = SRV.SINGBOX_CONFIG .. ".tmp-patch"
-    local tmpfd = io.open(tmp_path, "w")
-    if not tmpfd then
-        return { error = "Cannot write temporary file" }
+    local ok, err, details = SRV.singbox_apply_checked(patched, ".tmp-patch", "sing-box check failed after patch")
+    if not ok then
+        if details then
+            return { error = err, details = details }
+        end
+        return { error = err }
     end
-    tmpfd:write(patched)
-    tmpfd:close()
-    local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
-    if check and check ~= "" then
-        os.remove(tmp_path)
-        return { error = "sing-box check failed after patch", details = check }
-    end
-    os.rename(tmp_path, SRV.SINGBOX_CONFIG)
     sys.exec("/etc/init.d/sing-box restart 2>&1")
     return { success = true, restarting = true }
 end

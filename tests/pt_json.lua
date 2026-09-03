@@ -166,11 +166,14 @@ local function parse_value(s, pos)
         local arr = {}
         pos = skip_ws(s, pos + 1)
         if s:sub(pos, pos) == "]" then return arr, pos + 1 end
+        local i = 0
         while true do
             local val
+            i = i + 1
             val, pos = parse_value(s, pos)
             if val == FAIL then return FAIL, pos end
-            arr[#arr + 1] = val
+            -- positional semantics like luci.jsonc: JSON null leaves a hole at index i
+            if val ~= nil then arr[i] = val end
             pos = skip_ws(s, pos)
             local d = s:sub(pos, pos)
             if d == "," then pos = pos + 1

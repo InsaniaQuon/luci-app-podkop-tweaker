@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handler for import: args in -> response table out; HTTP layer moved to controller adapter
+-- Podkop Tweaker | v4.4.0 | 30.08.2026 | non-table items land in skipped
 -- Hybrid exception kept as-is: export (transport endpoint)
 
 local H = require("podkop-tweaker.http")
@@ -121,6 +121,7 @@ function M.import(content, file_raw, sel_param)
     local skipped = {}
     for name, _ in pairs(bundle.items) do
         if not BUNDLE.is_known_item(name)
+            or type(bundle.items[name]) ~= "table"
             or (selection_used and not selected[name]) then
             table.insert(skipped, name)
         end

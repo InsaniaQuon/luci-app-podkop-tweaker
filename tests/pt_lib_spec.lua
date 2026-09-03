@@ -130,6 +130,59 @@ describe("validate_uci_config", function()
         local ok = LIB.validate_uci_config("config a\n\toption k '# not comment'\n")
         assert.is_true(ok)
     end)
+
+    it("accepts multiline single-quoted value (user_domains_text regression)", function()
+        local cfg = table.concat({
+            "config settings 'settings'",
+            "\toption dns_type 'udp'",
+            "",
+            "config section 'main'",
+            "\toption connection_type 'proxy'",
+            "\toption user_domains_text 'atom.io",
+            "dependabot.com",
+            "gh.io",
+            "",
+            "senkognito.com'",
+            "\toption urltest_tolerance '100'",
+            ""
+        }, "\n")
+        local ok, err = LIB.validate_uci_config(cfg)
+        assert.is_true(ok)
+        assert.is_nil(err)
+    end)
+
+    it("accepts apostrophe inside bare (unquoted) value", function()
+        local ok = LIB.validate_uci_config("config a\n\toption note don't\n")
+        assert.is_true(ok)
+    end)
+
+    it("accepts comment lines containing apostrophes", function()
+        local ok = LIB.validate_uci_config("config a\n# it's fine here\n\toption k 'v'\n")
+        assert.is_true(ok)
+    end)
+
+    it("rejects unterminated quote reporting the opening line (blank-aware numbering)", function()
+        local ok, err = LIB.validate_uci_config("config a\n\n\toption k 'v'\n\n\toption x 'unclosed\n")
+        assert.is_false(ok)
+        assert.equal("Unmatched single quote (opened at line 5)", err)
+    end)
+
+    it("rejects unterminated double quote with opening line", function()
+        local ok, err = LIB.validate_uci_config('config a\n\toption k "multi\nline\n')
+        assert.is_false(ok)
+        assert.equal("Unmatched double quote (opened at line 2)", err)
+    end)
+
+    it("unexpected token reports editor-accurate line number across blank lines", function()
+        local ok, err = LIB.validate_uci_config("config a\n\n\nbadtoken x\n")
+        assert.is_false(ok)
+        assert.matches("line 4", err)
+    end)
+
+    it("validates config without trailing newline", function()
+        local ok = LIB.validate_uci_config("config a\n\toption k 'v'")
+        assert.is_true(ok)
+    end)
 end)
 
 describe("clamp_str", function()

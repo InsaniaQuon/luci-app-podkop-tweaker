@@ -46,6 +46,13 @@ local function find_out(dir, rels)
     return { match = "find '", out = table.concat(lines, "\n") }
 end
 
+-- responder for the pre-extraction member check (tar -tzf)
+local function tar_list_out(rels)
+    local lines = {}
+    for _, r in ipairs(rels) do lines[#lines + 1] = "./" .. r end
+    return { match = "tar -tzf", out = table.concat(lines, "\n") }
+end
+
 local function seed_tree(dir, rels, ver)
     for _, r in ipairs(rels) do
         H.vfs_write(dir .. "/" .. r, (r == CTRL_REL) and ctrl_content(ver) or "data")
@@ -110,7 +117,7 @@ describe("api_update.upload", function()
     end)
 
     it("happy: version compared against installed", function()
-        local UPD = begin_upd({ sys = { find_out(TMP, STRICT_FILES) } })
+        local UPD = begin_upd({ sys = { tar_list_out(STRICT_FILES), find_out(TMP, STRICT_FILES) } })
         seed_tree(TMP, STRICT_FILES, "4.3.0")
         local r = UPD.upload(b64("binary"), GOOD_NAME)
         assert.same({
@@ -123,11 +130,18 @@ describe("api_update.upload", function()
         local cmds = H.exec_cmds()
         assert.equal("rm -rf /tmp/pt-update 2>/dev/null", cmds[1])
         assert.equal("mkdir -p /tmp/pt-update 2>/dev/null", cmds[2])
-        assert.truthy(cmds[3]:find("^cd /tmp/pt%-update && tar %-xzf upload%.tar%.gz"))
+        -- member list is validated (tar -tzf) BEFORE extraction (tar -xzf)
+        assert.truthy(cmds[3]:find("^tar %-tzf"))
+        assert.truthy(cmds[4]:find("^cd /tmp/pt%-update && tar %-xzf upload%.tar%.gz"))
     end)
 
     it("controller missing after extract -> cleanup + invalid", function()
-        local UPD = begin_upd({ sys = { find_out(TMP, { "usr/lib/lua/podkop-tweaker/lib.lua" }) } })
+        local UPD = begin_upd({
+            sys = {
+                tar_list_out({ "usr/lib/lua/podkop-tweaker/lib.lua" }),
+                find_out(TMP, { "usr/lib/lua/podkop-tweaker/lib.lua" })
+            }
+        })
         H.vfs_write(TMP .. "/usr/lib/lua/podkop-tweaker/lib.lua", "x")
         assert.same({ error = "Invalid archive" },
             UPD.upload(b64("bin"), "luci-app-podkop-tweaker-v4.3.0.tar.gz"))
@@ -139,17 +153,30 @@ describe("api_update.upload", function()
         assert.equal(2, cleanups)
     end)
 
-    it("strict whitelist violation -> cleanup + invalid", function()
+    it("strict whitelist violation -> rejected before extraction (M1)", function()
         local rels = { CTRL_REL, "etc/shadow" }
-        local UPD = begin_upd({ sys = { find_out(TMP, rels) } })
+        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(TMP, rels) } })
         seed_tree(TMP, rels, "4.3.0")
         assert.same({ error = "Invalid archive" },
             UPD.upload(b64("bin"), "luci-app-podkop-tweaker-v4.3.0.tar.gz"))
+        -- dangerous members must never reach tar -xzf
+        for _, c in ipairs(H.exec_cmds()) do
+            assert.falsy(c:find("tar -xzf", 1, true))
+        end
+    end)
+
+    it("empty member list rejected before extraction", function()
+        local UPD = begin_upd({ sys = {} })
+        assert.same({ error = "Invalid archive" },
+            UPD.upload(b64("bin"), "luci-app-podkop-tweaker-v4.3.0.tar.gz"))
+        for _, c in ipairs(H.exec_cmds()) do
+            assert.falsy(c:find("tar -xzf", 1, true))
+        end
     end)
 
     it("version line missing in controller -> cleanup + invalid", function()
         local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { find_out(TMP, rels) } })
+        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(TMP, rels) } })
         seed_tree(TMP, rels, nil)
         assert.same({ error = "Invalid archive" },
             UPD.upload(b64("bin"), "luci-app-podkop-tweaker-v4.3.0.tar.gz"))
@@ -327,17 +354,20 @@ describe("api_update.git_update", function()
         assert.same({ error = "Archive too large" }, UPD.git_update(GOOD_URL, nil))
     end)
 
-    it("traversal entry rejected even in relaxed mode", function()
+    it("traversal entry rejected before extraction even in relaxed mode (M1)", function()
         local rels = { CTRL_REL, "../evil" }
-        local UPD = begin_upd({ sys = { find_out(GTMP, rels) } })
+        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
         seed_tree(GTMP, { CTRL_REL }, "4.3.0")
         H.vfs_write(GTMP .. "/download.tar.gz", "z")
         assert.same({ error = "Invalid archive" }, UPD.git_update(GOOD_URL, nil))
+        for _, c in ipairs(H.exec_cmds()) do
+            assert.falsy(c:find("tar -xzf", 1, true))
+        end
     end)
 
     it("same version non-force gated with cleanup", function()
         local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { find_out(GTMP, rels) } })
+        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
         seed_tree(GTMP, rels, "4.1.0")
         H.vfs_write(GTMP .. "/download.tar.gz", "z")
         assert.same({ error = "Archive version is not newer than installed" },
@@ -352,7 +382,7 @@ describe("api_update.git_update", function()
 
     it("force bypasses gate: relaxed copy with chmod, cache invalidated", function()
         local rels = { CTRL_REL, "usr/bin/podkop-fragment-patch.sh" }
-        local UPD = begin_upd({ sys = { find_out(GTMP, rels) } })
+        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
         seed_tree(GTMP, rels, "4.1.0")
         H.vfs_write(GTMP .. "/download.tar.gz", "z")
         H.vfs_write(CACHE, '{"latest_version":"4.1.0","cached_at":' .. os.time() .. '}')
@@ -374,7 +404,7 @@ describe("api_update.git_update", function()
 
     it("newer version applies without force", function()
         local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { find_out(GTMP, rels) } })
+        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
         seed_tree(GTMP, rels, "4.3.0")
         H.vfs_write(GTMP .. "/download.tar.gz", "z")
         local r = UPD.git_update(GOOD_URL, nil)
@@ -384,7 +414,7 @@ describe("api_update.git_update", function()
     it("deprecated orphan removed after successful git_update; kept on version-gate failure", function()
         local ORPHAN = "/usr/lib/lua/luci/view/podkop-tweaker/podkop-tweaker-css.htm"
         local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { find_out(GTMP, rels) } })
+        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
         seed_tree(GTMP, rels, "4.3.0")
         H.vfs_write(GTMP .. "/download.tar.gz", "z")
         H.vfs_write(ORPHAN, "stale")
@@ -392,7 +422,7 @@ describe("api_update.git_update", function()
         assert.falsy(H.vfs_exists(ORPHAN))
 
         H.finish()
-        local UPD2 = begin_upd({ sys = { find_out(GTMP, rels) } })
+        local UPD2 = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
         seed_tree(GTMP, rels, "4.1.0")
         H.vfs_write(GTMP .. "/download.tar.gz", "z")
         H.vfs_write(ORPHAN, "stale")

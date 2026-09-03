@@ -27,8 +27,6 @@ Author: InsaniaQuon
 .ps-config-actions{display:flex;align-items:center;gap:10px;margin-top:14px;padding:12px 0;flex-wrap:wrap}
 .ps-warning-box{background:rgba(255,152,0,.1);border:1px solid rgba(255,152,0,.3);border-radius:6px;padding:10px 14px;margin:12px 0;font-size:13px;color:var(--ps-warning)}
 .ps-danger-box{background:rgba(244,67,54,.08);border:1px solid rgba(244,67,54,.2);border-radius:6px;padding:10px 14px;margin:12px 0;font-size:13px;color:var(--ps-error)}
-.ps-danger-box ul{margin:6px 0;padding-left:20px}
-.ps-danger-box li{margin-bottom:3px}
 .ps-error-btn{background:rgba(244,67,54,.1)!important;color:var(--ps-error)!important;border-color:rgba(244,67,54,.2)!important;cursor:pointer}
 .ps-error-btn:hover{background:rgba(244,67,54,.2)!important}
 .ps-error-details{background:var(--ps-bg-alt);border:1px solid var(--ps-border);border-radius:6px;padding:14px;font-size:13px;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto;margin:0 0 16px;color:var(--ps-text)}

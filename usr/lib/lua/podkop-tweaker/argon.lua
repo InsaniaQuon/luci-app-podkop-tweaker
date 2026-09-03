@@ -23,6 +23,21 @@ function M.read_settings()
     }
 end
 
+-- Single place writing all typography fields to UCI (used by save / reset / bundle import)
+function M.save_uci_fields(s)
+    local uci = require("luci.model.uci").cursor()
+    uci:set("argon", "typography", "typography")
+    uci:set("argon", "typography", "font_size", s.font_size or "")
+    uci:set("argon", "typography", "font_family", s.font_family or "Google Sans")
+    uci:set("argon", "typography", "font_family_custom", s.font_family_custom or "")
+    uci:set("argon", "typography", "font_weight", s.font_weight or "400")
+    uci:set("argon", "typography", "line_height", s.line_height or "")
+    uci:set("argon", "typography", "letter_spacing", s.letter_spacing or "")
+    uci:set("argon", "typography", "menu_font_size", s.menu_font_size or "")
+    uci:set("argon", "typography", "menu_padding", s.menu_padding or "")
+    uci:commit("argon")
+end
+
 function M.check_stale()
     local fd = io.open(CASCADE_CSS, "r")
     if not fd then return true end

@@ -40,9 +40,16 @@ _uninstall_wrapper() {
 		return 0
 	fi
 
-	mv "$PODKOP_ORIG" "$PODKOP_INIT"
-	chmod +x "$PODKOP_INIT"
-	echo "Wrapper removed: restored original $PODKOP_INIT"
+	if grep -q "$PATCH_SCRIPT" "$PODKOP_INIT" 2>/dev/null; then
+		mv "$PODKOP_ORIG" "$PODKOP_INIT"
+		chmod +x "$PODKOP_INIT"
+		echo "Wrapper removed: restored original $PODKOP_INIT"
+	else
+		# Stale state: $PODKOP_INIT was replaced by a podkop package update,
+		# restoring the old orig would roll the init script back. Keep current.
+		rm -f "$PODKOP_ORIG"
+		echo "Wrapper already lost after podkop update: removed $PODKOP_ORIG, kept current $PODKOP_INIT"
+	fi
 }
 
 start_service() {
@@ -84,7 +91,6 @@ uninstall() {
 	rm -f "$FRAGMENT_INIT"
 	rm -f "$FRAGMENT_CONFIG"
 	rm -f "$DEFAULT_LOG"
-	rm -f "/etc/rc.d/S99podkop-fragment"
 
 	echo "podkop-fragment completely uninstalled"
 }

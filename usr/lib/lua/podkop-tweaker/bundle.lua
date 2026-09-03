@@ -24,13 +24,7 @@ function M.read_file(path)
 end
 
 function M.backup_path(path)
-    local data = SRV.read_file(path)
-    if not data then return true end
-    local bfd = io.open(path .. ".bundle-backup", "w")
-    if not bfd then return false end
-    bfd:write(data)
-    bfd:close()
-    return true
+    return SRV.backup_to(path, path .. ".bundle-backup")
 end
 
 local function write_file(path, content)
@@ -42,29 +36,23 @@ local function apply_argon_settings(settings)
         return false, "Invalid argon settings"
     end
     local clamp_str = LIB.clamp_str
-    local uci = require("luci.model.uci").cursor()
-    local font_size = clamp_str(settings.font_size, 13, 20)
-    local font_family = tostring(settings.font_family or "Google Sans")
-    if not LIB.ARGON_FONT_FAMILIES[font_family] and font_family ~= "custom" then
-        font_family = "Google Sans"
+    local clean = {
+        font_size = clamp_str(settings.font_size, 13, 20),
+        font_family = tostring(settings.font_family or "Google Sans"),
+        font_family_custom = tostring(settings.font_family_custom or ""):gsub("[^%w%s,'%-]", ""),
+        font_weight = tostring(settings.font_weight or "400"),
+        line_height = clamp_str(settings.line_height, 1.0, 2.0),
+        letter_spacing = clamp_str(settings.letter_spacing, -0.5, 2.0),
+        menu_font_size = clamp_str(settings.menu_font_size, 0.7, 1.2),
+        menu_padding = clamp_str(settings.menu_padding, 5, 20)
+    }
+    if not LIB.ARGON_FONT_FAMILIES[clean.font_family] and clean.font_family ~= "custom" then
+        clean.font_family = "Google Sans"
     end
-    local font_family_custom = tostring(settings.font_family_custom or ""):gsub("[^%w%s,'%-]", "")
-    local font_weight = tostring(settings.font_weight or "400")
-    if not font_weight:match("^[0-9]+$") then font_weight = "400" end
-    local line_height = clamp_str(settings.line_height, 1.0, 2.0)
-    local letter_spacing = clamp_str(settings.letter_spacing, -0.5, 2.0)
-    local menu_font_size = clamp_str(settings.menu_font_size, 0.7, 1.2)
-    local menu_padding = clamp_str(settings.menu_padding, 5, 20)
-    uci:set("argon", "typography", "typography")
-    uci:set("argon", "typography", "font_size", font_size)
-    uci:set("argon", "typography", "font_family", font_family)
-    uci:set("argon", "typography", "font_family_custom", font_family_custom)
-    uci:set("argon", "typography", "font_weight", font_weight)
-    uci:set("argon", "typography", "line_height", line_height)
-    uci:set("argon", "typography", "letter_spacing", letter_spacing)
-    uci:set("argon", "typography", "menu_font_size", menu_font_size)
-    uci:set("argon", "typography", "menu_padding", menu_padding)
-    uci:commit("argon")
+    if not clean.font_weight:match("^[0-9]+$") then
+        clean.font_weight = "400"
+    end
+    ARGON.save_uci_fields(clean)
     if not ARGON.apply() then
         return false, "CSS injection failed"
     end
@@ -87,8 +75,16 @@ local function apply_subs(data, subs_file)
                 if type(val) ~= "table" then
                     return false, "Invalid section data: " .. key
                 end
+                -- JSON null decodes to nil and makes the array sparse: ipairs would
+                -- silently drop slots after the hole. Iterate up to the max numeric
+                -- index and normalize holes to false (the app's own empty-slot form).
+                local max_n = 0
+                for k in pairs(val) do
+                    if type(k) == "number" and k > max_n then max_n = k end
+                end
                 local slots = {}
-                for i, entry in ipairs(val) do
+                for i = 1, max_n do
+                    local entry = val[i]
                     if entry ~= nil and type(entry) ~= "table" then
                         return false, "Invalid slot data in section: " .. key
                     end
@@ -97,11 +93,30 @@ local function apply_subs(data, subs_file)
                         if sub_url ~= "" and not sub_url:match("^https?://") then
                             return false, "Invalid subscription URL in section: " .. key
                         end
+                        slots[i] = entry
+                    else
+                        slots[i] = false
                     end
-                    slots[i] = entry
                 end
                 clean[key] = slots
             end
+        end
+    end
+    -- normalize settings before persisting: interval must be an int within 1..24,
+    -- log_display_count within 1..25 (same bounds as api_subs.settings_save)
+    if type(clean.settings) == "table" then
+        local interval = tonumber(clean.settings.auto_update_interval) or 0
+        if interval > 0 then
+            interval = math.floor(interval)
+            if interval < 1 then interval = 1 end
+            if interval > 24 then interval = 24 end
+            clean.settings.auto_update_interval = interval
+        end
+        if type(clean.settings.log_display_count) == "number" then
+            local ldc = math.floor(clean.settings.log_display_count)
+            if ldc < 1 then ldc = 1 end
+            if ldc > 25 then ldc = 25 end
+            clean.settings.log_display_count = ldc
         end
     end
     if not M.backup_path(subs_file) then
@@ -125,30 +140,14 @@ local function apply_subs(data, subs_file)
 end
 
 local function apply_singbox_config(content)
-    if content == "" then return false, "Empty sing-box config" end
-    if #content > 2097152 then return false, "Config too large (max 2MB)" end
-    local sys = require("luci.sys")
-    local tmp_path = SRV.SINGBOX_CONFIG .. ".tmp-import"
-    local tmpfd = io.open(tmp_path, "w")
-    if not tmpfd then
-        return false, "Cannot write temporary file"
+    local ok, err = SRV.singbox_content_check(content, "Empty sing-box config")
+    if not ok then
+        return false, err
     end
-    tmpfd:write(content)
-    tmpfd:close()
-    local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
-    if check and check ~= "" then
-        os.remove(tmp_path)
-        return false, "sing-box check failed: " .. check
+    ok, err = SRV.singbox_apply_checked(content, ".tmp-import", "sing-box check failed")
+    if not ok then
+        return false, err
     end
-    local orig = SRV.read_file(SRV.SINGBOX_CONFIG)
-    if orig then
-        local bfd = io.open(SRV.SINGBOX_BACKUP, "w")
-        if bfd then
-            bfd:write(orig)
-            bfd:close()
-        end
-    end
-    os.rename(tmp_path, SRV.SINGBOX_CONFIG)
     return true
 end
 
@@ -160,7 +159,7 @@ function M.apply_item(name, item, env)
         local c = item.content or ""
         local ok, err = LIB.validate_uci_config(c)
         if not ok then return false, err end
-        if not S.backup_config() then
+        if not SRV.backup_current(SRV.podkop) then
             return false, "Cannot create backup"
         end
         ok, err = write_file("/etc/config/podkop", c)
@@ -171,7 +170,7 @@ function M.apply_item(name, item, env)
         local c = item.content or ""
         local ok, err = LIB.validate_uci_config(c)
         if not ok then return false, err end
-        if not S.backup_stubby_config() then
+        if not SRV.backup_current(SRV.stubby) then
             return false, "Cannot create backup"
         end
         ok, err = write_file("/etc/config/stubby", c)

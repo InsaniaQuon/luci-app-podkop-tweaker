@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
+-- Podkop Tweaker | v4.4.0 | 30.08.2026 | transport endpoints via http.lua helpers, service ops via services.lua factories
 -- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local H = require("podkop-tweaker.http")
@@ -115,17 +115,7 @@ function M.update_start()
 end
 
 function M.read_config()
-    local http = require("luci.http")
-    http.prepare_content("text/plain")
-    H.no_cache()
-    local fd = io.open("/etc/config/podkop", "r")
-    if fd then
-        local content = fd:read("*a")
-        fd:close()
-        http.write(content)
-    else
-        http.write("")
-    end
+    H.send_text_file("/etc/config/podkop")
 end
 
 function M.save_config(content)
@@ -141,46 +131,11 @@ function M.save_config(content)
 end
 
 function M.export_config()
-    local http = require("luci.http")
-    local nixio = require("nixio")
-    local config_path = "/etc/config/podkop"
-    if not nixio.fs.stat(config_path) then
-        http.status(404, "Config not found")
-        return
-    end
-    http.prepare_content("application/octet-stream")
-    H.no_cache()
-    http.header("Content-Disposition", 'attachment; filename="podkop-config-export.conf"')
-    local fd = io.open(config_path, "r")
-    if fd then
-        local content = fd:read("*a")
-        fd:close()
-        http.write(content)
-    else
-        http.status(500, "Cannot read config")
-    end
+    H.send_download("/etc/config/podkop", "podkop-config-export.conf", "Config not found")
 end
 
 function M.download_backup()
-    local http = require("luci.http")
-    local nixio = require("nixio")
-    local backup_path = "/etc/config/podkop.auto-backup"
-    if not nixio.fs.stat(backup_path) then
-        http.prepare_content("application/json")
-        http.write_json({ error = "Backup file not found" })
-        return
-    end
-    http.prepare_content("application/octet-stream")
-    H.no_cache()
-    http.header("Content-Disposition", 'attachment; filename="podkop-auto-backup.conf"')
-    local fd = io.open(backup_path, "r")
-    if fd then
-        local content = fd:read("*a")
-        fd:close()
-        http.write(content)
-    else
-        http.status(500, "Cannot read backup")
-    end
+    H.send_download("/etc/config/podkop.auto-backup", "podkop-auto-backup.conf", "Backup file not found")
 end
 
 function M.import_config(upload_content, upload_file)
@@ -203,33 +158,15 @@ function M.import_config(upload_content, upload_file)
 end
 
 function M.service_status()
-    local pid = H.get_service_pid("sing-box")
-    return {
-        running = (pid ~= nil),
-        pid = pid
-    }
+    return SRV.service_status(SRV.ops.podkop)
 end
 
 function M.rollback()
-    local ok, err = SRV.restore_backup(SRV.podkop)
-    if not ok then
-        return { error = (err == "not_found") and "Backup file not found" or "Cannot write config" }
-    end
-    require("luci.sys").exec(SRV.podkop.restart_cmd)
-    return { success = true, restarting = true }
+    return SRV.rollback(SRV.ops.podkop)
 end
 
 function M.service_toggle(action)
-    if action ~= "start" and action ~= "stop" then
-        return { error = "Invalid action" }
-    end
-    local sys = require("luci.sys")
-    sys.exec("/etc/init.d/podkop " .. action .. " 2>&1")
-    local pid = H.get_service_pid("sing-box")
-    return {
-        success = true,
-        running = (pid ~= nil)
-    }
+    return SRV.service_toggle(SRV.ops.podkop, action)
 end
 
 function M.autostart()

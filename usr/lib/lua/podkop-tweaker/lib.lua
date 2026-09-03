@@ -54,37 +54,60 @@ function M.validate_uci_config(content)
     if content:find("\0", 1, true) then
         return false, "Invalid content: contains null bytes"
     end
+    -- UCI lexer. Semantics:
+    --  * single/double quoted values MAY span multiple lines (multiline values)
+    --  * a quote opens a value only when preceded by whitespace / line start,
+    --    so apostrophes inside bare words (don't) do not open anything
+    --  * line numbers in errors count every line, blanks included (editor-accurate)
+    --  * an unclosed quote is reported with the line where it was opened
     local line_no = 0
-    local in_sq = false
-    local dq_total = 0
-    for line in content:gmatch("[^\r\n]+") do
+    local in_sq, in_dq = false, false
+    local sq_open_line, dq_open_line
+    for line in (content .. "\n"):gmatch("(.-)\r?\n") do
         line_no = line_no + 1
-        if not in_sq then
+        local skip_line = false
+        if not in_sq and not in_dq then
             local trimmed = line:match("^%s*(.-)%s*$")
-            if trimmed ~= "" and not trimmed:match("^#") then
-                if not trimmed:match("^config%s")
-                    and not trimmed:match("^option%s")
-                    and not trimmed:match("^list%s") then
-                    return false, "Invalid UCI syntax at line " .. line_no .. ": unexpected token"
-                end
+            if trimmed == "" or trimmed:sub(1, 1) == "#" then
+                skip_line = true
+            elseif not trimmed:match("^config%s")
+                and not trimmed:match("^option%s")
+                and not trimmed:match("^list%s") then
+                return false, "Invalid UCI syntax at line " .. line_no .. ": unexpected token"
             end
         end
-        for ci = 1, #line do
-            local b = line:byte(ci)
-            if b < 9 or (b > 13 and b < 32) then
-                return false, "Invalid character at line " .. line_no .. ", column " .. ci
-            end
-            local c = line:sub(ci, ci)
-            if c == "'" then in_sq = not in_sq
-            elseif c == '"' then dq_total = dq_total + 1
+        if not skip_line then
+            local prev_space = true
+            for ci = 1, #line do
+                local b = line:byte(ci)
+                if b < 9 or (b > 13 and b < 32) then
+                    return false, "Invalid character at line " .. line_no .. ", column " .. ci
+                end
+                local c = line:sub(ci, ci)
+                if in_sq then
+                    if c == "'" then in_sq = false end
+                elseif in_dq then
+                    if c == '"' then in_dq = false end
+                elseif c == "'" then
+                    if prev_space then
+                        in_sq = true
+                        sq_open_line = line_no
+                    end
+                elseif c == '"' then
+                    if prev_space then
+                        in_dq = true
+                        dq_open_line = line_no
+                    end
+                end
+                prev_space = (c == " " or c == "\t")
             end
         end
     end
     if in_sq then
-        return false, "Unmatched single quote"
+        return false, "Unmatched single quote (opened at line " .. tostring(sq_open_line) .. ")"
     end
-    if dq_total % 2 ~= 0 then
-        return false, "Unmatched double quote"
+    if in_dq then
+        return false, "Unmatched double quote (opened at line " .. tostring(dq_open_line) .. ")"
     end
     return true
 end

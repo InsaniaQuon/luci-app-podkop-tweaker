@@ -198,6 +198,59 @@ describe("api_bundle.import application", function()
         assert.matches("Invalid section data", r.results.subs.error)
     end)
 
+    it("json null mid-array keeps later slots (M2)", function()
+        local BND = begin_bundle({})
+        -- hand-built JSON: [ {sub1}, null, {sub3} ] — null decodes to a sparse hole,
+        -- ipairs would silently drop slot 3
+        local raw = '{"format":"podkop-tweaker-bundle","version":1,' ..
+            '"created":"t","tweaker_version":"4.2.0",' ..
+            '"items":{"subs":{"data":{"main":[' ..
+            '{"subscription_url":"https://sub/1","proxy_name":"A"},' ..
+            'null,' ..
+            '{"subscription_url":"https://sub/3","proxy_name":"C"}' ..
+            ']}}}}'
+        local r = BND.import(raw, nil, nil)
+        assert.is_true(r.results.subs.ok, r.results.subs and r.results.subs.error)
+        local subs = require("pt-subs-lib").read_subs("/etc/config/podkop-tweaker-subs.json")
+        assert.equal("https://sub/1", subs.main[1].subscription_url)
+        assert.equal(false, subs.main[2])
+        assert.equal("https://sub/3", subs.main[3].subscription_url)
+    end)
+
+    it("subs settings interval normalized, no fractional cron hours (m4)", function()
+        local BND = begin_bundle({})
+        local r = BND.import(bundle_str({
+            subs = { data = {
+                main = { { subscription_url = "https://sub/1", proxy_name = "A" } },
+                settings = {
+                    auto_update_interval = 0.5,
+                    auto_update_start = "01:30",
+                    auto_update_on_restart = true,
+                    log_display_count = 99
+                }
+            } }
+        }), nil, nil)
+        assert.is_true(r.results.subs.ok, r.results.subs and r.results.subs.error)
+        for _, c in ipairs(H.exec_cmds()) do
+            if c:find("crontab", 1, true) then
+                assert.falsy(c:find("%d%.%d"), "fractional hour in crontab: " .. c)
+            end
+        end
+        local raw_subs = H.vfs_read("/etc/config/podkop-tweaker-subs.json")
+        assert.falsy(raw_subs:find("99"), "log_display_count not clamped")
+    end)
+
+    it("non-table known item lands in skipped (m3)", function()
+        local BND = begin_bundle({})
+        local r = BND.import(bundle_str({
+            podkop = "just-a-string"
+        }), nil, nil)
+        assert.same({ "podkop" }, r.skipped)
+        assert.falsy(r.results.podkop)
+        assert.is_false(r.success)
+        assert.equal(PODKOP_CFG, H.vfs_read("/etc/config/podkop"))
+    end)
+
     it("sing-box check failure inside item -> detailed error", function()
         local BND = begin_bundle({ check = "bad json\n" })
         local r = BND.import(bundle_str({

@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.3.0 | 23.08.2026 | LCS diff + collapse toggle in editor preview; deprecated-path cleanup on self-update; pt-auto-update tests
+-- Podkop Tweaker | v4.4.0 | 30.08.2026 | security hardening (archive pre-check, per-line UCI quotes), bundle fixes, shared helpers, tabs partial
 
-local APP_VERSION = "4.3.0"
+local APP_VERSION = "4.4.0"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")
@@ -250,7 +250,8 @@ local function render_page(template_name, extra)
     local vars = {
         app_version = APP_VERSION,
         csrf_token = H.ensure_csrf_token(),
-        show_argon = (uci:get("podkop-tweaker", "settings", "show_argon_tab") == "1")
+        show_argon = (uci:get("podkop-tweaker", "settings", "show_argon_tab") == "1"),
+        active = template_name
     }
     if extra then for k, v in pairs(extra) do vars[k] = v end end
     luci.template.render("podkop-tweaker/" .. template_name, vars)

@@ -141,7 +141,10 @@ function M.write_subs(subs, subs_file)
     if not fd then return false end
     fd:write(str)
     fd:close()
-    os.rename(tmp, subs_file)
+    if not os.rename(tmp, subs_file) then
+        os.remove(tmp)
+        return false
+    end
     return true
 end
 
@@ -235,7 +238,10 @@ function M.replace_proxy_link(section_name, proxy_type, slot_index, new_link)
         wfd:write(line .. "\n")
     end
     wfd:close()
-    os.rename(tmp_path, config_path)
+    if not os.rename(tmp_path, config_path) then
+        os.remove(tmp_path)
+        return false, "Cannot apply config"
+    end
     return true
 end
 
@@ -250,7 +256,10 @@ function M.backup_file(src, dst)
     if not fd then return false end
     fd:write(data)
     fd:close()
-    os.rename(tmp, dst)
+    if not os.rename(tmp, dst) then
+        os.remove(tmp)
+        return false
+    end
     return true
 end
 
@@ -272,6 +281,7 @@ function M.do_update_subscription(section_name, slot_index, sub_url, proxy_name)
     local safe_url = M.shell_escape(sub_url)
 
     local raw = nil
+    local raw_proxies = nil
     local max_retries = 3
     local last_err = "download failed"
     local success_attempt = 0
@@ -289,6 +299,7 @@ function M.do_update_subscription(section_name, slot_index, sub_url, proxy_name)
                 local proxies = M.parse_subscription_raw(data)
                 if #proxies > 0 then
                     raw = data
+                    raw_proxies = proxies
                     success_attempt = attempt
                     break
                 end
@@ -309,7 +320,7 @@ function M.do_update_subscription(section_name, slot_index, sub_url, proxy_name)
         return nil, last_err .. " (" .. max_retries .. " retries)"
     end
 
-    local proxies = M.parse_subscription_raw(raw)
+    local proxies = raw_proxies
 
     local found = nil
     if proxy_name and proxy_name ~= "" then
@@ -383,6 +394,7 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
     local updated, unchanged, failed = 0, 0, 0
     local need_restart = false
     local need_backup = true
+    local subs_dirty = false
     local details = {}
 
     for _, sec in ipairs(sections) do
@@ -415,7 +427,13 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
                         unchanged = unchanged + 1
                         table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "unchanged" .. retry_suffix})
                     end
-                    M.update_subs_timestamp(subs_file, sec.name, i - 1, mode)
+                    -- batch timestamps in memory; single write after the loop
+                    sec_subs[i] = {
+                        subscription_url = sub_entry.subscription_url,
+                        proxy_name = sub_entry.proxy_name or "",
+                        last_updated = os.date("%H:%M %d.%m.%Y") .. " (" .. mode .. ")"
+                    }
+                    subs_dirty = true
                 else
                     failed = failed + 1
                     local label = "failed"
@@ -424,6 +442,10 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
                 end
             end
         end
+    end
+
+    if subs_dirty then
+        M.write_subs(subs, subs_file)
     end
 
     local log_text = os.date("%H:%M %d.%m.%Y") .. "|" .. mode .. "|updated=" .. updated

@@ -7,25 +7,7 @@ Author: InsaniaQuon
 <div class="cbi-map" id="cbi-podkop-tweaker">
     <h2 name="content">Podkop Tweaker</h2>
 
-    <ul class="cbi-tabmenu">
-        <li class="cbi-tab"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
-        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/stubby")%>">Stubby Config</a></li>
-        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/singbox")%>">Sing-box Config</a></li>
-        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/diagnostics")%>">Diagnostics</a></li>
-        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/subscriptions")%>">Subscriptions</a></li>
-<% if show_argon then %>
-        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/argon")%>">Argon Config</a></li>
-<% end %>
-        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/import-export")%>">Import/Export</a></li>
-        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/system-info")%>">System Information</a></li>
-        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/update")%>">Local Update</a></li>
-        <li class="cbi-tab-disabled"><a href="<%=url("admin/services/podkop-tweaker/about")%>">About</a></li>
-    </ul>
-
-    <div class="ps-stale-banner" id="ps-stale-banner">
-        <span>Page shows cached version. Updated version available.</span>
-        <button class="btn cbi-button" onclick="window.location.reload(true)">Reload</button>
-    </div>
+<%+podkop-tweaker/tabs%>
 
     <div class="cbi-section">
         <div class="ps-config-header">
