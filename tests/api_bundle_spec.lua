@@ -177,16 +177,22 @@ describe("api_bundle.import application", function()
         assert.same({}, r.skipped)
     end)
 
-    it("disabled argon tab surfaces per-item error", function()
+    it("disabled argon tab: argon item silently skipped, not an error", function()
         local BND = begin_bundle({})
         local uci = require("luci.model.uci").cursor()
         uci:set("podkop-tweaker", "settings", "show_argon_tab", "0")
+        H.vfs_write(CSS, ".base{}\n")
         local r = BND.import(bundle_str({
             argon = { settings = { font_size = "16" } }
         }), nil, nil)
+        -- no per-item failure: the item is ignored (invisible settings)
+        assert.falsy(r.results.argon)
+        assert.same({ "argon" }, r.skipped)
         assert.is_false(r.success)
-        assert.is_false(r.results.argon.ok)
-        assert.equal("Argon tab is disabled", r.results.argon.error)
+        -- uci typography untouched
+        assert.is_nil(uci:get("argon", "typography", "font_size"))
+        -- css not injected
+        assert.falsy(H.vfs_read(CSS):find("Podkop Tweaker Typography", 1, true))
     end)
 
     it("invalid subs section data -> per-item validation error", function()

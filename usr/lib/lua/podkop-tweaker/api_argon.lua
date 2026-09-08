@@ -1,7 +1,8 @@
--- Podkop Tweaker | v4.4.0 | 30.08.2026 | clamp_str validation + argon.save_uci_fields single write point
+-- Podkop Tweaker | v4.5.0 | 03.09.2026 | theme_check/theme_update handlers (no argon-tab guard: System Info shows the theme for everyone)
 
 local AR = require("podkop-tweaker.argon")
 local LIB = require("podkop-tweaker.lib")
+local THEME = require("podkop-tweaker.theme")
 
 local M = {}
 
@@ -75,6 +76,14 @@ function M.reinject()
     end
     local ok = AR.apply()
     return { success = ok, stale = AR.check_stale() }
+end
+
+function M.theme_check(force_raw)
+    return THEME.check(force_raw == true or force_raw == "1")
+end
+
+function M.theme_update()
+    return THEME.update()
 end
 
 return M

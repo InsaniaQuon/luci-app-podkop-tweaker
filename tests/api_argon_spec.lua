@@ -264,3 +264,179 @@ describe("api_argon.reinject", function()
         assert.falsy(resp.error)
     end)
 end)
+
+describe("api_argon theme (version / check / update)", function()
+    local CACHE = "/tmp/pt_argon_theme_check.json"
+    local APK_RESP = { match = "apk list --installed", out = "luci-theme-argon-2.4.6-r1 [installed]\n" }
+    local OPKG_RESP = { match = "opkg list-installed", out = "luci-theme-argon - 2.4.6-r1\n" }
+    local GH_LATEST = '{"tag_name":"v2.4.7","assets":[' ..
+        '{"name":"luci-app-argon-config-2.4.7-r1.apk","browser_download_url":"https://github.com/jerrykuku/luci-theme-argon/releases/download/v2.4.7/luci-app-argon-config-2.4.7-r1.apk"},' ..
+        '{"name":"luci-theme-argon-2.4.7-r1.apk","browser_download_url":"https://github.com/jerrykuku/luci-theme-argon/releases/download/v2.4.7/luci-theme-argon-2.4.7-r1.apk"},' ..
+        '{"name":"luci-theme-argon_2.4.7_all.ipk","browser_download_url":"https://github.com/jerrykuku/luci-theme-argon/releases/download/v2.4.7/luci-theme-argon_2.4.7_all.ipk"}]}'
+    local GH_RESP = { match = "api.github.com/repos/jerrykuku", out = GH_LATEST }
+
+    local function mod(opts)
+        begin_argon(opts or {})
+        return H.reload("podkop-tweaker.api_argon")
+    end
+
+    it("installed_version: apk format, opkg fallback, absent", function()
+        begin_argon({ sys = { APK_RESP } })
+        assert.equal("2.4.6", require("podkop-tweaker.theme").installed_version())
+        H.finish()
+        begin_argon({ sys = { OPKG_RESP } })
+        assert.equal("2.4.6", require("podkop-tweaker.theme").installed_version())
+        H.finish()
+        begin_argon({})
+        assert.is_nil(require("podkop-tweaker.theme").installed_version())
+    end)
+
+    it("check: fresh cache served without network; expired cache refetched", function()
+        local ARG = mod({ sys = { APK_RESP, GH_RESP } })
+        H.vfs_write(CACHE, '{"latest_version":"2.4.5","current_version":"2.4.6","update_available":false,"cached_at":' .. os.time() .. '}')
+        local r = ARG.theme_check(false)
+        assert.equal("2.4.5", r.latest_version)
+        assert.is_false(r.update_available)
+        for _, c in ipairs(H.exec_cmds()) do
+            assert.falsy(c:find("api.github.com", 1, true), "network hit with fresh cache")
+        end
+
+        H.finish()
+        local ARG2 = mod({ sys = { APK_RESP, GH_RESP } })
+        H.vfs_write(CACHE, '{"latest_version":"2.4.5","cached_at":' .. (os.time() - 90000) .. '}')
+        local r2 = ARG2.theme_check(false)
+        assert.equal("2.4.7", r2.latest_version)
+        assert.is_true(r2.update_available)
+        assert.truthy(H.vfs_read(CACHE):find("2.4.7", 1, true))
+    end)
+
+    it("check: force bypasses fresh cache; rate limit surfaced", function()
+        local ARG = mod({ sys = { APK_RESP, GH_RESP } })
+        H.vfs_write(CACHE, '{"latest_version":"2.4.5","cached_at":' .. os.time() .. '}')
+        local r = ARG.theme_check(true)
+        assert.equal("2.4.7", r.latest_version)
+
+        H.finish()
+        local ARG2 = mod({ sys = { APK_RESP,
+            { match = "api.github.com/repos/jerrykuku", out = '{"message":"API rate limit exceeded"}' } } })
+        assert.equal("GitHub API rate limit exceeded", ARG2.theme_check(true).error)
+    end)
+
+    it("check: both asset URLs picked by name pattern", function()
+        local r = mod({ sys = { APK_RESP, GH_RESP } }).theme_check(true)
+        assert.matches("luci%-theme%-argon%-2%.4%.7%-r1%.apk$", r.download_url_apk)
+        assert.matches("luci%-theme%-argon_2%.4%.7_all%.ipk$", r.download_url_ipk)
+    end)
+
+    it("update: theme not installed -> exact error", function()
+        assert.same({ error = "Argon theme is not installed" }, mod({}).theme_update())
+    end)
+
+    it("update: download miss -> error, theme untouched", function()
+        local ARG = mod({ sys = { APK_RESP, GH_RESP } })
+        assert.same({ error = "Failed to download theme package" }, ARG.theme_update())
+    end)
+
+    it("update: happy apk flow — snapshot saved, installed, typography restored, css reinjected, caches cleared", function()
+        local ARG = mod({
+            sys = {
+                APK_RESP,
+                GH_RESP,
+                { match = "apk add", out = "OK\nEXIT:0" }
+            },
+            uci = {
+                argon = { H.sec("typography", "typography", { font_size = "17", font_weight = "550" }) }
+            }
+        })
+        H.vfs_write(CSS, ".base{}\n")
+        H.vfs_write("/tmp/pt-argon-theme/theme.apk", "package-bytes")
+        local r = ARG.theme_update()
+        assert.is_true(r.success)
+        assert.equal("2.4.6", r.new_version)
+        -- typography snapshot survived the update
+        local uci = require("luci.model.uci").cursor()
+        assert.equal("17", uci:get("argon", "typography", "font_size"))
+        assert.equal("550", uci:get("argon", "typography", "font_weight"))
+        -- CSS block reinjected into the fresh cascade.css
+        local css = H.vfs_read(CSS)
+        assert.truthy(css:find("Podkop Tweaker Typography", 1, true))
+        assert.truthy(css:find("font%-size: 17px"))
+        -- luCI caches cleared + uhttpd restarted (os.execute log)
+        local saw_luci_rm, saw_uhttpd = false, false
+        for _, c in ipairs(H.execute_cmds()) do
+            if c:find("rm -rf /tmp/luci-", 1, true) then saw_luci_rm = true end
+            if c:find("uhttpd restart", 1, true) then saw_uhttpd = true end
+        end
+        assert.truthy(saw_luci_rm)
+        assert.truthy(saw_uhttpd)
+        -- install ran with the cd / prefix (hook cwd safety) and the apk asset path
+        local saw_install = false
+        for _, c in ipairs(H.exec_cmds()) do
+            if c:find("cd / && apk add --allow-untrusted /tmp/pt-argon-theme/theme.apk", 1, true) then saw_install = true end
+        end
+        assert.truthy(saw_install)
+    end)
+
+    it("update: hook noise (EXIT:1) with updated version -> oracle success, restore still runs", function()
+        local calls = 0
+        local SEQ_RESP = {
+            match = "apk list --installed",
+            out = function()
+                calls = calls + 1
+                -- detect (2.4.6) -> check entry (2.4.6) -> oracle after install (2.4.7)
+                if calls >= 3 then
+                    return "luci-theme-argon-2.4.7-r1 [installed]\n"
+                end
+                return "luci-theme-argon-2.4.6-r1 [installed]\n"
+            end
+        }
+        local ARG = mod({
+            sys = {
+                SEQ_RESP,
+                GH_RESP,
+                { match = "apk add", out = "Executing luci-theme-argon-2.4.7-r1.post-upgrade\n* fchdir: Not a directory\nEXIT:1" }
+            },
+            uci = {
+                argon = { H.sec("typography", "typography", { font_size = "18" }) }
+            }
+        })
+        H.vfs_write(CSS, ".base{}\n")
+        H.vfs_write("/tmp/pt-argon-theme/theme.apk", "package-bytes")
+        local r = ARG.theme_update()
+        assert.is_true(r.success)
+        assert.equal("2.4.7", r.new_version)
+        -- restore flow completed despite the failed hook
+        local uci = require("luci.model.uci").cursor()
+        assert.equal("18", uci:get("argon", "typography", "font_size"))
+        assert.truthy(H.vfs_read(CSS):find("font%-size: 18px"))
+        local saw_luci_rm = false
+        for _, c in ipairs(H.execute_cmds()) do
+            if c:find("rm -rf /tmp/luci-", 1, true) then saw_luci_rm = true end
+        end
+        assert.truthy(saw_luci_rm)
+    end)
+
+    it("update: install failure -> error surfaced", function()
+        local ARG = mod({
+            sys = {
+                APK_RESP,
+                GH_RESP,
+                { match = "apk add", out = "ERROR: unable to install\nEXIT:1" }
+            }
+        })
+        H.vfs_write("/tmp/pt-argon-theme/theme.apk", "pkg")
+        local r = ARG.theme_update()
+        assert.is_false(r.success)
+        assert.matches("unable to install", r.error)
+    end)
+
+    it("update: already up to date -> exact error", function()
+        local ARG = mod({
+            sys = {
+                { match = "apk list --installed", out = "luci-theme-argon-2.4.7-r1 [installed]\n" },
+                GH_RESP
+            }
+        })
+        assert.same({ error = "Theme is already up to date" }, ARG.theme_update())
+    end)
+end)

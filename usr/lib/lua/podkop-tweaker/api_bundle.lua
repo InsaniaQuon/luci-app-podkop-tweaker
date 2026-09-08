@@ -118,10 +118,15 @@ function M.import(content, file_raw, sel_param)
         for it in sel_param:gmatch("[%w%-]+") do selected[it] = true end
     end
 
+    -- argon settings are invisible when the tab is hidden: ignore the item
+    -- entirely (both directions) instead of surfacing a per-item error
+    local argon_ignored = AR.tab_disabled()
+
     local skipped = {}
     for name, _ in pairs(bundle.items) do
         if not BUNDLE.is_known_item(name)
             or type(bundle.items[name]) ~= "table"
+            or (name == "argon" and argon_ignored)
             or (selection_used and not selected[name]) then
             table.insert(skipped, name)
         end
@@ -132,6 +137,7 @@ function M.import(content, file_raw, sel_param)
 
     for _, name in ipairs(BUNDLE.ITEMS) do
         if type(bundle.items[name]) == "table"
+            and not (name == "argon" and argon_ignored)
             and (not selection_used or selected[name]) then
             local ok, err = BUNDLE.apply_item(name, bundle.items[name], env)
             results[name] = { ok = (ok == true), error = err }

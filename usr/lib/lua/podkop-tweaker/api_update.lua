@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.4.0 | 30.08.2026 | tar -tzf member whitelist check before extraction; shared apply pipeline
+-- Podkop Tweaker | v4.5.0 | 03.09.2026 | check TTL raised to 24h (unified daily checks); check_update_force for the System Info button
 
 local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
@@ -9,7 +9,7 @@ local M = {}
 local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
 local CHECK_CACHE_FILE = "/tmp/tweaker_check_cache.json"
-local CHECK_CACHE_TTL = 900
+local CHECK_CACHE_TTL = 86400
 
 -- Files removed in newer versions; cleaned up after every successful self-update
 local DEPRECATED_PATHS = {
@@ -257,6 +257,11 @@ function M.read_log()
         fd:close()
     end
     return { lines = lines }
+end
+
+function M.check_update_force()
+    os.remove(CHECK_CACHE_FILE)
+    return M.check_update()
 end
 
 function M.check_update()

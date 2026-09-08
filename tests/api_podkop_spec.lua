@@ -113,6 +113,77 @@ describe("api_podkop.system_info", function()
         })
         assert.equal("unknown", PDK.system_info().podkop_version)
     end)
+
+    it("argon theme fields surfaced (installed version + latest from check)", function()
+        local sr = sys_ok()
+        local PDK = begin_podkop({
+            sys = {
+                sr[1], sr[2],
+                { match = "apk list --installed", out = "luci-theme-argon-2.4.6-r1 [installed]\n" },
+                { match = "api.github.com/repos/jerrykuku",
+                    out = '{"tag_name":"v2.4.7","assets":[{"name":"luci-theme-argon-2.4.7-r1.apk","browser_download_url":"https://github.com/jerrykuku/luci-theme-argon/releases/download/v2.4.7/luci-theme-argon-2.4.7-r1.apk"}]}' }
+            }
+        })
+        local r = PDK.system_info()
+        assert.equal("2.4.6", r.argon_theme_version)
+        assert.equal("2.4.7", r.argon_theme_latest)
+    end)
+
+    it("no installed theme -> nil version, no network theme check", function()
+        local sr = sys_ok()
+        local PDK = begin_podkop({ sys = { sr[1], sr[2] } })
+        local r = PDK.system_info()
+        assert.is_nil(r.argon_theme_version)
+        assert.is_nil(r.argon_theme_latest)
+        for _, c in ipairs(H.exec_cmds()) do
+            assert.falsy(c:find("jerrykuku", 1, true), "theme GitHub check with no theme installed")
+        end
+    end)
+
+    it("podkop update snapshot cached for 24h overrides live latest", function()
+        local PDK = begin_podkop({ sys = sys_ok() })
+        H.vfs_write("/tmp/pt_podkop_check.json",
+            '{"latest_version":"9.9.9","update_available":true,"cached_at":' .. os.time() .. '}')
+        local r = PDK.system_info()
+        assert.equal("9.9.9", r.podkop_latest_version)
+        assert.is_true(r.update_available)
+    end)
+
+    it("check_updates: forces all three sources", function()
+        local sr = sys_ok()
+        local PDK = begin_podkop({
+            sys = {
+                sr[1], sr[2],
+                { match = "apk list --installed", out = "luci-theme-argon-2.4.6-r1 [installed]\n" },
+                { match = "api.github.com/repos/jerrykuku", out = '{"tag_name":"v2.4.7","assets":[]}' },
+                { match = "api.github.com/repos/InsaniaQuon",
+                    out = '{"tag_name":"v4.9.9","assets":[{"browser_download_url":"https://github.com/InsaniaQuon/luci-app-podkop-tweaker/releases/download/v4.9.9/x.tar.gz"}]}' }
+            }
+        })
+        local r = PDK.check_updates()
+        assert.equal("2.0.0", r.podkop.latest_version)
+        assert.is_true(r.podkop.update_available)
+        assert.equal("4.9.9", r.tweaker.latest_version)
+        assert.is_true(r.tweaker.update_available)
+        assert.equal("2.4.7", r.theme.latest_version)
+        assert.is_true(r.theme.update_available)
+        -- tweaker cache was force-refreshed (old cache file gone, new written)
+        assert.truthy(H.vfs_read("/tmp/tweaker_check_cache.json"):find("4.9.9", 1, true))
+    end)
+
+    it("check_updates: podkop info failure -> per-source error", function()
+        local PDK = begin_podkop({
+            sys = {
+                { match = "podkop get_system_info", out = "" },
+                { match = "api.github.com/repos/jerrykuku", out = '{"tag_name":"v2.4.7","assets":[]}' },
+                { match = "api.github.com/repos/InsaniaQuon",
+                    out = '{"tag_name":"v4.1.0","assets":[]}' }
+            }
+        })
+        local r = PDK.check_updates()
+        assert.equal("Failed to get podkop info", r.podkop.error)
+        assert.equal("2.4.7", r.theme.latest_version)
+    end)
 end)
 
 describe("api_podkop.update_start", function()

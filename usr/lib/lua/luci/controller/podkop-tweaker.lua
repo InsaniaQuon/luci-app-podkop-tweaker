@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.4.0 | 30.08.2026 | security hardening (archive pre-check, per-line UCI quotes), bundle fixes, shared helpers, tabs partial
+-- Podkop Tweaker | v4.5.0 | 03.09.2026 | System Info: argon theme version + update flow, unified 24h update checks
 
-local APP_VERSION = "4.4.0"
+local APP_VERSION = "4.5.0"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")
@@ -237,6 +237,12 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "clear_cache"},
         call("api_clear_cache")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "check_updates"},
+        call("api_check_updates")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "argon_theme_update"},
+        call("api_argon_theme_update")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "app_version"},
         call("api_app_version")).leaf = true
@@ -503,6 +509,7 @@ end
 
 function api_argon_typography_reset() json_api(true, ARG.typography_reset) end
 function api_argon_reinject() json_api(true, ARG.reinject) end
+function api_argon_theme_update() json_api(true, ARG.theme_update) end
 
 -- === Bundle ===
 
@@ -526,6 +533,7 @@ function api_upload_update()
 end
 function api_apply_update() json_api(true, UPD.apply) end
 function api_clear_cache() json_api(true, UPD.clear_cache) end
+function api_check_updates() json_api(true, PDK.check_updates) end
 function api_read_update_log() json_api(false, UPD.read_log) end
 function api_tweaker_check_update() json_api(false, UPD.check_update) end
 function api_tweaker_git_update()

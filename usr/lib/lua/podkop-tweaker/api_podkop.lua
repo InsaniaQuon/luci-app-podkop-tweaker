@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.4.0 | 30.08.2026 | transport endpoints via http.lua helpers, service ops via services.lua factories
+-- Podkop Tweaker | v4.5.0 | 03.09.2026 | system_info: 24h podkop-update snapshot + argon theme fields; check_updates composer
 -- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local H = require("podkop-tweaker.http")
@@ -6,10 +6,13 @@ local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
 local S = require("pt-subs-lib")
 local UPD = require("podkop-tweaker.api_update")
+local THEME = require("podkop-tweaker.theme")
 
 local M = {}
 
 local PODKOP_INSTALL_URL = "https://raw.githubusercontent.com/itdoginfo/podkop/refs/heads/main/install.sh"
+local PODKOP_CHECK_CACHE = "/tmp/pt_podkop_check.json"
+local CHECK_CACHE_TTL = 86400
 
 local function save_and_restart(content)
     local sys = require("luci.sys")
@@ -27,11 +30,7 @@ local function save_and_restart(content)
     return true
 end
 
-function M.system_info()
-    local sys = require("luci.sys")
-
-    local raw = sys.exec("podkop get_system_info 2>/dev/null")
-
+local function parse_podkop_info(raw)
     local info
     pcall(function() info = luci.json and luci.json.parse and luci.json.parse(raw) end)
     if not info then
@@ -46,6 +45,62 @@ function M.system_info()
             info = json.decode(raw)
         end)
     end
+    return info
+end
+
+-- 24h snapshot of the podkop "latest/available" decision (versions stay live).
+local function podkop_update_snapshot(info, force)
+    if not force then
+        local fd = io.open(PODKOP_CHECK_CACHE, "r")
+        if fd then
+            local raw = fd:read("*a")
+            fd:close()
+            local cache = S.json_parse(raw)
+            if cache and cache.cached_at
+                and (os.time() - cache.cached_at) < CHECK_CACHE_TTL then
+                return cache
+            end
+        end
+    end
+    local entry = nil
+    if info and info.podkop_version
+        and info.podkop_latest_version and info.podkop_latest_version ~= "unknown" then
+        entry = {
+            current_version = info.podkop_version,
+            latest_version = info.podkop_latest_version,
+            update_available = LIB.version_lt(info.podkop_version, info.podkop_latest_version),
+            cached_at = os.time()
+        }
+        local str = S.json_stringify(entry)
+        if str then
+            local wfd = io.open(PODKOP_CHECK_CACHE, "w")
+            if wfd then
+                wfd:write(str)
+                wfd:close()
+            end
+        end
+    end
+    return entry
+end
+
+-- Theme latest via the 24h cache; refreshes the cache (network) when missing/expired.
+local function theme_latest_auto()
+    local info = THEME.check(false)
+    if info and not info.error then
+        return info.latest_version
+    end
+    return nil
+end
+
+function M.system_info()
+    local sys = require("luci.sys")
+
+    local raw = sys.exec("podkop get_system_info 2>/dev/null")
+    local info = parse_podkop_info(raw)
+
+    -- theme detect once; no installed theme -> no network check at all
+    local argon_ver = THEME.installed_version()
+    local argon_latest = argon_ver and theme_latest_auto() or nil
 
     if not info or not info.podkop_version then
         return {
@@ -58,31 +113,50 @@ function M.system_info()
             update_available = false,
             tweaker_version = UPD.get_version(),
             tweaker_latest = nil,
+            argon_theme_version = argon_ver,
+            argon_theme_latest = argon_latest,
             error = "Failed to get system info from podkop"
         }
     end
 
-    local update_available = false
-    if info.podkop_latest_version
-        and info.podkop_latest_version ~= "unknown"
-        and info.podkop_version ~= "unknown" then
-        update_available = LIB.version_lt(info.podkop_version, info.podkop_latest_version)
-    end
+    local snapshot = podkop_update_snapshot(info, false) or {}
 
     local stubby_ver = sys.exec("stubby -V 2>/dev/null"):match("Stubby%s+(%S+)") or "not installed"
 
     return {
         podkop_version = info.podkop_version or "unknown",
-        podkop_latest_version = info.podkop_latest_version or "unknown",
+        podkop_latest_version = snapshot.latest_version or info.podkop_latest_version or "unknown",
         luci_app_version = info.luci_app_version or "unknown",
         stubby_version = stubby_ver,
         sing_box_version = info.sing_box_version or "unknown",
         openwrt_version = info.openwrt_version or "unknown",
         device_model = info.device_model or "unknown",
-        update_available = update_available,
+        update_available = snapshot.update_available or false,
         tweaker_version = UPD.get_version(),
-        tweaker_latest = UPD.cached_latest()
+        tweaker_latest = UPD.cached_latest(),
+        argon_theme_version = argon_ver,
+        argon_theme_latest = argon_latest
     }
+end
+
+-- Force re-check of all three update sources (System Info "Check for updates" button).
+function M.check_updates()
+    local sys = require("luci.sys")
+
+    -- podkop: refresh the snapshot from a live get_system_info call
+    local info = parse_podkop_info(sys.exec("podkop get_system_info 2>/dev/null"))
+    local podkop = podkop_update_snapshot(info, true)
+    if not podkop then
+        podkop = { error = "Failed to get podkop info" }
+    end
+
+    -- tweaker: drop the cache to bypass the rate-limit gate, then check
+    local tweaker = UPD.check_update_force()
+
+    -- theme: force-check writes a fresh 24h cache entry
+    local theme = THEME.check(true)
+
+    return { podkop = podkop, tweaker = tweaker, theme = theme }
 end
 
 function M.update_start()

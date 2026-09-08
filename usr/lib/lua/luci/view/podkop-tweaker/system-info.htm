@@ -12,6 +12,7 @@ Author: InsaniaQuon
     <div class="cbi-section">
         <div class="ps-sysinfo-header">
             <h3>System Information</h3>
+            <button class="btn cbi-button" id="ps-check-updates">Check for updates</button>
             <button class="btn cbi-button" id="ps-refresh-info">Refresh</button>
         </div>
 
@@ -21,31 +22,35 @@ Author: InsaniaQuon
             <tbody>
                 <tr>
                     <td class="ps-sysinfo-label">Podkop</td>
-                    <td class="ps-sysinfo-value" id="ps-info-podkop">—</td>
+                    <td class="ps-sysinfo-value" id="ps-info-podkop">-</td>
                 </tr>
                 <tr>
                     <td class="ps-sysinfo-label">Luci App</td>
-                    <td class="ps-sysinfo-value" id="ps-info-luci">—</td>
-                </tr>
-                <tr>
-                    <td class="ps-sysinfo-label">Stubby</td>
-                    <td class="ps-sysinfo-value" id="ps-info-stubby">—</td>
+                    <td class="ps-sysinfo-value" id="ps-info-luci">-</td>
                 </tr>
                 <tr>
                     <td class="ps-sysinfo-label">Podkop Tweaker</td>
-                    <td class="ps-sysinfo-value" id="ps-info-tweaker">—</td>
+                    <td class="ps-sysinfo-value" id="ps-info-tweaker">-</td>
+                </tr>
+                <tr>
+                    <td class="ps-sysinfo-label">Stubby</td>
+                    <td class="ps-sysinfo-value" id="ps-info-stubby">-</td>
                 </tr>
                 <tr>
                     <td class="ps-sysinfo-label">Sing-box</td>
-                    <td class="ps-sysinfo-value" id="ps-info-singbox">—</td>
+                    <td class="ps-sysinfo-value" id="ps-info-singbox">-</td>
+                </tr>
+                <tr id="ps-row-argon">
+                    <td class="ps-sysinfo-label">Argon Theme</td>
+                    <td class="ps-sysinfo-value" id="ps-info-argon">-</td>
                 </tr>
                 <tr>
                     <td class="ps-sysinfo-label">OS</td>
-                    <td class="ps-sysinfo-value" id="ps-info-os">—</td>
+                    <td class="ps-sysinfo-value" id="ps-info-os">-</td>
                 </tr>
                 <tr>
                     <td class="ps-sysinfo-label">Device</td>
-                    <td class="ps-sysinfo-value" id="ps-info-device">—</td>
+                    <td class="ps-sysinfo-value" id="ps-info-device">-</td>
                 </tr>
             </tbody>
         </table>
@@ -59,7 +64,6 @@ Author: InsaniaQuon
             <button class="btn cbi-button" id="ps-clear-cache" style="display:none;">
                 Clear LuCI Cache
             </button>
-            <span class="ps-latest-info" id="ps-latest-info" style="display:none;"></span>
             <span class="ps-sysinfo-status" id="ps-update-status"></span>
         </div>
 
@@ -68,7 +72,9 @@ Author: InsaniaQuon
             <ul style="margin:6px 0 0;padding-left:20px;">
                 <li><strong>Podkop:</strong> Opens a terminal window (ttyd) for interactive update. Backup is created automatically. Click Refresh after completion.</li>
                 <li><strong>Podkop Tweaker:</strong> LuCI will restart during update. Page reloads automatically. Do not power off the router.</li>
+                <li><strong>Argon Theme:</strong> Typography settings are saved before the update and restored (with CSS reinjection) after it. LuCI will restart; the page reloads automatically.</li>
                 <li><strong>Clear Cache:</strong> Clears LuCI internal cache and restarts the web interface. Use if the page shows outdated information after an update.</li>
+                <li><strong>Check for updates:</strong> Forces a fresh check for Podkop, Podkop Tweaker and Argon Theme. Otherwise each source is checked automatically once a day.</li>
             </ul>
         </div>
     </div>
@@ -83,8 +89,9 @@ window.PT = {
         appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>',
         systemInfo: '<%=url("admin/services/podkop-tweaker/api/system_info")%>',
         updateStart: '<%=url("admin/services/podkop-tweaker/api/update_start")%>',
-        tweakerCheck: '<%=url("admin/services/podkop-tweaker/api/tweaker_check_update")%>',
         tweakerUpdate: '<%=url("admin/services/podkop-tweaker/api/tweaker_git_update")%>',
+        checkUpdates: '<%=url("admin/services/podkop-tweaker/api/check_updates")%>',
+        argonThemeUpdate: '<%=url("admin/services/podkop-tweaker/api/argon_theme_update")%>',
         clearCache: '<%=url("admin/services/podkop-tweaker/api/clear_cache")%>'
     }
 };
@@ -101,103 +108,17 @@ window.PT = {
     var actionsEl = document.getElementById('ps-sysinfo-actions');
     var updatePodkopBtn = document.getElementById('ps-update-podkop');
     var clearCacheBtn = document.getElementById('ps-clear-cache');
-    var latestInfo = document.getElementById('ps-latest-info');
     var updateStatus = document.getElementById('ps-update-status');
     var refreshBtn = document.getElementById('ps-refresh-info');
+    var checkUpdatesBtn = document.getElementById('ps-check-updates');
 
     var tweakerLatest = null;
     var tweakerDownloadUrl = '';
-    var countdownTimer = null;
+    var lastData = null;
 
     function setUpdateStatus(text, color) {
         updateStatus.textContent = text;
         updateStatus.style.color = color || '#888';
-    }
-
-    function renderInfo(data) {
-        loadingEl.style.display = 'none';
-        errorEl.style.display = 'none';
-        tableEl.style.display = '';
-        actionsEl.style.display = '';
-        clearCacheBtn.style.display = 'inline-block';
-
-        var podkopCell = document.getElementById('ps-info-podkop');
-        var currentVer = PT.escapeHtml(data.podkop_version);
-        var latestVer = PT.escapeHtml(data.podkop_latest_version);
-
-        if (data.update_available) {
-            podkopCell.innerHTML = currentVer + ' <span class="ps-ver-outdated">(Outdated)</span>';
-            updatePodkopBtn.style.display = 'inline-block';
-            latestInfo.textContent = 'Latest: ' + latestVer;
-            latestInfo.style.display = 'inline';
-        } else if (data.podkop_latest_version && data.podkop_latest_version !== 'unknown') {
-            podkopCell.innerHTML = currentVer + ' <span class="ps-ver-latest">(Latest)</span>';
-            updatePodkopBtn.style.display = 'none';
-            latestInfo.style.display = 'none';
-        } else {
-            podkopCell.textContent = currentVer;
-            updatePodkopBtn.style.display = 'none';
-            latestInfo.style.display = 'none';
-        }
-
-        document.getElementById('ps-info-luci').textContent = data.luci_app_version || 'unknown';
-        document.getElementById('ps-info-stubby').textContent = data.stubby_version || 'unknown';
-        document.getElementById('ps-info-singbox').textContent = data.sing_box_version || 'unknown';
-        document.getElementById('ps-info-os').textContent = data.openwrt_version || 'unknown';
-        document.getElementById('ps-info-device').textContent = data.device_model || 'unknown';
-
-        renderTweakerRow(data);
-
-        if (data.error) {
-            errorEl.textContent = data.error;
-            errorEl.style.display = 'block';
-        }
-    }
-
-    function renderTweakerRow(data) {
-        var cell = document.getElementById('ps-info-tweaker');
-        var ver = data.tweaker_version || 'unknown';
-        var latest = data.tweaker_latest || tweakerLatest;
-        tweakerLatest = latest;
-
-        if (!latest) {
-            cell.innerHTML = 'v' + PT.escapeHtml(ver) +
-                ' <a href="#" id="ps-tweaker-check-link" style="font-size:12px">Check for updates</a>' +
-                '<span id="ps-tweaker-countdown" style="font-size:12px;color:#ff9800;margin-left:6px"></span>' +
-                '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
-            var checkLink = document.getElementById('ps-tweaker-check-link');
-            if (checkLink) checkLink.addEventListener('click', function(e) { e.preventDefault(); doCheckTweaker(); });
-            return;
-        }
-
-        var lt = versionLt(ver, latest);
-        var gt = versionLt(latest, ver);
-
-        if (lt) {
-            cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span class="ps-ver-outdated">(Outdated)</span>' +
-                ' <span style="font-size:12px;color:var(--ps-text-muted)">&rarr; v' + PT.escapeHtml(latest) + '</span>' +
-                ' <button class="btn cbi-button cbi-button-apply" id="ps-tweaker-update-btn" style="font-size:12px;padding:2px 8px">Update from Git</button>' +
-                '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
-            var btn = document.getElementById('ps-tweaker-update-btn');
-            if (btn) btn.addEventListener('click', function() { doUpdateTweaker(false); });
-        } else if (gt) {
-            cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span style="font-size:12px;color:#ff9800">(Newer than repo v' + PT.escapeHtml(latest) + ')</span>' +
-                ' <button class="btn cbi-button" id="ps-tweaker-downgrade-btn" style="font-size:12px;padding:2px 8px">Downgrade from Git</button>' +
-                ' <a href="#" id="ps-tweaker-check-link" style="font-size:12px;margin-left:6px">Check</a>' +
-                '<span id="ps-tweaker-countdown" style="font-size:12px;color:#ff9800;margin-left:6px"></span>' +
-                '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
-            var dgBtn = document.getElementById('ps-tweaker-downgrade-btn');
-            if (dgBtn) dgBtn.addEventListener('click', function() { doUpdateTweaker(true); });
-            var cl = document.getElementById('ps-tweaker-check-link');
-            if (cl) cl.addEventListener('click', function(e) { e.preventDefault(); doCheckTweaker(); });
-        } else {
-            cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span class="ps-ver-latest">(Latest)</span>' +
-                ' <a href="#" id="ps-tweaker-check-link" style="font-size:12px;margin-left:6px">Check</a>' +
-                '<span id="ps-tweaker-countdown" style="font-size:12px;color:#ff9800;margin-left:6px"></span>' +
-                '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
-            var cl2 = document.getElementById('ps-tweaker-check-link');
-            if (cl2) cl2.addEventListener('click', function(e) { e.preventDefault(); doCheckTweaker(); });
-        }
     }
 
     function versionLt(a, b) {
@@ -218,6 +139,104 @@ window.PT = {
         errorEl.style.display = 'block';
     }
 
+    function renderRows(data) {
+        // Podkop: version + "Update available" only when an update exists
+        var podkopCell = document.getElementById('ps-info-podkop');
+        var pv = PT.escapeHtml(data.podkop_version || 'unknown');
+        var pl = data.podkop_latest_version;
+        if (data.update_available && pl && pl !== 'unknown') {
+            podkopCell.innerHTML = pv + ' <span class="ps-ver-outdated">(Update available ' + PT.escapeHtml(pl) + ')</span>';
+            updatePodkopBtn.style.display = 'inline-block';
+        } else {
+            podkopCell.textContent = pv;
+            updatePodkopBtn.style.display = 'none';
+        }
+
+        // Podkop Tweaker
+        renderTweakerRow(data);
+        // Argon Theme
+        renderArgonRow(data);
+    }
+
+    function renderInfo(data) {
+        lastData = data;
+        loadingEl.style.display = 'none';
+        errorEl.style.display = 'none';
+        tableEl.style.display = '';
+        actionsEl.style.display = '';
+        clearCacheBtn.style.display = 'inline-block';
+
+        document.getElementById('ps-info-luci').textContent = data.luci_app_version || 'unknown';
+        document.getElementById('ps-info-stubby').textContent = data.stubby_version || 'unknown';
+        document.getElementById('ps-info-singbox').textContent = data.sing_box_version || 'unknown';
+        document.getElementById('ps-info-os').textContent = data.openwrt_version || 'unknown';
+        document.getElementById('ps-info-device').textContent = data.device_model || 'unknown';
+
+        renderRows(data);
+
+        if (data.error) {
+            errorEl.textContent = data.error;
+            errorEl.style.display = 'block';
+        }
+    }
+
+    function renderTweakerRow(data) {
+        var cell = document.getElementById('ps-info-tweaker');
+        var ver = data.tweaker_version || 'unknown';
+        var latest = data.tweaker_latest || tweakerLatest;
+        tweakerLatest = latest;
+
+        if (!latest) {
+            cell.textContent = 'v' + ver;
+            return;
+        }
+
+        var lt = versionLt(ver, latest);
+        var gt = versionLt(latest, ver);
+
+        if (lt) {
+            cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span class="ps-ver-outdated">(Update available v' + PT.escapeHtml(latest) + ')</span>' +
+                ' <button class="btn cbi-button cbi-button-apply" id="ps-tweaker-update-btn" style="font-size:12px;padding:2px 8px">Update from Git</button>' +
+                '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
+            var btn = document.getElementById('ps-tweaker-update-btn');
+            if (btn) btn.addEventListener('click', function() { doUpdateTweaker(false); });
+        } else if (gt) {
+            cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span style="font-size:12px;color:#ff9800">(Newer than repo v' + PT.escapeHtml(latest) + ')</span>' +
+                ' <button class="btn cbi-button" id="ps-tweaker-downgrade-btn" style="font-size:12px;padding:2px 8px">Downgrade from Git</button>' +
+                '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
+            var dgBtn = document.getElementById('ps-tweaker-downgrade-btn');
+            if (dgBtn) dgBtn.addEventListener('click', function() { doUpdateTweaker(true); });
+        } else {
+            cell.textContent = 'v' + ver;
+        }
+    }
+
+    function renderArgonRow(data) {
+        var row = document.getElementById('ps-row-argon');
+        var cell = document.getElementById('ps-info-argon');
+        var ver = data.argon_theme_version;
+        var latest = data.argon_theme_latest;
+
+        // no installed theme -> hide the row entirely, keep the table layout intact
+        if (!ver) {
+            if (row) row.style.display = 'none';
+            cell.textContent = '';
+            return;
+        }
+        if (row) row.style.display = '';
+
+        var v = PT.escapeHtml(ver);
+        if (latest && versionLt(ver, latest)) {
+            cell.innerHTML = v + ' <span class="ps-ver-outdated">(Update available ' + PT.escapeHtml(latest) + ')</span>' +
+                ' <button class="btn cbi-button cbi-button-apply" id="ps-argon-update-btn" style="font-size:12px;padding:2px 8px">Update Theme</button>' +
+                '<span id="ps-argon-status" style="font-size:12px;margin-left:6px"></span>';
+            var btn = document.getElementById('ps-argon-update-btn');
+            if (btn) btn.addEventListener('click', doUpdateArgon);
+        } else {
+            cell.textContent = v;
+        }
+    }
+
     function loadInfo() {
         loadingEl.style.display = 'block';
         tableEl.style.display = 'none';
@@ -232,6 +251,56 @@ window.PT = {
             } else {
                 renderError('HTTP error: ' + status);
             }
+        });
+    }
+
+    function doCheckUpdates() {
+        checkUpdatesBtn.disabled = true;
+        setUpdateStatus('Checking for updates...', '#2196f3');
+
+        PT.xhrPost(PT.urls.checkUpdates, '', function(xhr) {
+            checkUpdatesBtn.disabled = false;
+            if (!xhr || xhr.status !== 200) {
+                setUpdateStatus(xhr ? 'HTTP error' : 'Network error', '#f44336');
+                return;
+            }
+            var resp = null;
+            try { resp = JSON.parse(xhr.responseText); } catch (e) {}
+            if (!resp) {
+                setUpdateStatus('Invalid response', '#f44336');
+                return;
+            }
+
+            if (!lastData) lastData = {};
+            var pk = resp.podkop || {};
+            if (!pk.error) {
+                lastData.podkop_latest_version = pk.latest_version || 'unknown';
+                lastData.update_available = !!pk.update_available;
+            }
+            var tw = resp.tweaker || {};
+            if (!tw.error) {
+                lastData.tweaker_version = tw.current_version || lastData.tweaker_version;
+                tweakerLatest = tw.latest_version || null;
+                lastData.tweaker_latest = tweakerLatest;
+                if (tw.download_url) tweakerDownloadUrl = tw.download_url;
+            }
+            var th = resp.theme || {};
+            if (!th.error) {
+                if (th.current_version) lastData.argon_theme_version = th.current_version;
+                lastData.argon_theme_latest = th.latest_version || null;
+            }
+
+            renderRows(lastData);
+            var bits = [];
+            if (pk.error) bits.push('Podkop: error');
+            else bits.push('Podkop: ' + (pk.update_available ? 'update available' : 'up to date'));
+            if (tw.error === 'rate_limited') bits.push('Tweaker: checked just now');
+            else if (tw.error) bits.push('Tweaker: error');
+            else bits.push('Tweaker: ' + (tw.update_available ? 'update available' : 'up to date'));
+            if (!th.error && lastData.argon_theme_version) {
+                bits.push('Argon: ' + (th.update_available ? 'update available' : 'up to date'));
+            }
+            setUpdateStatus(bits.join('  |  '), '#4caf50');
         });
     }
 
@@ -261,61 +330,36 @@ window.PT = {
         });
     }
 
-    function formatCountdown(sec) {
-        var m = Math.floor(sec / 60);
-        var s = sec % 60;
-        return (m > 0 ? m + ':' + (s < 10 ? '0' : '') + s : s + 's');
-    }
+    function doUpdateArgon() {
+        if (!confirm('Update the Argon theme?\n\nTypography settings are saved and restored automatically (including CSS reinjection).\nThe web interface will restart and the page will reload.')) return;
 
-    function startCountdown(seconds) {
-        if (countdownTimer) clearInterval(countdownTimer);
-        var countdownEl = document.getElementById('ps-tweaker-countdown');
-        if (!countdownEl) return;
-        var remaining = seconds;
-        countdownEl.textContent = 'Try again in ' + formatCountdown(remaining);
-        countdownTimer = setInterval(function() {
-            remaining--;
-            if (remaining <= 0) {
-                clearInterval(countdownTimer);
-                countdownTimer = null;
-                countdownEl.textContent = '';
-                return;
-            }
-            countdownEl.textContent = 'Try again in ' + formatCountdown(remaining);
-        }, 1000);
-    }
+        var btn = document.getElementById('ps-argon-update-btn');
+        var statusEl = document.getElementById('ps-argon-status');
+        if (btn) btn.disabled = true;
+        if (statusEl) { statusEl.textContent = 'Updating...'; statusEl.style.color = '#2196f3'; }
 
-    function setTweakerStatus(text, color) {
-        var el = document.getElementById('ps-tweaker-status');
-        if (el) { el.textContent = text; el.style.color = color || '#888'; }
-    }
-
-    function doCheckTweaker() {
-        setTweakerStatus('Checking...', '#2196f3');
-
-        PT.getJson(PT.urls.tweakerCheck, function(resp, status) {
-            if (!resp) {
-                setTweakerStatus(status === 0 ? 'Network error' : 'HTTP error: ' + status, '#f44336');
-                return;
+        PT.xhrPost(PT.urls.argonThemeUpdate, '', function(xhr) {
+            if (xhr && xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success) {
+                        if (statusEl) { statusEl.textContent = 'Updated to ' + resp.new_version + '! Reloading...'; statusEl.style.color = '#4caf50'; }
+                        setTimeout(function() { window.location.reload(); }, 5000);
+                        return;
+                    }
+                    if (statusEl) { statusEl.textContent = resp.error || 'Update failed'; statusEl.style.color = '#f44336'; }
+                } catch (e) {
+                    if (statusEl) { statusEl.textContent = 'Invalid response'; statusEl.style.color = '#f44336'; }
+                }
+            } else {
+                if (statusEl) { statusEl.textContent = xhr ? 'HTTP error: ' + xhr.status : 'Network error'; statusEl.style.color = '#f44336'; }
             }
-            if (resp.error === 'rate_limited') {
-                setTweakerStatus('', '');
-                startCountdown(resp.retry_after || 900);
-                return;
-            }
-            if (resp.error) {
-                setTweakerStatus(resp.error, '#f44336');
-                return;
-            }
-            tweakerLatest = resp.latest_version;
-            tweakerDownloadUrl = resp.download_url || '';
-            renderTweakerRow({ tweaker_version: resp.current_version });
-            setTweakerStatus('', '');
+            if (btn) btn.disabled = false;
         });
     }
 
     function doUpdateTweaker(isDowngrade) {
-        if (!tweakerDownloadUrl) return;
+        if (!tweakerDownloadUrl && !tweakerLatest) return;
         var confirmed;
         if (isDowngrade) {
             confirmed = confirm('Your version is newer than the repository version (' + tweakerLatest + ').\n\nDowngrade to v' + PT.escapeHtml(tweakerLatest) + '?\n\nThe web interface will restart during the update.');
@@ -324,8 +368,8 @@ window.PT = {
         }
         if (!confirmed) return;
 
-        var statusEl = document.getElementById('ps-tweaker-status');
         var btnId = isDowngrade ? 'ps-tweaker-downgrade-btn' : 'ps-tweaker-update-btn';
+        var statusEl = document.getElementById('ps-tweaker-status');
         var btn = document.getElementById(btnId);
         if (btn) btn.disabled = true;
         if (statusEl) { statusEl.textContent = 'Downloading...'; statusEl.style.color = '#2196f3'; }
@@ -340,10 +384,10 @@ window.PT = {
                     if (resp.success) {
                         if (statusEl) { statusEl.textContent = 'Update applied! Reloading...'; statusEl.style.color = '#4caf50'; }
                         setTimeout(function() { window.location.reload(); }, 5000);
-                    } else {
-                        if (statusEl) { statusEl.textContent = resp.error || 'Update failed'; statusEl.style.color = '#f44336'; }
-                        if (btn) btn.disabled = false;
+                        return;
                     }
+                    if (statusEl) { statusEl.textContent = resp.error || 'Update failed'; statusEl.style.color = '#f44336'; }
+                    if (btn) btn.disabled = false;
                 } catch (e) {
                     if (statusEl) { statusEl.textContent = 'Invalid response'; statusEl.style.color = '#f44336'; }
                     if (btn) btn.disabled = false;
@@ -365,6 +409,7 @@ window.PT = {
     });
 
     updatePodkopBtn.addEventListener('click', doUpdatePodkop);
+    checkUpdatesBtn.addEventListener('click', doCheckUpdates);
 
     refreshBtn.addEventListener('click', function() {
         setUpdateStatus('', '');
