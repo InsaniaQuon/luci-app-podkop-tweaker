@@ -54,6 +54,45 @@ function M.no_cache()
     http.header("Expires", "0")
 end
 
+-- Register before any formvalue()/CSRF call parses the multipart body.
+-- Collect bounded file bytes in memory only; no file is written before CSRF.
+function M.file_upload(field_name, max_size)
+    local http = require("luci.http")
+    local chunks, size = {}, 0
+    local filename, completed, upload_error
+
+    http.setfilehandler(function(meta, chunk, eof)
+        if meta.name ~= field_name or upload_error then return end
+        if completed then
+            upload_error = "Only one update archive is allowed"
+            chunks = {}
+            return
+        end
+        if type(meta.file) ~= "string" or meta.file == "" then
+            upload_error = "Missing archive filename"
+            return
+        end
+        filename = meta.file
+        if chunk and #chunk > 0 then
+            size = size + #chunk
+            if size > max_size then
+                upload_error = "Archive too large (max " .. max_size .. " bytes)"
+                chunks = {}
+                return
+            end
+            chunks[#chunks + 1] = chunk
+        end
+        if eof then completed = true end
+    end)
+
+    return function()
+        if upload_error then return nil, nil, upload_error end
+        if not filename then return nil, nil, "No file uploaded" end
+        if not completed then return nil, nil, "Incomplete archive upload" end
+        return table.concat(chunks), filename
+    end
+end
+
 -- Transport helper: stream a file as text/plain (empty string when missing)
 function M.send_text_file(path)
     local http = require("luci.http")

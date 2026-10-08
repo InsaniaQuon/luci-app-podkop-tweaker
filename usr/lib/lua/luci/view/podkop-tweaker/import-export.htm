@@ -378,15 +378,15 @@ window.PT = {
         if (!file) return;
         if (file.size > 4194304) {
             importStatus.textContent = 'File too large (max 4 MB)';
-            importStatus.style.color = '#f44336';
+            importStatus.style.color = PT.color('error');
             return;
         }
         importStatus.textContent = 'Reading file...';
-        importStatus.style.color = '#2196f3';
+        importStatus.style.color = PT.color('info');
         var reader = new FileReader();
         reader.onerror = function() {
             importStatus.textContent = 'File read failed';
-            importStatus.style.color = '#f44336';
+            importStatus.style.color = PT.color('error');
         };
         reader.onload = function() {
             importStatus.textContent = '';
@@ -416,7 +416,7 @@ window.PT = {
             return;
         }
         importStatus.textContent = 'Unrecognized file format';
-        importStatus.style.color = '#f44336';
+        importStatus.style.color = PT.color('error');
     }
 
     function resetReviewModal() {
@@ -582,7 +582,7 @@ window.PT = {
 
     function modalFail(msg) {
         reviewStatusEl.textContent = msg;
-        reviewStatusEl.style.color = '#f44336';
+        reviewStatusEl.style.color = PT.color('error');
         finishImportModal();
     }
 
@@ -626,7 +626,7 @@ window.PT = {
         reviewConfirmBtn.disabled = true;
         reviewConfirmBtn.textContent = 'Importing...';
         reviewStatusEl.textContent = 'Applying...';
-        reviewStatusEl.style.color = '#2196f3';
+        reviewStatusEl.style.color = PT.color('info');
 
         PT.xhrPost(PT.urls.importBundle,
             'content=' + encodeURIComponent(_pendingBundle.raw) +
@@ -642,23 +642,23 @@ window.PT = {
                 renderBundleResults(resp);
                 if (resp.restarting) {
                     reviewStatusEl.textContent = 'Podkop restarting...';
-                    reviewStatusEl.style.color = '#2196f3';
+                    reviewStatusEl.style.color = PT.color('info');
                     podkopWatcher.poll(
                         function() {
                             reviewStatusEl.textContent = 'Imported. Podkop is running.';
-                            reviewStatusEl.style.color = '#4caf50';
+                            reviewStatusEl.style.color = PT.color('success');
                             finishImportModal();
                         },
                         function() {
                             reviewStatusEl.textContent = 'Podkop did not start after import.';
-                            reviewStatusEl.style.color = '#f44336';
+                            reviewStatusEl.style.color = PT.color('error');
                             reviewRollbackBtn.style.display = 'inline-block';
                             finishImportModal();
                         }
                     );
                 } else {
                     reviewStatusEl.textContent = 'Import finished.';
-                    reviewStatusEl.style.color = '#4caf50';
+                    reviewStatusEl.style.color = PT.color('success');
                     finishImportModal();
                 }
             });
@@ -671,7 +671,7 @@ window.PT = {
         reviewConfirmBtn.disabled = true;
         reviewConfirmBtn.textContent = 'Importing...';
         reviewStatusEl.textContent = 'Importing ' + t.name.toLowerCase() + '...';
-        reviewStatusEl.style.color = '#2196f3';
+        reviewStatusEl.style.color = PT.color('info');
 
         PT.xhrPost(t.url(), 'content=' + encodeURIComponent(_pendingRaw.raw), function(xhr) {
             reviewConfirmBtn.disabled = false;
@@ -690,19 +690,19 @@ window.PT = {
                 podkopWatcher.poll(
                     function() {
                         reviewStatusEl.textContent = 'Imported successfully. Podkop is running.';
-                        reviewStatusEl.style.color = '#4caf50';
+                        reviewStatusEl.style.color = PT.color('success');
                         finishImportModal();
                     },
                     function() {
                         reviewStatusEl.textContent = t.name + ' did not start after import.';
-                        reviewStatusEl.style.color = '#f44336';
+                        reviewStatusEl.style.color = PT.color('error');
                         reviewRollbackBtn.style.display = 'inline-block';
                         finishImportModal();
                     }
                 );
             } else {
                 reviewStatusEl.textContent = 'Imported successfully.';
-                reviewStatusEl.style.color = '#4caf50';
+                reviewStatusEl.style.color = PT.color('success');
                 finishImportModal();
             }
         });
@@ -711,35 +711,35 @@ window.PT = {
     reviewRollbackBtn.addEventListener('click', function() {
         reviewRollbackBtn.style.display = 'none';
         reviewStatusEl.textContent = 'Rolling back...';
-        reviewStatusEl.style.color = '#2196f3';
+        reviewStatusEl.style.color = PT.color('info');
         PT.xhrPost(PT.urls.rollback, '', function(xhr) {
             if (!xhr) {
                 reviewStatusEl.textContent = 'Rollback network error';
-                reviewStatusEl.style.color = '#f44336';
+                reviewStatusEl.style.color = PT.color('error');
                 return;
             }
             try {
                 var resp = JSON.parse(xhr.responseText);
                 if (resp.success) {
                     reviewStatusEl.textContent = 'Rolled back. Restarting...';
-                    reviewStatusEl.style.color = '#2196f3';
+                    reviewStatusEl.style.color = PT.color('info');
                     podkopWatcher.poll(
                         function() {
                             reviewStatusEl.textContent = 'Rolled back successfully.';
-                            reviewStatusEl.style.color = '#4caf50';
+                            reviewStatusEl.style.color = PT.color('success');
                         },
                         function() {
                             reviewStatusEl.textContent = 'Rollback done but sing-box still not running.';
-                            reviewStatusEl.style.color = '#ff9800';
+                            reviewStatusEl.style.color = PT.color('warning');
                         }
                     );
                 } else {
                     reviewStatusEl.textContent = 'Rollback failed: ' + (resp.error || '');
-                    reviewStatusEl.style.color = '#f44336';
+                    reviewStatusEl.style.color = PT.color('error');
                 }
             } catch (e) {
                 reviewStatusEl.textContent = 'Rollback failed';
-                reviewStatusEl.style.color = '#f44336';
+                reviewStatusEl.style.color = PT.color('error');
             }
         });
     });

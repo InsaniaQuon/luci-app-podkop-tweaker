@@ -1,3 +1,15 @@
 
 config settings 'settings'
 	option show_argon_tab '0'
+
+config appearance 'appearance'
+	option profile 'soft'
+	option mono_font_size '13'
+	option mono_font_weight '400'
+	option mono_line_height '1.6'
+	option color_success_light '#00be00'
+	option color_error_light '#ff0000'
+	option color_warning_light '#ff8c42'
+	option color_success_dark '#00ff00'
+	option color_error_dark '#ff8080'
+	option color_warning_dark '#ffbd42'

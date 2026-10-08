@@ -181,6 +181,44 @@ describe("api_update.upload", function()
         assert.same({ error = "Invalid archive" },
             UPD.upload(b64("bin"), "luci-app-podkop-tweaker-v4.3.0.tar.gz"))
     end)
+
+    it("binary upload supports an archive larger than LuCI's text-field limit", function()
+        local UPD = begin_upd({ sys = { tar_list_out(STRICT_FILES), find_out(TMP, STRICT_FILES) } })
+        seed_tree(TMP, STRICT_FILES, "4.3.0")
+        local bytes = "\31\139" .. string.rep("\0\255", 55000)
+        assert.truthy(#bytes > 102400)
+        assert.truthy(#bytes < UPD.UPLOAD_MAX_SIZE)
+        local r = UPD.upload_binary(bytes, GOOD_NAME)
+        assert.is_true(r.success)
+        assert.equal(bytes, H.vfs_read(TMP .. "/upload.tar.gz"))
+    end)
+
+    it("binary upload enforces the same size limit before writing or extracting", function()
+        local UPD = begin_upd({})
+        local r = UPD.upload_binary(string.rep("x", UPD.UPLOAD_MAX_SIZE + 1), GOOD_NAME)
+        assert.same({ error = "Invalid archive" }, r)
+        assert.equal(0, #H.exec_cmds())
+        assert.falsy(H.vfs_exists(TMP .. "/upload.tar.gz"))
+    end)
+
+    it("strict member check accepts normal release directory entries", function()
+        local members = { "./", "./usr/", "./usr/lib/", "./etc/", "./www/", CTRL_REL }
+        local UPD = begin_upd({ sys = { tar_list_out(members), find_out(TMP, { CTRL_REL }) } })
+        seed_tree(TMP, { CTRL_REL }, "4.3.0")
+        assert.is_true(UPD.upload_binary("archive", GOOD_NAME).success)
+    end)
+
+    it("directory traversal and absolute members are rejected before extraction", function()
+        for _, bad in ipairs({ "../../etc/", "/etc/", "/tmp/evil.lua" }) do
+            local UPD = begin_upd({ sys = { tar_list_out({ CTRL_REL, bad }) } })
+            local r = UPD.upload_binary("archive", GOOD_NAME)
+            assert.same({ error = "Invalid archive" }, r)
+            for _, cmd in ipairs(H.exec_cmds()) do
+                assert.falsy(cmd:find("tar -xzf", 1, true))
+            end
+            H.finish()
+        end
+    end)
 end)
 
 describe("api_update.apply", function()

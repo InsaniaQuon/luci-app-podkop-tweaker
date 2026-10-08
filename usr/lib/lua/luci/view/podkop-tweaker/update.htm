@@ -65,9 +65,11 @@ window.PT = {
     var currentVerEl = document.getElementById('ps-current-ver');
     var archiveVerEl = document.getElementById('ps-archive-ver');
     var actionsEl = document.getElementById('ps-update-actions');
+    var uploading = false;
 
     function setStatus(text, color) {
-        actionsEl.innerHTML = '<span class="ps-update-status" style="color:' + (color || '#888') + '">' + PT.escapeHtml(text) + '</span>';
+        resultEl.style.display = '';
+        actionsEl.innerHTML = '<span class="ps-update-status" style="color:' + PT.color(color) + '">' + PT.escapeHtml(text) + '</span>';
     }
 
     function showResult(data) {
@@ -76,52 +78,59 @@ window.PT = {
         archiveVerEl.textContent = 'v' + data.archive_version;
 
         if (data.same_version) {
-            archiveVerEl.style.color = '#ff9800';
-            actionsEl.innerHTML = '<span class="ps-update-status" style="color:#ff9800">Same version as installed</span>';
+            archiveVerEl.style.color = PT.color('warning');
+            actionsEl.innerHTML = '<span class="ps-update-status" style="color:var(--ps-warning)">Same version as installed</span>';
         } else if (data.can_update) {
-            archiveVerEl.style.color = '#4caf50';
+            archiveVerEl.style.color = PT.color('success');
             actionsEl.innerHTML = '<button class="btn cbi-button cbi-button-apply" id="ps-apply-btn">\u2B06 Update</button>'
                 + '<span class="ps-update-status" id="ps-apply-status" style="margin-left:8px"></span>';
             document.getElementById('ps-apply-btn').addEventListener('click', doApply);
         } else {
-            archiveVerEl.style.color = '#f44336';
-            actionsEl.innerHTML = '<span class="ps-update-status" style="color:#f44336">Archive version is older than installed</span>';
+            archiveVerEl.style.color = PT.color('error');
+            actionsEl.innerHTML = '<span class="ps-update-status" style="color:var(--ps-error)">Archive version is older than installed</span>';
         }
     }
 
-    function showError(text) {
+    function showError(text, details) {
         resultEl.style.display = '';
         currentVerEl.textContent = '-';
         archiveVerEl.textContent = '-';
-        actionsEl.innerHTML = '<span class="ps-update-status" style="color:#f44336">' + PT.escapeHtml(text) + '</span>';
+        actionsEl.innerHTML = '';
+        var span = document.createElement('span');
+        span.className = 'ps-update-status';
+        actionsEl.appendChild(span);
+        PT.setErr(span, text, details);
     }
 
     function uploadFile(file) {
+        if (uploading) return;
+        if (file.size > 128000) {
+            showError('Archive too large (max 128000 bytes)');
+            return;
+        }
+        uploading = true;
+        fileInput.disabled = true;
         setStatus('Uploading...', '#2196f3');
 
-        var reader = new FileReader();
-        reader.onerror = function() { showError('Failed to read file'); };
-        reader.onload = function() {
-            var b64 = reader.result.split(',')[1];
-            if (!b64) { showError('Failed to read file'); return; }
-
-            PT.xhrPost(PT.urls.upload,
-                'file_data=' + encodeURIComponent(b64) +
-                '&file_name=' + encodeURIComponent(file.name),
-                function(xhr) {
-                    if (xhr && xhr.status === 200) {
-                        try {
-                            var resp = JSON.parse(xhr.responseText);
-                            if (resp.success) {
-                                showResult(resp);
-                            } else {
-                                showError(resp.error || 'Unknown error');
-                            }
-                        } catch (e) { showError('Invalid response'); }
-                    } else { showError(xhr ? 'HTTP error: ' + xhr.status : 'Network error'); }
-                });
-        };
-        reader.readAsDataURL(file);
+        var form = new FormData();
+        form.append('archive', file, file.name);
+        PT.xhrPost(PT.urls.upload, form, function(xhr) {
+            uploading = false;
+            fileInput.disabled = false;
+            if (!xhr) { showError('Network error'); return; }
+            var resp = null;
+            try { resp = JSON.parse(xhr.responseText); } catch (e) {}
+            if (xhr.status !== 200) {
+                showError('HTTP error: ' + xhr.status + (resp && resp.error ? ': ' + resp.error : ''),
+                    resp && resp.details ? resp.details : xhr.responseText);
+            } else if (!resp) {
+                showError('Invalid response', xhr.responseText);
+            } else if (resp.success) {
+                showResult(resp);
+            } else {
+                showError(resp.error || 'Unknown error', resp.details);
+            }
+        });
     }
 
     function doApply() {
@@ -131,7 +140,7 @@ window.PT = {
 
         applyBtn.disabled = true;
         statusEl.textContent = 'Applying update...';
-        statusEl.style.color = '#2196f3';
+        statusEl.style.color = PT.color('info');
 
         PT.xhrPost(PT.urls.apply, '', function(xhr) {
             if (xhr && xhr.status === 200) {
@@ -139,21 +148,18 @@ window.PT = {
                     var resp = JSON.parse(xhr.responseText);
                     if (resp.success) {
                         statusEl.textContent = 'Update applied! Reloading...';
-                        statusEl.style.color = '#4caf50';
+                        statusEl.style.color = PT.color('success');
                         setTimeout(function() { window.location.reload(); }, 5000);
                     } else {
-                        statusEl.textContent = resp.error || 'Update failed';
-                        statusEl.style.color = '#f44336';
+                        PT.setErr(statusEl, resp.error || 'Update failed', resp.details);
                         applyBtn.disabled = false;
                     }
                 } catch (e) {
-                    statusEl.textContent = 'Invalid response';
-                    statusEl.style.color = '#f44336';
+                    PT.setErr(statusEl, 'Invalid response', xhr.responseText);
                     applyBtn.disabled = false;
                 }
             } else {
-                statusEl.textContent = xhr ? 'HTTP error: ' + xhr.status : 'Network error';
-                statusEl.style.color = '#f44336';
+                PT.setErr(statusEl, xhr ? 'HTTP error: ' + xhr.status : 'Network error', xhr && xhr.responseText);
                 applyBtn.disabled = false;
             }
         });

@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.5.0 | 03.09.2026 | System Info: argon theme version + update flow, unified 24h update checks
+-- Podkop Tweaker | v4.6.0 | 08.10.2026 | app appearance and selected status color defaults
 
-local APP_VERSION = "4.5.0"
+local APP_VERSION = "4.6.0"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")
@@ -145,6 +145,18 @@ function index()
     entry({"admin", "services", "podkop-tweaker", "api", "argon_reinject"},
         call("api_argon_reinject")).leaf = true
 
+    entry({"admin", "services", "podkop-tweaker", "api", "tweaker_appearance"},
+        call("api_tweaker_appearance")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "tweaker_appearance_save"},
+        call("api_tweaker_appearance_save")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "tweaker_appearance_reset"},
+        call("api_tweaker_appearance_reset")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "tweaker_appearance_colors_reset"},
+        call("api_tweaker_appearance_colors_reset")).leaf = true
+
     entry({"admin", "services", "podkop-tweaker", "api", "podkop_service_toggle"},
         call("api_podkop_service_toggle")).leaf = true
 
@@ -253,11 +265,32 @@ end
 
 local function render_page(template_name, extra)
     local uci = require("luci.model.uci").cursor()
+    local media = uci:get("luci", "main", "mediaurlbase") or ""
+    local theme, mode = "", ""
+    if media:find("argon", 1, true) then
+        theme, mode = "argon", "normal"
+        -- Match Argon's get_first('argon', 'global', 'mode'): the section may
+        -- be anonymous, so do not assume it is named "global".
+        local found = false
+        uci:foreach("argon", "global", function(s)
+            if not found then
+                found = true
+                if s.mode == "dark" or s.mode == "light" or s.mode == "normal" then
+                    mode = s.mode
+                end
+            end
+        end)
+    elseif media:find("bootstrap", 1, true) then
+        theme = "bootstrap"
+    end
     local vars = {
         app_version = APP_VERSION,
         csrf_token = H.ensure_csrf_token(),
         show_argon = (uci:get("podkop-tweaker", "settings", "show_argon_tab") == "1"),
-        active = template_name
+        active = template_name,
+        pt_theme = theme,
+        pt_theme_mode = mode,
+        pt_appearance = require("podkop-tweaker.appearance").read()
     }
     if extra then for k, v in pairs(extra) do vars[k] = v end end
     luci.template.render("podkop-tweaker/" .. template_name, vars)
@@ -511,6 +544,25 @@ function api_argon_typography_reset() json_api(true, ARG.typography_reset) end
 function api_argon_reinject() json_api(true, ARG.reinject) end
 function api_argon_theme_update() json_api(true, ARG.theme_update) end
 
+function api_tweaker_appearance() json_api(false, ARG.appearance) end
+function api_tweaker_appearance_save()
+    local http = require("luci.http")
+    json_api(true, ARG.appearance_save, {
+        profile = http.formvalue("profile"),
+        mono_font_size = http.formvalue("mono_font_size"),
+        mono_font_weight = http.formvalue("mono_font_weight"),
+        mono_line_height = http.formvalue("mono_line_height"),
+        color_success_light = http.formvalue("color_success_light"),
+        color_error_light = http.formvalue("color_error_light"),
+        color_warning_light = http.formvalue("color_warning_light"),
+        color_success_dark = http.formvalue("color_success_dark"),
+        color_error_dark = http.formvalue("color_error_dark"),
+        color_warning_dark = http.formvalue("color_warning_dark")
+    })
+end
+function api_tweaker_appearance_reset() json_api(true, ARG.appearance_reset) end
+function api_tweaker_appearance_colors_reset() json_api(true, ARG.appearance_colors_reset) end
+
 -- === Bundle ===
 
 function api_export_bundle() return BND.export() end
@@ -527,9 +579,29 @@ end
 
 function api_upload_update()
     local http = require("luci.http")
-    json_api(true, UPD.upload,
-        http.formvalue("file_data") or "",
-        http.formvalue("file_name") or "")
+    http.prepare_content("application/json")
+    H.no_cache()
+    -- Form parsing itself may throw before json_api() reaches pcall(fn).
+    -- Keep this transport endpoint guarded, including parsing and CSRF.
+    local ok, resp = pcall(function()
+        local read_upload
+        if (http.getenv("CONTENT_TYPE") or ""):match("^multipart/form%-data") then
+            read_upload = H.file_upload("archive", UPD.UPLOAD_MAX_SIZE)
+        end
+        if not H.verify_csrf() then return end
+        if read_upload then
+            local data, filename, err = read_upload()
+            if err then return { error = err } end
+            return UPD.upload_binary(data, filename)
+        end
+        -- Retain the existing base64 contract for older clients.
+        return UPD.upload(http.formvalue("file_data") or "", http.formvalue("file_name") or "")
+    end)
+    if not ok then
+        http.status(400, "Bad Request")
+        resp = { error = "Cannot read update request", details = tostring(resp) }
+    end
+    if resp then http.write_json(resp) end
 end
 function api_apply_update() json_api(true, UPD.apply) end
 function api_clear_cache() json_api(true, UPD.clear_cache) end

@@ -21,15 +21,15 @@ Author: InsaniaQuon
                     <div style="margin-bottom:8px;">
                         <span style="font-size:15px;font-weight:700;">DNS Chain</span>
                     </div>
-                    <div id="ps-chain-content" style="font-size:13px;line-height:1.5;font-family:'Consolas','Monaco','Courier New',monospace;background:var(--ps-bg-alt,#f5f5f5);padding:16px;border-radius:6px;overflow-x:auto;white-space:pre;">Loading...</div>
+                    <div id="ps-chain-content" class="ps-dns-chain">Loading...</div>
 
-                    <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+                    <hr style="border:none;border-top:1px solid var(--ps-border);margin:20px 0;">
 
                     <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
                         <span style="font-size:15px;font-weight:700;">DNS Leak Test</span>
                         <button class="btn cbi-button" id="ps-leak-run">Run Leak Test</button>
                     </div>
-                    <div id="ps-leak-loading" style="display:none;color:var(--ps-text-dim,#888);">Running DNS leak test...</div>
+                    <div id="ps-leak-loading" style="display:none;color:var(--ps-text-dim);">Running DNS leak test...</div>
                     <div id="ps-leak-result" style="display:none;">
                         <table class="ps-sysinfo-table">
                             <tr><td class="ps-sysinfo-label">Upstream Resolved IP</td><td class="ps-sysinfo-value" id="ps-leak-upstream">&mdash;</td></tr>
@@ -39,13 +39,13 @@ Author: InsaniaQuon
                         </table>
                     </div>
 
-                    <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+                    <hr style="border:none;border-top:1px solid var(--ps-border);margin:20px 0;">
 
                     <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
                         <span style="font-size:15px;font-weight:700;">Proxy Connectivity Test</span>
                         <button class="btn cbi-button" id="ps-proxy-run">Run Proxy Test</button>
                     </div>
-                    <div id="ps-proxy-loading" style="display:none;color:var(--ps-text-dim,#888);">Running proxy test...</div>
+                    <div id="ps-proxy-loading" style="display:none;color:var(--ps-text-dim);">Running proxy test...</div>
                     <table class="ps-diag-table" id="ps-proxy-table" style="display:none;">
                         <thead>
                             <tr>
@@ -57,15 +57,15 @@ Author: InsaniaQuon
                         </thead>
                         <tbody id="ps-proxy-body"></tbody>
                     </table>
-                    <div id="ps-proxy-error" style="display:none;color:#f44336;font-size:13px;margin-top:6px;"></div>
+                    <div id="ps-proxy-error" style="display:none;color:var(--ps-error);font-size:13px;margin-top:6px;"></div>
 
-                    <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+                    <hr style="border:none;border-top:1px solid var(--ps-border);margin:20px 0;">
 
                     <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
                         <span style="font-size:15px;font-weight:700;">DNS Resolution Test</span>
                         <button class="btn cbi-button" id="ps-dns-run">Run DNS Test</button>
                     </div>
-                    <div id="ps-dns-loading" style="display:none;color:var(--ps-text-dim,#888);">Running DNS tests...</div>
+                    <div id="ps-dns-loading" style="display:none;color:var(--ps-text-dim);">Running DNS tests...</div>
                     <table class="ps-diag-table" id="ps-dns-table" style="display:none;">
                         <thead>
                             <tr>
@@ -78,13 +78,13 @@ Author: InsaniaQuon
                         <tbody id="ps-dns-body"></tbody>
                     </table>
 
-                    <hr style="border:none;border-top:1px solid var(--ps-border,#ddd);margin:20px 0;">
+                    <hr style="border:none;border-top:1px solid var(--ps-border);margin:20px 0;">
 
                     <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
                         <span style="font-size:15px;font-weight:700;">End-to-End Test</span>
                         <button class="btn cbi-button" id="ps-e2e-run">Run E2E Test</button>
                     </div>
-                    <div id="ps-e2e-loading" style="display:none;color:var(--ps-text-dim,#888);">Running end-to-end test...</div>
+                    <div id="ps-e2e-loading" style="display:none;color:var(--ps-text-dim);">Running end-to-end test...</div>
                     <div id="ps-e2e-result" style="display:none;">
                         <table class="ps-sysinfo-table">
                             <tr><td class="ps-sysinfo-label">External IP</td><td class="ps-sysinfo-value" id="ps-e2e-ip">&mdash;</td></tr>
@@ -122,15 +122,15 @@ Author: InsaniaQuon
 <link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
 <style>
 .ps-diag-table{width:auto;border-collapse:collapse;margin:0 0 16px;font-size:13px}
-.ps-diag-table th{font-size:11px;font-weight:600;text-align:center;padding:6px 10px;border-bottom:2px solid var(--ps-border,#ddd);color:var(--ps-text-dim,#888);white-space:nowrap}
-.ps-diag-table td{padding:5px 10px;border-bottom:1px solid var(--ps-bg-alt,#f0f0f0);border-right:1px solid var(--ps-bg-alt,#f0f0f0);white-space:nowrap}
+.ps-diag-table th{font-size:11px;font-weight:600;text-align:center;padding:6px 10px;border-bottom:2px solid var(--ps-border);color:var(--ps-text-dim);white-space:nowrap}
+.ps-diag-table td{padding:5px 10px;border-bottom:1px solid var(--ps-bg-alt);border-right:1px solid var(--ps-bg-alt);white-space:nowrap}
 .ps-diag-table td:last-child{border-right:none}
 .ps-diag-table tr:last-child td{border-bottom:none}
 .ps-diag-table td:first-child{font-weight:600;text-align:left}
 .ps-diag-table td:not(:first-child){text-align:center;font-family:'Consolas','Monaco',monospace;font-size:12px}
 .ps-chain-line{display:block}
-.ps-chain-ok{color:#4caf50;font-weight:600}
-.ps-chain-fail{color:#f44336;font-weight:600}
+.ps-chain-ok{color:var(--ps-success);font-weight:600}
+.ps-chain-fail{color:var(--ps-error);font-weight:600}
 .ps-sysinfo-table td{white-space:normal;word-break:break-word}
 #ps-diaglog-wrap .ps-log-detail-line{white-space:normal;word-break:break-word}
 </style>
@@ -236,7 +236,7 @@ window.PT = {
     }
 
     function statusColor(status) {
-        return status === 'OK' ? '#4caf50' : (status === 'FAIL' ? '#ff9800' : '#f44336');
+        return PT.color(status === 'OK' ? 'success' : 'error');
     }
 
     function renderRunLog() {
@@ -284,7 +284,7 @@ window.PT = {
     });
 
     function statusCell(status) {
-        var color = status === 'OK' ? '#4caf50' : '#f44336';
+        var color = PT.color(status === 'OK' ? 'success' : 'error');
         return '<span style="color:' + color + ';font-weight:600;">' + PT.escapeHtml(status) + '</span>';
     }
 
@@ -424,7 +424,7 @@ window.PT = {
         PT.xhrPost(PT.urls.diagDns, '', function(xhr) {
             loading.style.display = 'none';
             if (!xhr || xhr.status !== 200) {
-                body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Request failed</td></tr>';
+                body.innerHTML = '<tr><td colspan="4" style="color:var(--ps-error);">Request failed</td></tr>';
                 table.style.display = '';
                 appendRunLog('DNS Resolution Test', 'ERROR', null, 'Request failed', Date.now() - t0, xhr ? xhr.status : 0);
                 if (onDone) onDone(null);
@@ -451,7 +451,7 @@ window.PT = {
                 appendRunLog('DNS Resolution Test', allOk ? 'OK' : 'FAIL', { rows: results }, '', Date.now() - t0);
                 if (onDone) onDone(results);
             } catch (e) {
-                body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Parse error</td></tr>';
+                body.innerHTML = '<tr><td colspan="4" style="color:var(--ps-error);">Parse error</td></tr>';
                 table.style.display = '';
                 appendRunLog('DNS Resolution Test', 'ERROR', null, 'Parse error', Date.now() - t0, xhr.status);
                 if (onDone) onDone(null);
@@ -473,7 +473,7 @@ window.PT = {
         PT.xhrPost(PT.urls.diagProxy, '', function(xhr) {
             loading.style.display = 'none';
             if (!xhr || xhr.status !== 200) {
-                body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Request failed</td></tr>';
+                body.innerHTML = '<tr><td colspan="4" style="color:var(--ps-error);">Request failed</td></tr>';
                 table.style.display = '';
                 appendRunLog('Proxy Connectivity Test', 'ERROR', null, 'Request failed', Date.now() - t0, xhr ? xhr.status : 0);
                 if (onDone) onDone(null);
@@ -507,7 +507,7 @@ window.PT = {
                     '', Date.now() - t0);
                 if (onDone) onDone(results);
             } catch (e) {
-                body.innerHTML = '<tr><td colspan="4" style="color:#f44336;">Parse error</td></tr>';
+                body.innerHTML = '<tr><td colspan="4" style="color:var(--ps-error);">Parse error</td></tr>';
                 table.style.display = '';
                 appendRunLog('Proxy Connectivity Test', 'ERROR', null, 'Parse error', Date.now() - t0, xhr.status);
                 if (onDone) onDone(null);
@@ -536,7 +536,7 @@ window.PT = {
                 document.getElementById('ps-leak-upstream').textContent = resp.upstream_ip || '\u2014';
                 document.getElementById('ps-leak-dnsmasq').textContent = resp.dnsmasq_ip || '\u2014';
                 document.getElementById('ps-leak-detail').textContent = resp.detail || '\u2014';
-                var leakColor = resp.leak_detected ? '#f44336' : '#4caf50';
+                var leakColor = PT.color(resp.leak_detected ? 'error' : 'success');
                 var leakText = resp.leak_detected ? 'LEAK DETECTED' : 'No leak';
                 document.getElementById('ps-leak-status').innerHTML = '<span style="color:' + leakColor + ';font-weight:700;">' + PT.escapeHtml(leakText) + '</span>';
                 result.style.display = '';

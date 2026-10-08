@@ -25,6 +25,12 @@ jobs:
       - name: Run tests
         run: busted -o utfTerminal tests/
 
+      - name: Run frontend update regression tests
+        run: node tests/frontend_update_spec.js
+
+      - name: Run frontend theme regression tests
+        run: node tests/frontend_theme_spec.js
+
   release:
     needs: test
     runs-on: ubuntu-latest

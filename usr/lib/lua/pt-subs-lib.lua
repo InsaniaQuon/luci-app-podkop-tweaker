@@ -496,13 +496,20 @@ function M.apply_files_from_dir(extract_dir, relaxed)
                 if src_fd then
                     local data = src_fd:read("*a")
                     src_fd:close()
-                    local dst_fd = io.open(dest, "wb")
-                    if dst_fd then
-                        dst_fd:write(data)
-                        dst_fd:close()
-                        copied = copied + 1
-                        if rel:match("^usr/bin/") or rel:match("^etc/init%.d/") or rel:match("^etc/rc%.d/") then
-                            os.execute("chmod +x '" .. dest .. "' 2>/dev/null")
+                    -- Ship defaults for first install, preserve app-owned UCI on
+                    -- self-update (appearance and optional-tab visibility).
+                    local existing = rel == "etc/config/podkop-tweaker" and io.open(dest, "rb")
+                    if existing then
+                        existing:close()
+                    else
+                        local dst_fd = io.open(dest, "wb")
+                        if dst_fd then
+                            dst_fd:write(data)
+                            dst_fd:close()
+                            copied = copied + 1
+                            if rel:match("^usr/bin/") or rel:match("^etc/init%.d/") or rel:match("^etc/rc%.d/") then
+                                os.execute("chmod +x '" .. dest .. "' 2>/dev/null")
+                            end
                         end
                     end
                 end

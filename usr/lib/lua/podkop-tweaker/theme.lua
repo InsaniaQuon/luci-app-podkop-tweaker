@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.5.0 | 03.09.2026 | Argon theme: version detect, 24h GitHub check, one-shot update flow
+-- Podkop Tweaker | v4.5.1 | 08.10.2026 | Argon theme lifecycle; preserve full package-manager failure output
 -- Author: InsaniaQuon
 
 local LIB = require("podkop-tweaker.lib")
@@ -148,9 +148,7 @@ function M.update()
     -- typography snapshot: survives the cascade.css replacement
     local snapshot = ARGON.read_settings()
 
-    -- `cd /` first: package hooks (post-upgrade) resolve paths against the
-    -- current directory; CGI processes may run from an odd/deleted cwd and
-    -- apk then dies with "fchdir: Not a directory".
+    -- Use an explicit, stable working directory for the package manager.
     local install_cmd
     if manager == "apk" then
         install_cmd = "cd / && apk add --allow-untrusted " .. pkg_path .. " 2>&1; echo EXIT:$?"
@@ -169,8 +167,8 @@ function M.update()
     if exit_code ~= "0" then
         if not (now_ver and info.latest_version and now_ver == info.latest_version) then
             local msg = out:gsub("EXIT:%d+%s*$", ""):match("^%s*(.-)%s*$") or "install failed"
-            if #msg > 200 then msg = msg:sub(1, 200) .. "..." end
-            return { success = false, error = msg }
+            if msg == "" then msg = "Package manager returned exit code " .. exit_code end
+            return { success = false, error = "Theme package installation failed", details = msg }
         end
         -- hook noise; proceed with the restore
     end

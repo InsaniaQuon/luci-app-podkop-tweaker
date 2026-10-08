@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.5.0 | 03.09.2026 | check TTL raised to 24h (unified daily checks); check_update_force for the System Info button
+-- Podkop Tweaker | v4.5.1 | 08.10.2026 | binary multipart uploads, shared archive validation, safe directory members
 
 local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
@@ -10,6 +10,8 @@ local GIT_REPO = "InsaniaQuon/luci-app-podkop-tweaker"
 local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/latest"
 local CHECK_CACHE_FILE = "/tmp/tweaker_check_cache.json"
 local CHECK_CACHE_TTL = 86400
+
+M.UPLOAD_MAX_SIZE = 128000
 
 -- Files removed in newer versions; cleaned up after every successful self-update
 local DEPRECATED_PATHS = {
@@ -109,10 +111,17 @@ local function validate_archive_members(archive_path, relaxed)
     local raw = sys.exec("tar -tzf '" .. archive_path .. "' 2>/dev/null")
     if not raw or raw == "" then return false end
     for line in raw:gmatch("[^\r\n]+") do
-        line = line:match("^%s*(.-)%s*$"):gsub("/$", "")
+        line = line:match("^%s*(.-)%s*$")
+        local directory = line:sub(-1) == "/"
+        line = line:gsub("/$", "")
         if line ~= "" and line ~= "." then
             local rel = line:gsub("^%./", "")
-            if rel ~= "" and not S._is_valid_update_path(rel, relaxed) then
+            -- Directory entries such as ./usr/ are part of normal releases.
+            -- They must pass the traversal check; only files need the whitelist.
+            if rel:sub(1, 1) == "/" or not S._is_valid_update_path(rel, true) then
+                return false
+            end
+            if not directory and rel ~= "" and not S._is_valid_update_path(rel, relaxed) then
                 return false
             end
         end
@@ -121,22 +130,29 @@ local function validate_archive_members(archive_path, relaxed)
 end
 
 function M.upload(file_data_b64, file_name)
-    local sys = require("luci.sys")
-
     if file_data_b64 == "" then
         return { error = "No file uploaded" }
     end
 
     local file_data = S.b64decode(file_data_b64)
-    if not file_data or file_data == "" then
+    return M.upload_binary(file_data, file_name)
+end
+
+-- Multipart uploads carry the original bytes, avoiding LuCI's 100 KiB
+-- limit on buffered text fields. Both transports share archive validation.
+function M.upload_binary(file_data, file_name)
+    local sys = require("luci.sys")
+
+    if type(file_data) ~= "string" or file_data == "" then
         return { error = "Invalid archive" }
     end
 
-    if #file_data > 128000 then
+    if #file_data > M.UPLOAD_MAX_SIZE then
         return { error = "Invalid archive" }
     end
 
-    if not file_name:match("luci%-app%-podkop%-tweaker%-v.+%.tar%.gz$") then
+    if type(file_name) ~= "string"
+        or not file_name:match("luci%-app%-podkop%-tweaker%-v.+%.tar%.gz$") then
         return { error = "Invalid archive" }
     end
 

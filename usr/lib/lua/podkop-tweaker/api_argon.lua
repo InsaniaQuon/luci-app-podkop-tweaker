@@ -1,8 +1,9 @@
--- Podkop Tweaker | v4.5.0 | 03.09.2026 | theme_check/theme_update handlers (no argon-tab guard: System Info shows the theme for everyone)
+-- Podkop Tweaker | v4.6.0 | 08.10.2026 | Appearance colors with independent reset
 
 local AR = require("podkop-tweaker.argon")
 local LIB = require("podkop-tweaker.lib")
 local THEME = require("podkop-tweaker.theme")
+local APPEARANCE = require("podkop-tweaker.appearance")
 
 local M = {}
 
@@ -76,6 +77,37 @@ function M.reinject()
     end
     local ok = AR.apply()
     return { success = ok, stale = AR.check_stale() }
+end
+
+function M.appearance()
+    if AR.tab_disabled() then return { error = "Argon tab is disabled" } end
+    return { settings = APPEARANCE.read() }
+end
+
+function M.appearance_save(input)
+    if AR.tab_disabled() then return { error = "Argon tab is disabled" } end
+    if type(input) ~= "table" then return { error = "Invalid appearance settings" } end
+    local settings = APPEARANCE.read()
+    for key in pairs(settings) do
+        if input[key] ~= nil then settings[key] = input[key] end
+    end
+    local saved, err = APPEARANCE.save(settings)
+    if not saved then return { success = false, error = err } end
+    return { success = true, settings = saved }
+end
+
+function M.appearance_reset()
+    if AR.tab_disabled() then return { error = "Argon tab is disabled" } end
+    local settings, err = APPEARANCE.reset()
+    if not settings then return { success = false, error = err } end
+    return { success = true, settings = settings }
+end
+
+function M.appearance_colors_reset()
+    if AR.tab_disabled() then return { error = "Argon tab is disabled" } end
+    local settings, err = APPEARANCE.reset_colors()
+    if not settings then return { success = false, error = err } end
+    return { success = true, settings = settings }
 end
 
 function M.theme_check(force_raw)

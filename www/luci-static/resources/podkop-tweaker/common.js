@@ -26,6 +26,19 @@ window.PT = window.PT || {};
 			.replace(/>/g, '&gt;');
 	};
 
+	// Resolve status roles to CSS variables, so existing messages recolor when
+	// the scheme changes. Legacy literals are accepted while callers migrate.
+	PT.color = function (role) {
+		var tokens = {
+			success: '--ps-success', error: '--ps-error', info: '--ps-primary',
+			warning: '--ps-warning', dim: '--ps-text-dim', muted: '--ps-text-muted',
+			'#4caf50': '--ps-success', '#f44336': '--ps-error', '#2196f3': '--ps-primary',
+			'#ff9800': '--ps-warning', '#e67e22': '--ps-warning', '#888': '--ps-text-dim'
+		};
+		if (Object.prototype.hasOwnProperty.call(tokens, role)) return 'var(' + tokens[role] + ')';
+		return role || 'var(--ps-text-dim)';
+	};
+
 	PT.checkStale = function () {
 		var banner = document.getElementById('ps-stale-banner');
 		if (!banner || !PT.version || !(PT.urls && PT.urls.appVersion)) return;
@@ -45,10 +58,16 @@ window.PT = window.PT || {};
 	PT.xhrPost = function (url, params, cb) {
 		var xhr = new XMLHttpRequest();
 		xhr.open('POST', url);
-		xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
 		xhr.onload = function () { cb(xhr); };
 		xhr.onerror = function () { cb(null); };
-		xhr.send('token=' + encodeURIComponent(PT.csrf || '') + (params ? '&' + params : ''));
+		if (typeof FormData !== 'undefined' && params instanceof FormData) {
+			params.append('token', PT.csrf || '');
+			// Browser supplies Content-Type with the multipart boundary.
+			xhr.send(params);
+		} else {
+			xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+			xhr.send('token=' + encodeURIComponent(PT.csrf || '') + (params ? '&' + params : ''));
+		}
 	};
 
 	PT.getJson = function (url, cb) {
@@ -75,6 +94,208 @@ window.PT = window.PT || {};
 		return hide;
 	};
 
+	// Apply only bounded app-owned values. Status colors do not depend on the
+	// profile, and no raw UCI or API value is inserted into a stylesheet.
+	var COLOR_ROLES = ['success', 'error', 'warning'];
+	var COLOR_SCHEMES = ['light', 'dark'];
+	function hexRgb(value) {
+		if (typeof value !== 'string' || !/^#[0-9a-f]{6}$/i.test(value)) return null;
+		return [1, 3, 5].map(function (offset) { return parseInt(value.substr(offset, 2), 16); });
+	}
+
+	PT.colorContrast = function (foreground, background, alpha) {
+		var fg = hexRgb(foreground), bg = hexRgb(background);
+		if (!fg || !bg) return null;
+		function luminance(rgb) {
+			var linear = rgb.map(function (value) {
+				value /= 255;
+				return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+			});
+			return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+		}
+		function ratio(a, b) {
+			var x = luminance(a), y = luminance(b);
+			return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+		}
+		alpha = Math.max(0, Math.min(1, Number(alpha) || 0));
+		var tinted = bg.map(function (value, i) { return value * (1 - alpha) + fg[i] * alpha; });
+		return { plain: ratio(fg, bg), tinted: ratio(fg, tinted) };
+	};
+
+	PT.applyAppearance = function (settings) {
+		settings = settings || {};
+		var size = String(settings.mono_font_size || '13');
+		var weight = String(settings.mono_font_weight || '400');
+		var height = String(settings.mono_line_height || '1.6');
+		var clean = {
+			profile: settings.profile === 'contrast' ? 'contrast' : 'soft',
+			mono_font_size: /^(1[2-8])$/.test(size) ? size : '13',
+			mono_font_weight: /^(400|500)$/.test(weight) ? weight : '400',
+			mono_line_height: /^1\.[3-8]$/.test(height) ? height : '1.6'
+		};
+		var root = document.documentElement;
+		root.setAttribute('data-pt-profile', clean.profile);
+		root.style.setProperty('--ps-mono-size', clean.mono_font_size + 'px');
+		root.style.setProperty('--ps-mono-weight', clean.mono_font_weight);
+		root.style.setProperty('--ps-mono-line-height', clean.mono_line_height);
+		var css = window.getComputedStyle ? window.getComputedStyle(root) : null;
+		COLOR_SCHEMES.forEach(function (scheme) {
+			COLOR_ROLES.forEach(function (role) {
+				var key = 'color_' + role + '_' + scheme;
+				var value = settings[key];
+				if (!hexRgb(value)) value = css && css.getPropertyValue ? css.getPropertyValue('--ps-default-' + role + '-' + scheme).trim() : '';
+				var rgb = hexRgb(value);
+				if (!rgb) return;
+				clean[key] = value.toLowerCase();
+				root.style.setProperty('--ps-' + role + '-' + scheme, clean[key]);
+				root.style.setProperty('--ps-' + role + '-' + scheme + '-rgb', rgb.join(','));
+			});
+		});
+		return clean;
+	};
+
+	// One source of truth for the app palette. Configuration is supplied by
+	// tabs.htm; DOM/CSS detection also supports older Argon headers and themes
+	// whose assets have cache-busting query strings. Never sample an app panel:
+	// its color depends on this detector and would introduce a feedback loop.
+	var schemeRefresh = null;
+	PT.detectScheme = function () {
+		if (schemeRefresh) return schemeRefresh();
+		var root = document.documentElement;
+
+		function mediaMatches(media) {
+			if (!media || media === 'all') return true;
+			return !!(window.matchMedia && window.matchMedia(media).matches);
+		}
+
+		function pageIsDark() {
+			if (!window.getComputedStyle) return null;
+			var main = document.querySelector ? document.querySelector('.main-right') : null;
+			var nodes = [main, document.body, root];
+			for (var i = 0; i < nodes.length; i++) {
+				if (!nodes[i]) continue;
+				var rgb = window.getComputedStyle(nodes[i]).backgroundColor.match(/^rgba?\(([^)]+)\)$/);
+				if (!rgb) continue;
+				var values = rgb[1].split(/[,\s\/]+/).map(Number);
+				if (values.length > 3 && values[3] === 0) continue;
+				return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722 < 128;
+			}
+			return null;
+		}
+
+		function apply() {
+			var context = document.getElementById('ps-theme-context');
+			var theme = context ? context.getAttribute('data-theme') : '';
+			var mode = context ? context.getAttribute('data-mode') : '';
+			var bootstrap = root.getAttribute('data-darkmode');
+			var dark = null, source = '';
+
+			if (bootstrap === 'true' || bootstrap === 'false') {
+				dark = bootstrap === 'true';
+				source = 'bootstrap';
+			} else if (theme === 'argon' && (mode === 'dark' || mode === 'light')) {
+				dark = mode === 'dark';
+				source = 'argon-config';
+			}
+
+			var links = document.querySelectorAll('link[rel~="stylesheet"]');
+			var hasDarkAsset = false, activeDarkAsset = false;
+			for (var i = 0; i < links.length; i++) {
+				var link = links[i];
+				var href = (link.getAttribute('href') || link.href || '').split(/[?#]/)[0];
+				if (/\/argon\/css\/dark(?:\.min)?\.css$/i.test(href)) {
+					hasDarkAsset = true;
+					if (!link.disabled && mediaMatches(link.getAttribute('media'))) activeDarkAsset = true;
+				}
+				if (!link.__ptSchemeLoadBound && link.addEventListener) {
+					link.__ptSchemeLoadBound = true;
+					link.addEventListener('load', apply);
+				}
+			}
+			if (dark === null && hasDarkAsset) {
+				dark = activeDarkAsset;
+				source = 'argon-stylesheet';
+			}
+			if (dark === null) {
+				dark = pageIsDark();
+				source = 'page-colors';
+			}
+			if (dark === null) {
+				dark = theme === 'argon' && mode === 'normal' && mediaMatches('(prefers-color-scheme: dark)');
+				source = 'argon-auto';
+			}
+			var value = dark ? 'true' : 'false';
+			if (root.getAttribute('data-pt-dark') !== value) root.setAttribute('data-pt-dark', value);
+			root.setAttribute('data-pt-scheme-source', source);
+			return !!dark;
+		}
+
+		schemeRefresh = apply;
+		var initial = apply();
+		if (window.matchMedia) {
+			var mq = window.matchMedia('(prefers-color-scheme: dark)');
+			if (mq.addEventListener) mq.addEventListener('change', apply);
+			else if (mq.addListener) mq.addListener(apply);
+		}
+		if (window.MutationObserver) {
+			var observer = new MutationObserver(apply);
+			observer.observe(root, { attributes: true, attributeFilter: ['data-darkmode'] });
+			if (document.head) observer.observe(document.head, {
+				childList: true, subtree: true, attributes: true,
+				attributeFilter: ['href', 'media', 'disabled', 'rel']
+			});
+			var context = document.getElementById('ps-theme-context');
+			if (context) observer.observe(context, { attributes: true, attributeFilter: ['data-theme', 'data-mode'] });
+		}
+		if (document.addEventListener) document.addEventListener('DOMContentLoaded', apply);
+		return initial;
+	};
+
+	// Short summary + complete diagnostic output, inserted as text (not HTML).
+	PT.setErr = function (el, text, details) {
+		if (!el) return;
+		var limit = 120;
+		text = String(text || 'Unknown error');
+		var full = details ? String(details) : text;
+		el.style.color = PT.color('error');
+		if (!details && text.length <= limit && text.indexOf('\n') === -1) {
+			el.textContent = text;
+			return;
+		}
+		var head = text.substring(0, limit);
+		if (text.length > limit) {
+			var cut = head.lastIndexOf(' ');
+			if (cut > limit * 0.6) head = head.substring(0, cut);
+			head += '…';
+		}
+		el.innerHTML = '';
+		el.style.whiteSpace = 'normal';
+		var d = document.createElement('details');
+		d.className = 'ps-err-details';
+		var s = document.createElement('summary');
+		s.textContent = head + ' — Show details';
+		var pre = document.createElement('pre');
+		pre.textContent = full;
+		d.appendChild(s);
+		d.appendChild(pre);
+		el.appendChild(d);
+	};
+
+	var appearanceContext = document.getElementById('ps-theme-context');
+	var initialAppearance = appearanceContext ? {
+		profile: appearanceContext.getAttribute('data-profile'),
+		mono_font_size: appearanceContext.getAttribute('data-mono-size'),
+		mono_font_weight: appearanceContext.getAttribute('data-mono-weight'),
+		mono_line_height: appearanceContext.getAttribute('data-mono-line-height')
+	} : {};
+	if (appearanceContext) COLOR_SCHEMES.forEach(function (scheme) {
+		COLOR_ROLES.forEach(function (role) {
+			initialAppearance['color_' + role + '_' + scheme] = appearanceContext.getAttribute('data-color-' + role + '-' + scheme);
+		});
+	});
+	PT.applyAppearance(initialAppearance);
+	PT.detectScheme();
+
 	PT.downloadJson = function (filename, obj) {
 		var blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
 		var url = URL.createObjectURL(blob);
@@ -93,7 +314,7 @@ window.PT = window.PT || {};
 		function update(running, pid) {
 			dotEl.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
 			textEl.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
-			textEl.style.color = running ? '#4caf50' : '#f44336';
+			textEl.style.color = PT.color(running ? 'success' : 'error');
 			if (toggleBtn) {
 				toggleBtn.textContent = running ? 'Stop' : 'Start';
 				toggleBtn.style.display = 'inline-block';
@@ -276,7 +497,7 @@ window.PT = window.PT || {};
 
 		function setStatus(text, color) {
 			statusEl.textContent = text;
-			statusEl.style.color = color || '#888';
+			statusEl.style.color = PT.color(color);
 		}
 
 		var errors = PT.errorReporter(g('ps-error-btn'), g('ps-error-modal'),
@@ -291,7 +512,7 @@ window.PT = window.PT || {};
 			var nums = [];
 			for (var i = 1; i <= count; i++) {
 				if (i === errorLineNo) {
-					nums.push('<span style="color:#f44336;font-weight:700;">\u25B6 ' + i + '</span>');
+					nums.push('<span style="color:var(--ps-error);font-weight:700;">\u25B6 ' + i + '</span>');
 				} else {
 					nums.push(i);
 				}

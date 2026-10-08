@@ -142,12 +142,12 @@ window.PT = {
 
     function setFetchStatus(text, color) {
         subFetchStatus.textContent = text;
-        subFetchStatus.style.color = color || '#888';
+        subFetchStatus.style.color = PT.color(color);
     }
 
     function setGlobalStatus(text, color) {
         globalStatus.textContent = text;
-        globalStatus.style.color = color || '#888';
+        globalStatus.style.color = PT.color(color);
     }
 
     function renderSections(data) {
@@ -283,7 +283,7 @@ window.PT = {
 
     function setSlotStatus(section, index, text, color) {
         var el = document.getElementById('ps-slot-status-' + section + '-' + index);
-        if (el) { el.textContent = text; el.style.color = color || '#888'; }
+        if (el) { el.textContent = text; el.style.color = PT.color(color); }
     }
 
     // Event delegation: a single listener on the container survives per-section
@@ -626,25 +626,25 @@ window.PT = {
             if (cronChecked) {
                 if (isNaN(intervalVal) || intervalVal < 1 || intervalVal > 24) {
                     statusEl.textContent = 'Interval must be 1-24 hours';
-                    statusEl.style.color = '#f44336';
+                    statusEl.style.color = PT.color('error');
                     return;
                 }
                 if (!/^\d{2}:\d{2}$/.test(startInput)) {
                     statusEl.textContent = 'Invalid time format (HH:MM)';
-                    statusEl.style.color = '#f44336';
+                    statusEl.style.color = PT.color('error');
                     return;
                 }
                 var hh = parseInt(startInput.split(':')[0], 10);
                 var mm = parseInt(startInput.split(':')[1], 10);
                 if (hh < 0 || hh > 23 || mm < 0 || mm > 59) {
                     statusEl.textContent = 'Invalid time (HH: 00-23, MM: 00-59)';
-                    statusEl.style.color = '#f44336';
+                    statusEl.style.color = PT.color('error');
                     return;
                 }
             }
 
             statusEl.textContent = 'Saving...';
-            statusEl.style.color = '#2196f3';
+            statusEl.style.color = PT.color('info');
 
             PT.xhrPost(PT.urls.settings_save,
                 'auto_update_interval=' + (cronChecked ? intervalVal : '0')
@@ -657,13 +657,13 @@ window.PT = {
                             var resp = JSON.parse(xhr.responseText);
                             if (resp.success) {
                                 statusEl.textContent = 'Saved';
-                                statusEl.style.color = '#4caf50';
+                                statusEl.style.color = PT.color('success');
                             } else {
                                 statusEl.textContent = resp.error || 'Save failed';
-                                statusEl.style.color = '#f44336';
+                                statusEl.style.color = PT.color('error');
                             }
-                        } catch (e) { statusEl.textContent = 'Invalid response'; statusEl.style.color = '#f44336'; }
-                    } else { statusEl.textContent = 'HTTP error: ' + xhr.status; statusEl.style.color = '#f44336'; }
+                        } catch (e) { statusEl.textContent = 'Invalid response'; statusEl.style.color = PT.color('error'); }
+                    } else { statusEl.textContent = 'HTTP error: ' + xhr.status; statusEl.style.color = PT.color('error'); }
                 });
         });
     }
@@ -797,7 +797,7 @@ window.PT = {
     logSettingsSave.addEventListener('click', function() {
         var count = parseInt(document.getElementById('ps-log-display-count').value) || 10;
         logSettingsStatus.textContent = 'Saving...';
-        logSettingsStatus.style.color = '#2196f3';
+        logSettingsStatus.style.color = PT.color('info');
         PT.getJson(PT.urls.settings_read, function(current) {
             current = current || {};
             PT.xhrPost(PT.urls.settings_save,
@@ -811,14 +811,14 @@ window.PT = {
                             var resp = JSON.parse(xhr.responseText);
                             if (resp.success) {
                                 logSettingsStatus.textContent = 'Saved';
-                                logSettingsStatus.style.color = '#4caf50';
+                                logSettingsStatus.style.color = PT.color('success');
                                 loadUpdateLog();
                             } else {
                                 logSettingsStatus.textContent = resp.error || 'Save failed';
-                                logSettingsStatus.style.color = '#f44336';
+                                logSettingsStatus.style.color = PT.color('error');
                             }
-                        } catch (e) { logSettingsStatus.textContent = 'Invalid response'; logSettingsStatus.style.color = '#f44336'; }
-                    } else { logSettingsStatus.textContent = xhr ? 'HTTP error' : 'Network error'; logSettingsStatus.style.color = '#f44336'; }
+                        } catch (e) { logSettingsStatus.textContent = 'Invalid response'; logSettingsStatus.style.color = PT.color('error'); }
+                    } else { logSettingsStatus.textContent = xhr ? 'HTTP error' : 'Network error'; logSettingsStatus.style.color = PT.color('error'); }
                 });
         });
     });

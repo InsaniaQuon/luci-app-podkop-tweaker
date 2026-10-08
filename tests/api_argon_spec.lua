@@ -427,7 +427,35 @@ describe("api_argon theme (version / check / update)", function()
         H.vfs_write("/tmp/pt-argon-theme/theme.apk", "pkg")
         local r = ARG.theme_update()
         assert.is_false(r.success)
-        assert.matches("unable to install", r.error)
+        assert.equal("Theme package installation failed", r.error)
+        assert.matches("unable to install", r.details)
+    end)
+
+    it("update: dependency conflict preserves complete output and does not restart services", function()
+        local details = "ERROR: unable to select packages:\n" ..
+            "  ucode-2026.01.16~85922056-r1:\n" ..
+            "    breaks: luci-theme-argon-2.4.8-r1[ucode>=2026.02.27]\n" ..
+            string.rep("    satisfies: firewall4[ucode>=2022.03.22]\n", 80) ..
+            "dependency-output-end"
+        local ARG = mod({
+            sys = {
+                { match = "apk list --installed", out = "luci-theme-argon-2.4.7-r1 [installed]\n" },
+                { match = "api.github.com/repos/jerrykuku", out = GH_LATEST:gsub("2%.4%.7", "2.4.8") },
+                { match = "apk add", out = details .. "\nEXIT:1" }
+            },
+            uci = { argon = { H.sec("typography", "typography", { font_size = "18" }) } }
+        })
+        H.vfs_write(CSS, ".existing-typography{}\n")
+        H.vfs_write("/tmp/pt-argon-theme/theme.apk", "pkg")
+        local r = ARG.theme_update()
+        assert.is_false(r.success)
+        assert.equal("Theme package installation failed", r.error)
+        assert.equal(details, r.details)
+        assert.equal(".existing-typography{}\n", H.vfs_read(CSS))
+        assert.equal("18", saved_uci().font_size)
+        for _, cmd in ipairs(H.execute_cmds()) do
+            assert.falsy(cmd:find("uhttpd restart", 1, true))
+        end
     end)
 
     it("update: already up to date -> exact error", function()

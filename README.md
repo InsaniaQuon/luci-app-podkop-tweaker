@@ -12,7 +12,7 @@ LuCI web interface for managing Podkop proxy client on OpenWrt routers.
 - **Import/Export** — JSON bundle backup of selected items (podkop, stubby, sing-box, fragment, argon, tweaker settings, subscriptions + schedule), review modal before applying, per-item results, automatic pre-apply backups, service status panel; single raw config files are supported as well
 - **System Information** — Podkop and system versions, update via ttyd terminal
 - **Local Update / Git Update** — self-update from GitHub Releases or a local archive, with LuCI cache cleanup
-- **Argon Config** (optional, hidden by default) — typography settings for the Argon LuCI theme: font size, family, weight, line height, letter spacing, sidebar menu tuning with live preview
+- **Argon Config** (optional, hidden by default) — global Argon typography and sidebar tuning, app-local Soft / High contrast profiles, adjustable monospace text and per-scheme status colors, with live preview
 
 ## Requirements
 
@@ -53,6 +53,60 @@ uci commit podkop-tweaker
 ```
 
 After a theme update the CSS block is lost — open the Argon Config tab and click "Reinject CSS".
+
+### Tweaker Appearance
+
+The same tab contains a separate **Tweaker Appearance** panel. Its settings affect
+Podkop Tweaker only and do not modify Argon's global typography or theme CSS:
+
+| Setting | Values | Default |
+|---|---|---|
+| Appearance Profile | Soft / High contrast | Soft |
+| Monospace Font Size | 12–18px | 13px |
+| Monospace Font Weight | 400 / 500 | 400 |
+| Monospace Line Height | 1.3–1.8, step 0.1 | 1.6 |
+
+Monospace settings apply to config editors, journals, DNS chains and diff previews.
+Editors retain horizontal scrolling so enlarged text stays aligned with line numbers.
+By default, success statuses use saturated green, errors red, and update notices orange in both
+profiles. The live sample shows ordinary text, line numbers and all three statuses.
+
+Use **Save Appearance** to persist the preview, or **Reset Appearance** to restore
+the profile/monospace defaults independently of status colors and global typography. Settings live in the `appearance`
+section of `/etc/config/podkop-tweaker` and are included in the **Tweaker** bundle item.
+Saved appearance remains active if the optional tab is hidden or a different LuCI
+theme is selected. Refresh already-open tabs to pick up changed settings.
+
+#### Status Colors
+
+The **Status Colors** block has three rows and separate Light / Dark controls.
+Use either the native color picker or the synchronized **#RRGGBB** text field:
+
+| Role | Light default | Dark default |
+|---|---|---|
+| Success / Green | `#00be00` | `#00ff00` |
+| Error / Red | `#ff0000` | `#ff8080` |
+| Warning / Orange | `#ff8c42` | `#ffbd42` |
+
+Both scheme previews remain visible regardless of the current page scheme. They
+show the exact selected color and its contrast on a raised/header surface, with
+and without the derived translucent highlight. Contrast is informative: any valid
+six-digit HEX color is applied exactly, including a low-contrast choice. Invalid
+intermediate HEX leaves the last valid preview intact and disables Save until fixed.
+
+Colors affect diagnostic results, service indicators, journals, diff rows, errors
+and update notices across the application. Scheme changes select the corresponding
+saved colors automatically; Soft / High contrast profiles keep those colors intact.
+RGB highlight channels are derived from the selected HEX, with no separate RGB setting.
+
+**Save Appearance** saves all ten settings. **Reset Colors** saves only the six
+default colors and preserves profile, font settings and any unsaved font preview.
+**Reset Appearance** saves only the four profile/monospace defaults and preserves
+the colors. All settings travel in the existing **Tweaker** bundle item.
+
+The installed v4.6.0+ Local/Git updater preserves an existing app config instead of
+copying archive defaults over it; defaults are copied only when the config is absent.
+Older installed updaters and direct archive extraction retain their original copy behavior.
 
 ## Disclaimer
 

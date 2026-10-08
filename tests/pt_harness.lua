@@ -10,7 +10,7 @@ local ST = nil
 
 local CLEAR_LOADED_IDS = {
     "podkop-tweaker.http", "podkop-tweaker.services", "podkop-tweaker.lib",
-    "podkop-tweaker.diag", "podkop-tweaker.argon", "podkop-tweaker.subsched",
+    "podkop-tweaker.diag", "podkop-tweaker.argon", "podkop-tweaker.subsched", "podkop-tweaker.theme", "podkop-tweaker.appearance",
     "podkop-tweaker.bundle", "podkop-tweaker.api_diag", "podkop-tweaker.api_argon",
     "podkop-tweaker.api_stubby", "podkop-tweaker.api_podkop", "podkop-tweaker.api_subs",
     "podkop-tweaker.api_singbox", "podkop-tweaker.api_bundle", "podkop-tweaker.api_update",
@@ -185,6 +185,7 @@ local function make_uci(st)
 
     function U:commit(conf)
         table.insert(st.commits, conf)
+        return true
     end
 
     function U:save() return true end

@@ -3,6 +3,7 @@ LuCI Podkop Tweaker — shared tab menu + stale banner partial
 Expects: active (template/tab name), show_argon
 Author: InsaniaQuon
 -%>
+    <span id="ps-theme-context" hidden data-theme="<%=pt_theme or ''%>" data-mode="<%=pt_theme_mode or ''%>" data-profile="<%=pt_appearance.profile%>" data-mono-size="<%=pt_appearance.mono_font_size%>" data-mono-weight="<%=pt_appearance.mono_font_weight%>" data-mono-line-height="<%=pt_appearance.mono_line_height%>" data-color-success-light="<%=pt_appearance.color_success_light%>" data-color-error-light="<%=pt_appearance.color_error_light%>" data-color-warning-light="<%=pt_appearance.color_warning_light%>" data-color-success-dark="<%=pt_appearance.color_success_dark%>" data-color-error-dark="<%=pt_appearance.color_error_dark%>" data-color-warning-dark="<%=pt_appearance.color_warning_dark%>"></span>
     <ul class="cbi-tabmenu">
         <li class="<%=active == 'config' and 'cbi-tab' or 'cbi-tab-disabled'%>"><a href="<%=url("admin/services/podkop-tweaker/config")%>">Podkop Config</a></li>
         <li class="<%=active == 'stubby' and 'cbi-tab' or 'cbi-tab-disabled'%>"><a href="<%=url("admin/services/podkop-tweaker/stubby")%>">Stubby Config</a></li>

@@ -118,7 +118,7 @@ window.PT = {
 
     function setUpdateStatus(text, color) {
         updateStatus.textContent = text;
-        updateStatus.style.color = color || '#888';
+        updateStatus.style.color = PT.color(color);
     }
 
     function versionLt(a, b) {
@@ -201,7 +201,7 @@ window.PT = {
             var btn = document.getElementById('ps-tweaker-update-btn');
             if (btn) btn.addEventListener('click', function() { doUpdateTweaker(false); });
         } else if (gt) {
-            cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span style="font-size:12px;color:#ff9800">(Newer than repo v' + PT.escapeHtml(latest) + ')</span>' +
+            cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span style="font-size:12px;color:var(--ps-warning)">(Newer than repo v' + PT.escapeHtml(latest) + ')</span>' +
                 ' <button class="btn cbi-button" id="ps-tweaker-downgrade-btn" style="font-size:12px;padding:2px 8px">Downgrade from Git</button>' +
                 '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
             var dgBtn = document.getElementById('ps-tweaker-downgrade-btn');
@@ -336,23 +336,23 @@ window.PT = {
         var btn = document.getElementById('ps-argon-update-btn');
         var statusEl = document.getElementById('ps-argon-status');
         if (btn) btn.disabled = true;
-        if (statusEl) { statusEl.textContent = 'Updating...'; statusEl.style.color = '#2196f3'; }
+        if (statusEl) { statusEl.textContent = 'Updating...'; statusEl.style.color = PT.color('info'); }
 
         PT.xhrPost(PT.urls.argonThemeUpdate, '', function(xhr) {
             if (xhr && xhr.status === 200) {
                 try {
                     var resp = JSON.parse(xhr.responseText);
                     if (resp.success) {
-                        if (statusEl) { statusEl.textContent = 'Updated to ' + resp.new_version + '! Reloading...'; statusEl.style.color = '#4caf50'; }
+                        if (statusEl) { statusEl.textContent = 'Updated to ' + resp.new_version + '! Reloading...'; statusEl.style.color = PT.color('success'); }
                         setTimeout(function() { window.location.reload(); }, 5000);
                         return;
                     }
-                    if (statusEl) { statusEl.textContent = resp.error || 'Update failed'; statusEl.style.color = '#f44336'; }
+                    PT.setErr(statusEl, resp.error || 'Update failed', resp.details);
                 } catch (e) {
-                    if (statusEl) { statusEl.textContent = 'Invalid response'; statusEl.style.color = '#f44336'; }
+                    if (statusEl) { statusEl.textContent = 'Invalid response'; statusEl.style.color = PT.color('error'); }
                 }
             } else {
-                if (statusEl) { statusEl.textContent = xhr ? 'HTTP error: ' + xhr.status : 'Network error'; statusEl.style.color = '#f44336'; }
+                if (statusEl) { statusEl.textContent = xhr ? 'HTTP error: ' + xhr.status : 'Network error'; statusEl.style.color = PT.color('error'); }
             }
             if (btn) btn.disabled = false;
         });
@@ -372,7 +372,7 @@ window.PT = {
         var statusEl = document.getElementById('ps-tweaker-status');
         var btn = document.getElementById(btnId);
         if (btn) btn.disabled = true;
-        if (statusEl) { statusEl.textContent = 'Downloading...'; statusEl.style.color = '#2196f3'; }
+        if (statusEl) { statusEl.textContent = 'Downloading...'; statusEl.style.color = PT.color('info'); }
 
         var params = 'download_url=' + encodeURIComponent(tweakerDownloadUrl);
         if (isDowngrade) params += '&force=1';
@@ -382,18 +382,18 @@ window.PT = {
                 try {
                     var resp = JSON.parse(xhr.responseText);
                     if (resp.success) {
-                        if (statusEl) { statusEl.textContent = 'Update applied! Reloading...'; statusEl.style.color = '#4caf50'; }
+                        if (statusEl) { statusEl.textContent = 'Update applied! Reloading...'; statusEl.style.color = PT.color('success'); }
                         setTimeout(function() { window.location.reload(); }, 5000);
                         return;
                     }
-                    if (statusEl) { statusEl.textContent = resp.error || 'Update failed'; statusEl.style.color = '#f44336'; }
+                    PT.setErr(statusEl, resp.error || 'Update failed', resp.details);
                     if (btn) btn.disabled = false;
                 } catch (e) {
-                    if (statusEl) { statusEl.textContent = 'Invalid response'; statusEl.style.color = '#f44336'; }
+                    if (statusEl) { statusEl.textContent = 'Invalid response'; statusEl.style.color = PT.color('error'); }
                     if (btn) btn.disabled = false;
                 }
             } else {
-                if (statusEl) { statusEl.textContent = xhr ? 'HTTP error: ' + xhr.status : 'Network error'; statusEl.style.color = '#f44336'; }
+                if (statusEl) { statusEl.textContent = xhr ? 'HTTP error: ' + xhr.status : 'Network error'; statusEl.style.color = PT.color('error'); }
                 if (btn) btn.disabled = false;
             }
         });

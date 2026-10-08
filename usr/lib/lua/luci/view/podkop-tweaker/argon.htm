@@ -16,7 +16,7 @@ Author: InsaniaQuon
         </div>
 
         <h3>Typography</h3>
-        <div style="font-size:13px;color:var(--ps-text-dim,#888);margin-top:12px;margin-bottom:16px;">
+        <div style="font-size:13px;color:var(--ps-text-dim);margin-top:12px;margin-bottom:16px;">
             Changes apply globally to all LuCI pages. Use live preview before saving.
         </div>
 
@@ -62,7 +62,7 @@ Author: InsaniaQuon
         </div>
 
         <h3 style="margin-top:28px;">Sidebar Menu</h3>
-        <div style="font-size:13px;color:var(--ps-text-dim,#888);margin-top:12px;margin-bottom:16px;">
+        <div style="font-size:13px;color:var(--ps-text-dim);margin-top:12px;margin-bottom:16px;">
             Adjust sidebar navigation independently from global typography.
         </div>
 
@@ -90,11 +90,104 @@ Author: InsaniaQuon
             <strong>&#9888; Note:</strong> CSS is appended to <code>/www/luci-static/argon/css/cascade.css</code>. After theme update, click "Reinject CSS" to restore.
         </div>
     </div>
+
+    <div class="cbi-section">
+        <h3>Tweaker Appearance</h3>
+        <p class="ps-appearance-description">Applies to Podkop Tweaker only. Preview changes live; save to use them on every tab. Both profiles use your selected status colors.</p>
+        <div class="pts-grid" style="display:grid;grid-template-columns:200px 1fr;gap:12px 20px;align-items:center;font-size:13px;max-width:600px;">
+            <label for="ps-appearance-profile">Appearance Profile</label>
+            <select id="ps-appearance-profile" disabled>
+                <option value="soft">Soft</option>
+                <option value="contrast">High contrast</option>
+            </select>
+
+            <label for="ps-mono-size">Monospace Font Size</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <input type="range" id="ps-mono-size" min="12" max="18" step="1" value="13" style="flex:1;" disabled>
+                <span id="ps-mono-size-val" style="min-width:40px;text-align:right;">13px</span>
+            </div>
+
+            <label for="ps-mono-weight">Monospace Font Weight</label>
+            <select id="ps-mono-weight" disabled>
+                <option value="400">400 — Regular</option>
+                <option value="500">500 — Medium</option>
+            </select>
+
+            <label for="ps-mono-height">Monospace Line Height</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <input type="range" id="ps-mono-height" min="1.3" max="1.8" step="0.1" value="1.6" style="flex:1;" disabled>
+                <span id="ps-mono-height-val" style="min-width:40px;text-align:right;">1.6</span>
+            </div>
+        </div>
+
+        <div class="ps-status-color-header">
+            <h4>Status Colors</h4>
+            <button class="btn cbi-button" id="ps-colors-reset" disabled>Reset Colors</button>
+        </div>
+        <p class="ps-appearance-help">Choose an exact #RRGGBB color for each scheme. Message and diff highlights are derived automatically from these colors.</p>
+        <div class="ps-color-grid">
+            <div class="ps-color-row ps-color-head"><span></span><strong>Light theme</strong><strong>Dark theme</strong></div>
+            <div class="ps-color-row">
+                <strong>Success / Green</strong>
+                <div class="ps-color-field"><span class="ps-color-mode-label">Light</span><input type="color" id="ps-color-success-light" aria-label="Success color for light theme" disabled><input type="text" class="ps-color-hex" id="ps-color-success-light-hex" maxlength="7" pattern="#[0-9a-fA-F]{6}" placeholder="#RRGGBB" aria-label="Light success HEX" autocomplete="off" spellcheck="false" disabled></div>
+                <div class="ps-color-field"><span class="ps-color-mode-label">Dark</span><input type="color" id="ps-color-success-dark" aria-label="Success color for dark theme" disabled><input type="text" class="ps-color-hex" id="ps-color-success-dark-hex" maxlength="7" pattern="#[0-9a-fA-F]{6}" placeholder="#RRGGBB" aria-label="Dark success HEX" autocomplete="off" spellcheck="false" disabled></div>
+            </div>
+            <div class="ps-color-row">
+                <strong>Error / Red</strong>
+                <div class="ps-color-field"><span class="ps-color-mode-label">Light</span><input type="color" id="ps-color-error-light" aria-label="Error color for light theme" disabled><input type="text" class="ps-color-hex" id="ps-color-error-light-hex" maxlength="7" pattern="#[0-9a-fA-F]{6}" placeholder="#RRGGBB" aria-label="Light error HEX" autocomplete="off" spellcheck="false" disabled></div>
+                <div class="ps-color-field"><span class="ps-color-mode-label">Dark</span><input type="color" id="ps-color-error-dark" aria-label="Error color for dark theme" disabled><input type="text" class="ps-color-hex" id="ps-color-error-dark-hex" maxlength="7" pattern="#[0-9a-fA-F]{6}" placeholder="#RRGGBB" aria-label="Dark error HEX" autocomplete="off" spellcheck="false" disabled></div>
+            </div>
+            <div class="ps-color-row">
+                <strong>Warning / Orange</strong>
+                <div class="ps-color-field"><span class="ps-color-mode-label">Light</span><input type="color" id="ps-color-warning-light" aria-label="Warning color for light theme" disabled><input type="text" class="ps-color-hex" id="ps-color-warning-light-hex" maxlength="7" pattern="#[0-9a-fA-F]{6}" placeholder="#RRGGBB" aria-label="Light warning HEX" autocomplete="off" spellcheck="false" disabled></div>
+                <div class="ps-color-field"><span class="ps-color-mode-label">Dark</span><input type="color" id="ps-color-warning-dark" aria-label="Warning color for dark theme" disabled><input type="text" class="ps-color-hex" id="ps-color-warning-dark-hex" maxlength="7" pattern="#[0-9a-fA-F]{6}" placeholder="#RRGGBB" aria-label="Dark warning HEX" autocomplete="off" spellcheck="false" disabled></div>
+            </div>
+        </div>
+        <div class="ps-color-samples">
+            <div class="ps-color-sample ps-color-sample-light">
+                <strong>Light theme preview</strong>
+                <div><span class="ps-color-sample-success" id="ps-color-preview-success-light">OK / Running</span><p class="ps-color-metric" id="ps-color-contrast-success-light"></p></div>
+                <div><span class="ps-color-sample-error" id="ps-color-preview-error-light">ERROR / Failed</span><p class="ps-color-metric" id="ps-color-contrast-error-light"></p></div>
+                <div><span class="ps-color-sample-warning" id="ps-color-preview-warning-light">Update available</span><p class="ps-color-metric" id="ps-color-contrast-warning-light"></p></div>
+            </div>
+            <div class="ps-color-sample ps-color-sample-dark">
+                <strong>Dark theme preview</strong>
+                <div><span class="ps-color-sample-success" id="ps-color-preview-success-dark">OK / Running</span><p class="ps-color-metric" id="ps-color-contrast-success-dark"></p></div>
+                <div><span class="ps-color-sample-error" id="ps-color-preview-error-dark">ERROR / Failed</span><p class="ps-color-metric" id="ps-color-contrast-error-dark"></p></div>
+                <div><span class="ps-color-sample-warning" id="ps-color-preview-warning-dark">Update available</span><p class="ps-color-metric" id="ps-color-contrast-warning-dark"></p></div>
+            </div>
+        </div>
+        <p class="ps-appearance-help">Contrast ratios are shown against the raised/header surface, with and without tinted highlights. The selected color is applied exactly.</p>
+
+        <div class="ps-appearance-preview">
+            <strong>Live preview</strong>
+            <p>Normal text stays comfortable; status colors stay distinct.</p>
+            <div class="ps-editor-wrap">
+                <div class="ps-line-numbers" id="ps-appearance-gutter">1<br>2<br>3<br>4</div>
+                <textarea class="ps-config-editor" id="ps-appearance-editor" readonly aria-label="Monospace preview" spellcheck="false">config settings 'settings'
+    option connection_type 'proxy'
+    option dns_type 'udp'
+    option enabled '1'</textarea>
+            </div>
+            <div class="ps-appearance-statuses">
+                <span class="ps-status-updated">OK / Running</span>
+                <span class="ps-status-failed">ERROR / Failed</span>
+                <span class="ps-ver-outdated">Update available</span>
+            </div>
+        </div>
+        <div class="ps-appearance-actions">
+            <button class="btn cbi-button" id="ps-appearance-reset" disabled>Reset Appearance</button>
+            <button class="btn cbi-button cbi-button-apply" id="ps-appearance-save" disabled>Save Appearance</button>
+            <span id="ps-appearance-status" style="font-size:12px;">Loading settings...</span>
+        </div>
+        <p class="ps-appearance-help">Monospace settings apply to editors, run logs, DNS chains and diff previews. Saved in <code>/etc/config/podkop-tweaker</code>; included in the Tweaker bundle item.</p>
+    </div>
 </div>
 
 <link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
 <style>
 .pts-grid label { text-align: right; padding-right: 4px; }
+@media(max-width:640px){#cbi-podkop-tweaker .pts-grid{grid-template-columns:1fr!important}.pts-grid label{text-align:left;padding-right:0}}
 </style>
 
 <script>
@@ -106,7 +199,11 @@ window.PT = {
         typography: '<%=url("admin/services/podkop-tweaker/api/argon_typography")%>',
         save: '<%=url("admin/services/podkop-tweaker/api/argon_typography_save")%>',
         reset: '<%=url("admin/services/podkop-tweaker/api/argon_typography_reset")%>',
-        reinject: '<%=url("admin/services/podkop-tweaker/api/argon_reinject")%>'
+        reinject: '<%=url("admin/services/podkop-tweaker/api/argon_reinject")%>',
+        appearance: '<%=url("admin/services/podkop-tweaker/api/tweaker_appearance")%>',
+        appearanceSave: '<%=url("admin/services/podkop-tweaker/api/tweaker_appearance_save")%>',
+        appearanceReset: '<%=url("admin/services/podkop-tweaker/api/tweaker_appearance_reset")%>',
+        appearanceColorsReset: '<%=url("admin/services/podkop-tweaker/api/tweaker_appearance_colors_reset")%>'
     }
 };
 </script>
@@ -211,11 +308,11 @@ window.PT = {
     function updateCssStatus(stale) {
         if (stale) {
             els.cssStatus.textContent = '\u26A0 CSS lost after theme update';
-            els.cssStatus.style.color = '#ff9800';
+            els.cssStatus.style.color = PT.color('warning');
             els.reinjectBtn.style.display = 'inline-block';
         } else {
             els.cssStatus.textContent = '\u2713 CSS active';
-            els.cssStatus.style.color = '#4caf50';
+            els.cssStatus.style.color = PT.color('success');
             els.reinjectBtn.style.display = 'none';
         }
     }
@@ -252,7 +349,7 @@ window.PT = {
     els.saveBtn.addEventListener('click', function() {
         els.saveBtn.disabled = true;
         els.status.textContent = 'Saving...';
-        els.status.style.color = '#2196f3';
+        els.status.style.color = PT.color('info');
         var params = 'font_size=' + encodeURIComponent(els.fontSize.value) +
             '&font_family=' + encodeURIComponent(els.fontFamily.value) +
             '&font_family_custom=' + encodeURIComponent(els.fontCustom.value) +
@@ -263,19 +360,19 @@ window.PT = {
             '&menu_padding=' + encodeURIComponent(els.menuPadding.value);
         PT.xhrPost(PT.urls.save, params, function(xhr) {
             els.saveBtn.disabled = false;
-            if (!xhr) { els.status.textContent = 'Network error'; els.status.style.color = '#f44336'; return; }
+            if (!xhr) { els.status.textContent = 'Network error'; els.status.style.color = PT.color('error'); return; }
             try {
                 var r = JSON.parse(xhr.responseText);
                 if (r.success) {
                     els.status.textContent = 'Saved. Reloading...';
-                    els.status.style.color = '#4caf50';
+                    els.status.style.color = PT.color('success');
                     updateCssStatus(r.stale);
                     setTimeout(function() { window.location.reload(true); }, 1500);
                 } else {
                     els.status.textContent = 'Failed';
-                    els.status.style.color = '#f44336';
+                    els.status.style.color = PT.color('error');
                 }
-            } catch (e) { els.status.textContent = 'Failed'; els.status.style.color = '#f44336'; }
+            } catch (e) { els.status.textContent = 'Failed'; els.status.style.color = PT.color('error'); }
         });
     });
 
@@ -283,18 +380,18 @@ window.PT = {
         if (!confirm('Reset all typography settings to defaults?')) return;
         els.resetBtn.disabled = true;
         els.status.textContent = 'Resetting...';
-        els.status.style.color = '#2196f3';
+        els.status.style.color = PT.color('info');
         PT.xhrPost(PT.urls.reset, '', function(xhr) {
             els.resetBtn.disabled = false;
-            if (!xhr) { els.status.textContent = 'Network error'; els.status.style.color = '#f44336'; return; }
+            if (!xhr) { els.status.textContent = 'Network error'; els.status.style.color = PT.color('error'); return; }
             try {
                 var r = JSON.parse(xhr.responseText);
                 if (r.success) {
                     els.status.textContent = 'Reset. Reload page.';
-                    els.status.style.color = '#4caf50';
+                    els.status.style.color = PT.color('success');
                     restoreFromSaved();
                 }
-            } catch (e) { els.status.textContent = 'Failed'; els.status.style.color = '#f44336'; }
+            } catch (e) { els.status.textContent = 'Failed'; els.status.style.color = PT.color('error'); }
         });
     });
 
@@ -309,12 +406,196 @@ window.PT = {
                         updateCssStatus(r.stale);
                         if (!r.stale) {
                             els.status.textContent = 'CSS reinjected.';
-                            els.status.style.color = '#4caf50';
+                            els.status.style.color = PT.color('success');
                         }
                     }
                 } catch (e) {}
             }
         });
+    });
+
+    var appearance = {
+        profile: document.getElementById('ps-appearance-profile'),
+        size: document.getElementById('ps-mono-size'),
+        sizeVal: document.getElementById('ps-mono-size-val'),
+        weight: document.getElementById('ps-mono-weight'),
+        height: document.getElementById('ps-mono-height'),
+        heightVal: document.getElementById('ps-mono-height-val'),
+        save: document.getElementById('ps-appearance-save'),
+        reset: document.getElementById('ps-appearance-reset'),
+        colorsReset: document.getElementById('ps-colors-reset'),
+        status: document.getElementById('ps-appearance-status')
+    };
+    var colorControls = [];
+    var appearanceSaving = false;
+    ['light', 'dark'].forEach(function(scheme) {
+        ['success', 'error', 'warning'].forEach(function(role) {
+            var id = 'ps-color-' + role + '-' + scheme;
+            colorControls.push({
+                key: 'color_' + role + '_' + scheme,
+                scheme: scheme, role: role,
+                picker: document.getElementById(id),
+                hex: document.getElementById(id + '-hex'),
+                metric: document.getElementById('ps-color-contrast-' + role + '-' + scheme),
+                last: ''
+            });
+        });
+    });
+
+    function colorsValid() {
+        return colorControls.every(function(control) { return /^#[0-9a-f]{6}$/i.test(control.hex.value); });
+    }
+
+    function appearanceBusy(busy) {
+        appearanceSaving = busy;
+        ['profile', 'size', 'weight', 'height', 'reset', 'colorsReset'].forEach(function(key) {
+            appearance[key].disabled = busy;
+        });
+        colorControls.forEach(function(control) {
+            control.picker.disabled = busy;
+            control.hex.disabled = busy;
+        });
+        appearance.save.disabled = busy || !colorsValid();
+    }
+
+    function appearanceValues() {
+        var settings = {
+            profile: appearance.profile.value,
+            mono_font_size: appearance.size.value,
+            mono_font_weight: appearance.weight.value,
+            mono_line_height: appearance.height.value
+        };
+        colorControls.forEach(function(control) { settings[control.key] = control.last; });
+        return settings;
+    }
+
+    function previewAppearance() {
+        var settings = PT.applyAppearance(appearanceValues());
+        var css = window.getComputedStyle(document.documentElement);
+        colorControls.forEach(function(control) {
+            var ratios = PT.colorContrast(settings[control.key], css.getPropertyValue('--ps-color-preview-bg-' + control.scheme).trim(),
+                css.getPropertyValue('--ps-' + control.role + '-' + control.scheme + '-alpha'));
+            control.metric.textContent = ratios ? 'Contrast: ' + ratios.plain.toFixed(2) + ':1; tinted: ' + ratios.tinted.toFixed(2) + ':1' : '';
+        });
+        appearance.sizeVal.textContent = settings.mono_font_size + 'px';
+        appearance.heightVal.textContent = settings.mono_line_height;
+    }
+
+    function showBaseAppearance(settings) {
+        appearance.profile.value = settings.profile;
+        appearance.size.value = settings.mono_font_size;
+        appearance.weight.value = settings.mono_font_weight;
+        appearance.height.value = settings.mono_line_height;
+    }
+
+    function showColors(settings) {
+        colorControls.forEach(function(control) {
+            control.last = settings[control.key];
+            control.picker.value = control.last;
+            control.hex.value = control.last;
+            control.hex.setCustomValidity('');
+            control.hex.setAttribute('aria-invalid', 'false');
+        });
+    }
+
+    function showAppearance(settings) {
+        showBaseAppearance(settings);
+        showColors(settings);
+        previewAppearance();
+    }
+
+    function markAppearancePreview() {
+        previewAppearance();
+        appearance.save.disabled = appearanceSaving || !colorsValid();
+        appearance.status.textContent = colorsValid() ? 'Preview — not saved' : 'Enter colors as #RRGGBB (six HEX digits)';
+        appearance.status.style.color = PT.color(colorsValid() ? 'warning' : 'error');
+    }
+
+    colorControls.forEach(function(control) {
+        control.picker.addEventListener('input', function() {
+            control.hex.value = control.picker.value;
+            control.last = control.picker.value;
+            control.hex.setCustomValidity('');
+            control.hex.setAttribute('aria-invalid', 'false');
+            markAppearancePreview();
+        });
+        control.hex.addEventListener('input', function() {
+            var valid = /^#[0-9a-f]{6}$/i.test(control.hex.value);
+            control.hex.setCustomValidity(valid ? '' : 'Use #RRGGBB');
+            control.hex.setAttribute('aria-invalid', valid ? 'false' : 'true');
+            if (valid) {
+                control.last = control.hex.value.toLowerCase();
+                control.picker.value = control.last;
+            }
+            markAppearancePreview();
+        });
+    });
+
+    ['profile', 'size', 'weight', 'height'].forEach(function(key) {
+        var el = appearance[key];
+        el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', markAppearancePreview);
+    });
+
+    function saveAppearance(reset) {
+        if (reset && !confirm('Reset Tweaker appearance to the soft profile and default monospace settings?')) return;
+        if (!reset && !colorsValid()) { markAppearancePreview(); return; }
+        appearanceBusy(true);
+        appearance.status.textContent = reset ? 'Resetting...' : 'Saving...';
+        appearance.status.style.color = PT.color('info');
+        var settings = appearanceValues();
+        var params = reset ? '' : Object.keys(settings).map(function(key) {
+            return key + '=' + encodeURIComponent(settings[key]);
+        }).join('&');
+        PT.xhrPost(reset ? PT.urls.appearanceReset : PT.urls.appearanceSave, params, function(xhr) {
+            appearanceBusy(false);
+            var resp = null;
+            if (xhr && xhr.status === 200) {
+                try { resp = JSON.parse(xhr.responseText); } catch (e) {}
+            }
+            if (resp && resp.success && resp.settings) {
+                if (reset) { showBaseAppearance(resp.settings); previewAppearance(); }
+                else showAppearance(resp.settings);
+                appearance.status.textContent = reset ? 'Appearance reset.' : 'Appearance saved.';
+                appearance.status.style.color = PT.color('success');
+            } else {
+                PT.setErr(appearance.status, (resp && resp.error) || (xhr ? 'Cannot save appearance' : 'Network error'));
+            }
+        });
+    }
+
+    appearance.save.addEventListener('click', function() { saveAppearance(false); });
+    appearance.reset.addEventListener('click', function() { saveAppearance(true); });
+
+    appearance.colorsReset.addEventListener('click', function() {
+        if (!confirm('Reset the six status colors to defaults?')) return;
+        appearanceBusy(true);
+        appearance.status.textContent = 'Resetting colors...';
+        appearance.status.style.color = PT.color('info');
+        PT.xhrPost(PT.urls.appearanceColorsReset, '', function(xhr) {
+            var resp = null;
+            if (xhr && xhr.status === 200) {
+                try { resp = JSON.parse(xhr.responseText); } catch (e) {}
+            }
+            if (resp && resp.success && resp.settings) {
+                showColors(resp.settings);
+                previewAppearance();
+                appearance.status.textContent = 'Colors reset.';
+                appearance.status.style.color = PT.color('success');
+            } else {
+                PT.setErr(appearance.status, (resp && resp.error) || (xhr ? 'Cannot reset colors' : 'Network error'));
+            }
+            appearanceBusy(false);
+        });
+    });
+
+    PT.getJson(PT.urls.appearance, function(resp) {
+        if (!resp || !resp.settings) {
+            PT.setErr(appearance.status, (resp && resp.error) || 'Cannot load appearance settings');
+            return;
+        }
+        showAppearance(resp.settings);
+        appearanceBusy(false);
+        appearance.status.textContent = '';
     });
 
     loadSettings();
