@@ -137,6 +137,20 @@ editor (--ps-editor-bg). All text, borders and status colors are semantic.
 .ps-modal-content h3{margin:0 0 16px}
 .ps-modal .ps-modal-content h3{padding:0}
 .ps-modal-footer{display:flex;gap:10px;justify-content:flex-end}
+.ps-copy-panel{position:relative;min-width:0;margin:0 0 12px;border:1px solid var(--ps-border-strong);border-radius:6px;background:var(--ps-editor-bg)}
+.ps-copy-raised{background:var(--ps-bg-alt)}
+.ps-copy-inset{background:var(--ps-bg-inset)}
+.ps-copy-tools{display:flex;justify-content:flex-end;align-items:center;box-sizing:border-box;height:36px;padding:3px 6px;position:sticky;top:0;z-index:2;background:inherit;border-radius:5px 5px 0 0}
+.ps-modal .ps-copy-tools{top:-24px}
+#cbi-podkop-tweaker .ps-copy-source,.ps-modal .ps-copy-source{border:0!important;margin:0!important;border-radius:0 0 5px 5px}
+#cbi-podkop-tweaker .ps-copy-btn,.ps-modal .ps-copy-btn{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;height:30px;min-width:30px;max-width:30px;min-height:30px;padding:5px!important;border:0!important;border-radius:4px;background:transparent!important;color:var(--ps-text-muted)!important;font:400 12px/1.5 sans-serif;cursor:pointer}
+#cbi-podkop-tweaker .ps-copy-btn:hover,.ps-modal .ps-copy-btn:hover{background:var(--ps-neutral-hover)!important;color:var(--ps-text)!important}
+#cbi-podkop-tweaker .ps-copy-btn[data-pt-copy-state="done"],.ps-modal .ps-copy-btn[data-pt-copy-state="done"]{color:var(--ps-success)!important}
+#cbi-podkop-tweaker .ps-copy-btn[data-pt-copy-state="error"],.ps-modal .ps-copy-btn[data-pt-copy-state="error"]{color:var(--ps-error)!important}
+.ps-copy-btn svg{display:block;width:18px;height:18px;pointer-events:none}
+.ps-copy-status{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;pointer-events:none}
+.ps-copy-btn:disabled{cursor:wait}
+.ps-copy-fallback{position:fixed!important;top:0!important;left:0!important;width:1px!important;height:1px!important;opacity:0!important;padding:0!important;pointer-events:none!important}
 .ps-config-header{display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:12px 0;flex-wrap:wrap}
 .ps-config-path{font-family:monospace;font-size:13px;color:var(--ps-text-dim);background:var(--ps-bg-alt);padding:3px 8px;border-radius:4px}
 .ps-config-status{font-size:13px;font-weight:600;margin-left:14px;white-space:nowrap}
@@ -152,6 +166,10 @@ editor (--ps-editor-bg). All text, borders and status colors are semantic.
 .ps-line-numbers{width:48px;min-width:48px;padding:14px 6px 14px 4px;text-align:right;font-family:'Consolas','Monaco','Courier New',monospace;font-size:13px;line-height:1.6;color:var(--ps-text-dim);background:var(--ps-editor-gutter);border-right:1px solid var(--ps-border-strong);overflow:hidden;user-select:none;white-space:pre-line}
 .ps-config-editor{flex:1;width:100%;min-width:0;height:100%;font-family:'Consolas','Monaco','Courier New',monospace;font-size:13px;line-height:1.6;padding:14px;border:none;resize:none;white-space:pre;background:var(--ps-bg);color:var(--ps-text)}
 .ps-config-editor:focus{outline:none;box-shadow:inset 0 0 0 2px var(--ps-primary)}
+.ps-editor-wrap.ps-copy-editor{display:grid;grid-template-columns:48px minmax(0,1fr);grid-template-rows:36px minmax(0,1fr);background:var(--ps-editor-bg)}
+.ps-copy-editor>.ps-copy-tools{grid-column:1/-1;grid-row:1}
+.ps-copy-editor>.ps-line-numbers{grid-column:1;grid-row:2;box-sizing:border-box;min-height:0}
+.ps-copy-editor>.ps-config-editor{grid-column:2;grid-row:2;box-sizing:border-box;min-height:0}
 .ps-service-status{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600}
 .ps-status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 .ps-status-dot.running{background:var(--ps-success)}
@@ -272,7 +290,9 @@ editor (--ps-editor-bg). All text, borders and status colors are semantic.
 .ps-dns-chain{font-size:13px;line-height:1.5;font-family:'Consolas','Monaco','Courier New',monospace;background:var(--ps-bg-inset);color:var(--ps-text);border:1px solid var(--ps-border-strong);padding:16px;border-radius:6px;overflow-x:auto;white-space:pre}
 .ps-chain-line{color:var(--ps-text)}
 .ps-err-details{display:block;max-width:min(640px,70vw);min-width:0;white-space:normal;overflow-wrap:anywhere;vertical-align:top}
-.ps-err-details summary{cursor:pointer;color:var(--ps-error);font-size:12px;white-space:normal;overflow-wrap:anywhere}
+.ps-err-details summary{position:relative;min-height:30px;box-sizing:border-box;padding:5px 40px 5px 0;cursor:pointer;color:var(--ps-error);font-size:12px;white-space:normal;overflow-wrap:anywhere}
+.ps-err-details summary>.ps-copy-btn{position:absolute;top:0;right:0}
+.ps-err-details>.ps-copy-panel{margin-top:6px}
 .ps-err-details pre{margin:6px 0 0;padding:10px 12px;background:var(--ps-bg-alt);border:1px solid var(--ps-border);border-radius:6px;color:var(--ps-text);font-family:monospace;font-size:12px;font-weight:400;line-height:1.5;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;max-height:320px;overflow:auto;text-align:left;box-sizing:border-box}
 .ps-check-list{display:flex;flex-direction:column;gap:6px;margin:0 0 8px}
 .ps-check-item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--ps-border);border-radius:6px;cursor:pointer;font-size:13px}
@@ -382,3 +402,4 @@ editor (--ps-editor-bg). All text, borders and status colors are semantic.
 @media(max-width:640px){.ps-color-row{grid-template-columns:1fr}.ps-color-head{display:none}.ps-color-mode-label{display:inline-block;min-width:40px}.ps-color-samples{grid-template-columns:1fr}}
 .ps-config-editor,.ps-diff-body,.ps-log-viewer-wrap,.ps-log-viewer-full,.ps-error-details,.ps-sub-proxy-list{scrollbar-color:var(--ps-border-strong) var(--ps-bg-inset)}
 @media(max-width:640px){.ps-modal .ps-modal-content{min-width:0;width:calc(100vw - 24px);padding:16px}}
+@media(max-width:640px){.ps-err-details{max-width:100%}.ps-modal .ps-copy-tools{top:-16px}}

@@ -1,4 +1,5 @@
-package.path = "./usr/lib/lua/?.lua;" .. package.path
+package.path = "./usr/lib/lua/?.lua;./tests/?.lua;" .. package.path
+local H = require("pt_harness")
 package.preload["luci.jsonc"] = function()
     return { parse = function() return nil end, stringify = function() return nil end }
 end
@@ -210,8 +211,10 @@ describe("parse_subscription_raw", function()
 end)
 
 describe("rotate_log", function()
+    before_each(function() H.begin({}) end)
+    after_each(function() H.finish() end)
     it("trims log to max events", function()
-        local tmp = os.tmpname()
+        local tmp = "/virtual/log"
         local fd = io.open(tmp, "w")
         for i = 1, 5 do
             fd:write("event " .. i .. "|manual|updated=0|unchanged=0|failed=0\n")
@@ -236,7 +239,7 @@ describe("rotate_log", function()
     end)
 
     it("does not trim short log", function()
-        local tmp = os.tmpname()
+        local tmp = "/virtual/log"
         local fd = io.open(tmp, "w")
         fd:write("event 1|auto|updated=1|unchanged=0|failed=0\n")
         fd:close()
@@ -254,8 +257,10 @@ describe("rotate_log", function()
 end)
 
 describe("append_log", function()
+    before_each(function() H.begin({}) end)
+    after_each(function() H.finish() end)
     it("appends text to empty file", function()
-        local tmp = os.tmpname()
+        local tmp = "/virtual/log"
         local fd = io.open(tmp, "w")
         fd:close()
 
@@ -272,7 +277,7 @@ describe("append_log", function()
     end)
 
     it("appends multiline text with details", function()
-        local tmp = os.tmpname()
+        local tmp = "/virtual/log"
         local fd = io.open(tmp, "w")
         fd:close()
 
@@ -292,7 +297,7 @@ describe("append_log", function()
     end)
 
     it("rotates when exceeding max_events", function()
-        local tmp = os.tmpname()
+        local tmp = "/virtual/log"
         local fd = io.open(tmp, "w")
         fd:close()
 
@@ -372,14 +377,14 @@ describe("_is_valid_update_path", function()
 end)
 
 describe("backup_file", function()
-    local test_dir = "/tmp/pt-test-backup-" .. tostring(os.time())
+    local test_dir = "/virtual/backups"
 
     before_each(function()
-        os.execute("mkdir -p " .. test_dir .. " 2>/dev/null")
+        H.begin({})
     end)
 
     after_each(function()
-        os.execute("rm -rf " .. test_dir .. " 2>/dev/null")
+        H.finish()
     end)
 
     it("returns false when source does not exist", function()
@@ -438,6 +443,7 @@ describe("backup_file", function()
     end)
 
     it("returns false when destination dir is not writable", function()
+        H.state().failures["/nonexistent_dir/backup.conf.tmp"] = { open = true }
         local src = test_dir .. "/source.conf"
         local fd = io.open(src, "w")
         fd:write("data")

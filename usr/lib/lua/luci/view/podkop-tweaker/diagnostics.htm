@@ -14,8 +14,9 @@ Author: InsaniaQuon
             <div class="cbi-section">
                 <div style="padding:12px 16px;">
 
-                    <div style="margin-bottom:16px;">
+                    <div style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
                         <button class="btn cbi-button" id="ps-run-all" style="font-size:14px;padding:8px 24px;">Run All Diagnostics</button>
+                        <a class="btn cbi-button" id="ps-podkop-diagnostics" href="<%=url('admin/services/podkop')%>" target="_blank" rel="noopener">Podkop Diagnostics</a>
                     </div>
 
                     <div style="margin-bottom:8px;">
@@ -26,14 +27,52 @@ Author: InsaniaQuon
                     <hr style="border:none;border-top:1px solid var(--ps-border);margin:20px 0;">
 
                     <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                        <span style="font-size:15px;font-weight:700;">DNS Leak Test</span>
-                        <button class="btn cbi-button" id="ps-leak-run">Run Leak Test</button>
+                        <span style="font-size:15px;font-weight:700;">External DNS Observation</span>
+                        <button class="btn cbi-button" id="ps-leak-run">Observe Browser DNS</button>
                     </div>
-                    <div id="ps-leak-loading" style="display:none;color:var(--ps-text-dim);">Running DNS leak test...</div>
+                    <p class="ps-dns-observation-note">Independent manual browser test via bash.ws; Run All Diagnostics does not include it. It identifies recursive DNS resolvers observed for this run, not a guarantee that DNS cannot leak.</p>
+                    <details class="ps-dns-observation-help" id="ps-dns-observation-help">
+                        <summary>How to read results</summary>
+                        <div class="ps-dns-observation-guide">
+                            <p><strong>When to run:</strong> There is no required order and this is not a prerequisite for other tests. For troubleshooting, start with Podkop Diagnostics, then use Observe Browser DNS to inspect the resolvers observed from this browser.</p>
+                            <p>The router creates a test ID, this browser attempts six unique HTTPS probes, and bash.ws reports the recursive resolvers seen by its DNS observer. Browser DoH and Podkop split-routing/FakeIP affect the measured path; other applications and LAN devices can use different paths.</p>
+                            <dl>
+                                <dt>Observed Resolver IP / ASN</dt>
+                                <dd>Source IP addresses of recursive DNS resolvers observed externally. These are not the resolved addresses of the test websites. A resolver's outgoing IP can differ from its configured endpoint, such as 1.1.1.1, and multiple IPs can belong to the same provider. ASN identifies the network that owns an address.</dd>
+                                <dt>Country</dt>
+                                <dd>Optional IP geolocation supplied by the provider. A different country or ASN alone is not proof of a DNS leak.</dd>
+                                <dt>Provider Control Request IP (router)</dt>
+                                <dd>The public IP seen for the provider API request made from the router. Its route may be direct or proxied. It is not a measurement of the browser's public IP, and it does not need to match the observed resolver IPs.</dd>
+                                <dt>Detail</dt>
+                                <dd>The observation summary, or the reason why results could not be collected. Interpret the resolver list against your intended DNS and routing policy.</dd>
+                                <dt>OBSERVATIONS COLLECTED</dt>
+                                <dd>At least one resolver was observed. This means data was collected, not that all probes succeeded or that DNS leaks are absent.</dd>
+                                <dt>INCONCLUSIVE / No observations</dt>
+                                <dd>No sufficient observations were received, or a provider/network/request error occurred. This confirms neither a leak nor the absence of leaks.</dd>
+                            </dl>
+                            <p><strong>Run Log fields:</strong></p>
+                            <dl>
+                                <dt><code>provider</code> / <code>id</code></dt>
+                                <dd>The observation service and its identifier for this test run.</dd>
+                                <dt><code>scope: current_browser</code></dt>
+                                <dd>The HTTPS probes originate from the browser that opened this page.</dd>
+                                <dt><code>control_request_scope: router</code></dt>
+                                <dd>The provider API/control request originates from the router.</dd>
+                                <dt><code>probes_completed</code></dt>
+                                <dd>The number of browser probes that reported a load or an error event. A value of 6 does not mean six successful requests, DNS answers or different resolvers.</dd>
+                                <dt><code>complete: true</code></dt>
+                                <dd>At least one resolver observation was returned. An empty resolver list is inconclusive.</dd>
+                                <dt><code>OK</code> / <code>ERROR</code></dt>
+                                <dd>For this test, OK means observations were collected; ERROR means the observation could not be completed. Neither status is an automatic verdict about DNS leaks.</dd>
+                            </dl>
+                            <p><strong>Keeping the report:</strong> Each new test or Run All Diagnostics clears the previous Run Log. Use Download Log (JSON) before starting another run if you want to keep these observations. A page refresh keeps the current log.</p>
+                        </div>
+                    </details>
+                    <div id="ps-leak-loading" style="display:none;color:var(--ps-text-dim);">Observing DNS from this browser...</div>
                     <div id="ps-leak-result" style="display:none;">
                         <table class="ps-sysinfo-table">
-                            <tr><td class="ps-sysinfo-label">Upstream Resolved IP</td><td class="ps-sysinfo-value" id="ps-leak-upstream">&mdash;</td></tr>
-                            <tr><td class="ps-sysinfo-label">dnsmasq Resolved IP</td><td class="ps-sysinfo-value" id="ps-leak-dnsmasq">&mdash;</td></tr>
+                            <tr><td class="ps-sysinfo-label">Observed Resolver IP / ASN</td><td class="ps-sysinfo-value" id="ps-leak-upstream">&mdash;</td></tr>
+                            <tr><td class="ps-sysinfo-label">Provider Control Request IP (router)</td><td class="ps-sysinfo-value" id="ps-leak-dnsmasq">&mdash;</td></tr>
                             <tr><td class="ps-sysinfo-label">Detail</td><td class="ps-sysinfo-value" id="ps-leak-detail">&mdash;</td></tr>
                             <tr><td class="ps-sysinfo-label">Status</td><td class="ps-sysinfo-value" id="ps-leak-status">&mdash;</td></tr>
                         </table>
@@ -133,6 +172,18 @@ Author: InsaniaQuon
 .ps-chain-fail{color:var(--ps-error);font-weight:600}
 .ps-sysinfo-table td{white-space:normal;word-break:break-word}
 #ps-diaglog-wrap .ps-log-detail-line{white-space:normal;word-break:break-word}
+#ps-leak-upstream{white-space:pre-line}
+.ps-dns-observation-note{margin:0 0 12px;font-size:12px;line-height:1.5;color:var(--ps-text-muted)}
+#cbi-podkop-tweaker .ps-dns-observation-help{margin:0 0 16px;border:1px solid var(--ps-border);border-radius:6px;background:var(--ps-bg-inset);color:var(--ps-text);font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.ps-dns-observation-help>summary{padding:10px 12px;color:var(--ps-primary);font-weight:600;cursor:pointer}
+.ps-dns-observation-help>summary:focus-visible{outline:2px solid var(--ps-primary);outline-offset:2px}
+.ps-dns-observation-guide{padding:0 12px 12px}
+.ps-dns-observation-guide p{margin:0 0 10px;color:var(--ps-text)}
+.ps-dns-observation-guide p:last-child{margin-bottom:0}
+.ps-dns-observation-guide dl{margin:0 0 12px}
+.ps-dns-observation-guide dt{margin:10px 0 4px;font-weight:600;color:var(--ps-text)}
+.ps-dns-observation-guide dd{margin:0;color:var(--ps-text-muted)}
+.ps-dns-observation-guide code{white-space:normal;overflow-wrap:anywhere}
 </style>
 
 <%+footer%>
@@ -147,7 +198,8 @@ window.PT = {
         diagDns: '<%=url("admin/services/podkop-tweaker/api/diag_dns")%>',
         diagProxy: '<%=url("admin/services/podkop-tweaker/api/diag_proxy")%>',
         diagE2e: '<%=url("admin/services/podkop-tweaker/api/diag_e2e")%>',
-        diagLeak: '<%=url("admin/services/podkop-tweaker/api/diag_dns_leak")%>'
+        dnsObservationStart: '<%=url("admin/services/podkop-tweaker/api/dns_observation_start")%>',
+        dnsObservationResults: '<%=url("admin/services/podkop-tweaker/api/dns_observation_results")%>'
     }
 };
 </script>
@@ -156,6 +208,10 @@ window.PT = {
 <script>
 (function() {
     PT.checkStale();
+    document.getElementById('ps-podkop-diagnostics').addEventListener('click', function(event) {
+        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
+        if (PT.openPodkopDiagnostics(this.href)) event.preventDefault();
+    });
 
     var _chainUpstreamNames = [];
 
@@ -393,14 +449,6 @@ window.PT = {
         setChainColorWithSep('chain-singbox', 'chain-sep-s1', colorClass);
     }
 
-    function highlightLeak(leakDetected) {
-        if (!leakDetected) return;
-        setChainColorWithSep('chain-stubby', 'chain-sep-st1', 'ps-chain-fail');
-        for (var j = 0; j < _chainUpstreamNames.length; j++) {
-            setChainColor('chain-upstream-' + j, 'ps-chain-fail');
-        }
-    }
-
     function highlightE2e(status) {
         var colorClass = status === 'OK' ? 'ps-chain-ok' : 'ps-chain-fail';
         var allIds = _allChainMainIds.concat(_allChainSepIds);
@@ -522,38 +570,63 @@ window.PT = {
         result.style.display = 'none';
         var t0 = Date.now();
 
-        PT.xhrPost(PT.urls.diagLeak, '', function(xhr) {
+        var images = [], finished = false, probeDone = 0;
+        function finish(resp, error, status) {
+            if (finished) return;
+            finished = true;
+            images.forEach(function(image) { image.onload = image.onerror = null; image.src = ''; });
             loading.style.display = 'none';
-            if (!xhr || xhr.status !== 200) {
-                document.getElementById('ps-leak-upstream').textContent = 'Request failed';
-                result.style.display = '';
-                appendRunLog('DNS Leak Test', 'ERROR', null, 'Request failed', Date.now() - t0, xhr ? xhr.status : 0);
-                if (onDone) onDone(null);
+            result.style.display = '';
+            var resolvers = resp && resp.resolvers || [];
+            var control = resp && resp.control_request_ips || [];
+            document.getElementById('ps-leak-upstream').textContent = resolvers.map(function(row) { return row.ip + (row.asn ? ' / ' + row.asn : '') + (row.country ? ' / ' + row.country : ''); }).join('\n') || 'No observations';
+            document.getElementById('ps-leak-dnsmasq').textContent = control.map(function(row) { return row.ip; }).join(', ') || '\u2014';
+            document.getElementById('ps-leak-detail').textContent = error || resp.conclusion;
+            var label = document.getElementById('ps-leak-status');
+            label.textContent = error ? 'INCONCLUSIVE' : 'OBSERVATIONS COLLECTED';
+            label.style.color = PT.color(error ? 'warning' : 'info');
+            var data = resp || { provider: 'bash.ws', scope: 'current_browser' };
+            data.probes_completed = probeDone;
+            appendRunLog('External DNS Observation (browser)', error ? 'ERROR' : 'OK', data, error, Date.now() - t0, status);
+            if (onDone) onDone(resp);
+        }
+        function parseResponse(xhr) {
+            if (!xhr || xhr.status !== 200) return null;
+            try { return JSON.parse(xhr.responseText); } catch (e) { return null; }
+        }
+        function collect(id, attempt) {
+            PT.xhrPost(PT.urls.dnsObservationResults, 'id=' + encodeURIComponent(id), function(xhr) {
+                var resp = parseResponse(xhr);
+                if (!resp || resp.error) { finish(resp, resp && resp.error || 'Cannot read DNS observations', xhr ? xhr.status : 0); return; }
+                if (!resp.complete && attempt < 3) { setTimeout(function() { collect(id, attempt + 1); }, 1500); return; }
+                finish(resp, resp.complete ? '' : resp.conclusion, xhr.status);
+            });
+        }
+        PT.xhrPost(PT.urls.dnsObservationStart, '', function(xhr) {
+            var resp = parseResponse(xhr);
+            if (!resp || resp.error || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$/.test(resp.id || '') || !(resp.hosts instanceof Array) || resp.hosts.length !== 6) {
+                finish(resp, resp && resp.error || 'Cannot start external DNS observation', xhr ? xhr.status : 0);
                 return;
             }
-            try {
-                var resp = JSON.parse(xhr.responseText);
-                document.getElementById('ps-leak-upstream').textContent = resp.upstream_ip || '\u2014';
-                document.getElementById('ps-leak-dnsmasq').textContent = resp.dnsmasq_ip || '\u2014';
-                document.getElementById('ps-leak-detail').textContent = resp.detail || '\u2014';
-                var leakColor = PT.color(resp.leak_detected ? 'error' : 'success');
-                var leakText = resp.leak_detected ? 'LEAK DETECTED' : 'No leak';
-                document.getElementById('ps-leak-status').innerHTML = '<span style="color:' + leakColor + ';font-weight:700;">' + PT.escapeHtml(leakText) + '</span>';
-                result.style.display = '';
-                highlightLeak(resp.leak_detected);
-                appendRunLog('DNS Leak Test', resp.leak_detected ? 'FAIL' : 'OK', {
-                    upstream_ip: resp.upstream_ip,
-                    dnsmasq_ip: resp.dnsmasq_ip,
-                    dnsmasq_status: resp.dnsmasq_status,
-                    detail: resp.detail
-                }, '', Date.now() - t0);
-                if (onDone) onDone(resp);
-            } catch (e) {
-                document.getElementById('ps-leak-upstream').textContent = 'Parse error';
-                result.style.display = '';
-                appendRunLog('DNS Leak Test', 'ERROR', null, 'Parse error', Date.now() - t0, xhr.status);
-                if (onDone) onDone(null);
+            var allowed = resp.hosts.every(function(host, i) { return host === (i + 1) + '.' + resp.id + '.bash.ws'; });
+            if (!allowed) { finish(resp, 'Invalid DNS probe hosts', xhr.status); return; }
+            var collected = false;
+            function afterProbes() {
+                if (collected) return;
+                collected = true;
+                setTimeout(function() { collect(resp.id, 1); }, 1000);
             }
+            resp.hosts.forEach(function(host) {
+                var image = new Image();
+                images.push(image);
+                image.onload = image.onerror = function() {
+                    image.onload = image.onerror = null;
+                    probeDone++;
+                    if (probeDone === resp.hosts.length) afterProbes();
+                };
+                image.src = 'https://' + host + '/';
+            });
+            setTimeout(afterProbes, 6000);
         });
     }
 
@@ -598,40 +671,50 @@ window.PT = {
         });
     }
 
+    var diagnosticsBusy = false;
+    function setDiagnosticsBusy(busy) {
+        diagnosticsBusy = busy;
+        ['ps-dns-run','ps-proxy-run','ps-leak-run','ps-e2e-run','ps-run-all'].forEach(function(id) { document.getElementById(id).disabled = busy; });
+    }
     document.getElementById('ps-dns-run').addEventListener('click', function() {
+        if (diagnosticsBusy) return;
+        setDiagnosticsBusy(true);
         resetRunLog();
-        runDnsTest();
+        runDnsTest(function() { setDiagnosticsBusy(false); });
     });
     document.getElementById('ps-proxy-run').addEventListener('click', function() {
+        if (diagnosticsBusy) return;
+        setDiagnosticsBusy(true);
         resetRunLog();
-        runProxyTest();
+        runProxyTest(function() { setDiagnosticsBusy(false); });
     });
     document.getElementById('ps-leak-run').addEventListener('click', function() {
+        if (diagnosticsBusy) return;
+        setDiagnosticsBusy(true);
         resetRunLog();
-        runLeakTest();
+        runLeakTest(function() { setDiagnosticsBusy(false); });
     });
     document.getElementById('ps-e2e-run').addEventListener('click', function() {
+        if (diagnosticsBusy) return;
+        setDiagnosticsBusy(true);
         resetRunLog();
-        runE2eTest();
+        runE2eTest(function() { setDiagnosticsBusy(false); });
     });
 
     document.getElementById('ps-run-all').addEventListener('click', function() {
         var btn = this;
-        btn.disabled = true;
+        if (diagnosticsBusy) return;
+        setDiagnosticsBusy(true);
         btn.textContent = 'Running...';
         resetRunLog();
         resetChainColors();
-        runLeakTest(function() {
+        runProxyTest(function() {
             setTimeout(function() {
-                runProxyTest(function() {
+                runDnsTest(function() {
                     setTimeout(function() {
-                        runDnsTest(function() {
-                            setTimeout(function() {
-                                runE2eTest(function() {
-                                    btn.disabled = false;
-                                    btn.textContent = 'Run All Diagnostics';
-                                });
-                            }, 500);
+                        runE2eTest(function() {
+                            setDiagnosticsBusy(false);
+                            btn.textContent = 'Run All Diagnostics';
                         });
                     }, 500);
                 });

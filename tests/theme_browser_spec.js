@@ -1,5 +1,6 @@
-// theme_browser_spec.js | v3.0.0 | 08.10.2026 | Native status color controls and scheme transitions
+// theme_browser_spec.js | v4.1.0 | 09.10.2026 | In-frame clipboard icons and Stubby guidance
 // node tests/theme_browser_spec.js --browser <installed Chromium/Edge executable>
+// Add --diagnostics-only, --update-only or --copy-only for focused form checks.
 // All generated files and the isolated browser profile live under ROOT/tmp.
 'use strict';
 const assert = require('node:assert/strict');
@@ -11,6 +12,11 @@ const repo = path.resolve(__dirname, '..');
 const root = path.dirname(repo);
 const appVersion = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/controller/podkop-tweaker.lua'), 'utf8').match(/APP_VERSION = "([^"]+)"/)[1];
 const browser = process.argv[process.argv.indexOf('--browser') + 1];
+const diagnosticsOnly = process.argv.includes('--diagnostics-only');
+const updateOnly = process.argv.includes('--update-only');
+const copyOnly = process.argv.includes('--copy-only');
+const focused = diagnosticsOnly || updateOnly || copyOnly;
+if ([diagnosticsOnly, updateOnly, copyOnly].filter(Boolean).length > 1) throw new Error('Choose one focused mode');
 if (!process.argv.includes('--browser') || !browser) throw new Error('Supply --browser <installed executable>');
 const artifacts = path.join(root, 'tmp', 'theme-smoke');
 assert.ok(fs.existsSync(path.dirname(artifacts)), 'ROOT/tmp must exist');
@@ -100,9 +106,94 @@ function appearanceFixture() {
     return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style><link rel="stylesheet" href="/common.css?v=${appVersion}"></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};</script><script src="/common.js?v=${appVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
 }
 
+function diagnosticsFixture() {
+    const view = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/view/podkop-tweaker/diagnostics.htm'), 'utf8');
+    const marker = '<span hidden id="ps-theme-context" data-theme="argon" data-mode="dark" data-profile="soft"></span>';
+    const markup = view.slice(view.indexOf('<div class="cbi-map"'), view.indexOf('<link rel="stylesheet"'))
+        .replace('<%+podkop-tweaker/tabs%>', marker).replace(/<%=url\('admin\/services\/podkop'\)%>/g, '/admin/services/podkop');
+    const scripts = [...view.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+    const bootstrap = { csrf: 'browser-token', urls: { chainInfo: '/testapi/chain', dnsObservationStart: '/testapi/dns-start', dnsObservationResults: '/testapi/dns-results' } };
+    // Provider probes are mapped to a local image: exercise real browser events
+    // without sending DNS/HTTP test traffic to a third-party from the host.
+    const probes = `window.probeURLs=[];window.Image=class{constructor(){this.img=document.createElement('img');this.img.onload=()=>this.onload&&this.onload();this.img.onerror=()=>this.onerror&&this.onerror();}set src(url){if(!url)return;window.probeURLs.push(url);this.img.src='/testapi/probe.png';}};`;
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style><link rel="stylesheet" href="/common.css?v=${appVersion}"></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};${probes}</script><script src="/common.js?v=${appVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+}
+
+const localApplyRequests = [];
+let localApplyFailure = false;
+function updateFixture(mode) {
+    const view = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/view/podkop-tweaker/update.htm'), 'utf8');
+    const marker = '<span hidden id="ps-theme-context" data-theme="argon" data-mode="dark" data-profile="soft"></span>';
+    const markup = view.slice(view.indexOf('<div class="cbi-map"'), view.indexOf('<link rel="stylesheet"')).replace('<%+podkop-tweaker/tabs%>', marker);
+    const scripts = [...view.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+    const bootstrap = { csrf: 'browser-token', urls: { upload: '/testapi/local-upload?case=' + mode, apply: '/testapi/local-apply?case=' + mode } };
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${appVersion}"></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};</script><script src="/common.js?v=${appVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+}
+
+// Use real page markup/bootstrap/scripts; intercept native copy events so the
+// HTTP fallback is exercised without changing the host OS clipboard.
+function copyFixture(name) {
+    const view = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/view/podkop-tweaker', name + '.htm'), 'utf8');
+    const marker = '<span hidden id="ps-theme-context" data-theme="argon" data-mode="dark" data-profile="soft"></span>';
+    const markup = view.slice(view.indexOf('<div class="cbi-map"'), view.indexOf('<link rel="stylesheet"')).replace('<%+podkop-tweaker/tabs%>', marker);
+    const scripts = [...view.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+    const bootstrap = scripts[0][1].replace(/<%=([\s\S]*?)%>/g, (_, expr) => {
+        if (expr.includes('app_version')) return appVersion;
+        if (expr.includes('csrf_token')) return 'browser-token';
+        const endpoint = expr.match(/api\/([^"']+)/);
+        return endpoint ? '/copyapi/' + endpoint[1] : '';
+    });
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${appVersion}"></head><body><div class="main-right">${markup}</div><script>${bootstrap};window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:undefined});document.addEventListener('copy',event=>{window.copyWrites.push(document.activeElement.value);event.preventDefault();});</script><script src="/common.js?v=${appVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+}
+
+const copyLogLines = Array.from({ length: 15 }, (_, i) => [`09.10.2026 12:${String(i).padStart(2, '0')}|manual|updated=1|unchanged=0|failed=0`, `  main-${i}: updated`, `    detail ${i}: <script>plain text</script>`]).flat();
+
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
-    if (url.pathname === '/api/appearance' || url.pathname === '/api/typography') {
+    if (url.pathname === '/copy-form') {
+        res.setHeader('Content-Type', 'text/html'); res.end(copyFixture(url.searchParams.get('view')));
+    } else if (url.pathname.startsWith('/copyapi/')) {
+        const endpoint = url.pathname.slice('/copyapi/'.length);
+        if (['read_config', 'read_stubby_config', 'read_singbox_config'].includes(endpoint)) {
+            res.setHeader('Content-Type', 'text/plain'); res.end("config settings 'settings'\n    option enabled '1'\n");
+        } else {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify(endpoint === 'read_update_log' ? { lines: copyLogLines } : endpoint === 'subscription_state' ? { sections: [] } : { running: false, status: 'fixed' }));
+        }
+    } else if (url.pathname === '/local-update-form') {
+        res.setHeader('Content-Type', 'text/html'); res.end(updateFixture(url.searchParams.get('case')));
+    } else if (url.pathname === '/testapi/local-upload' || url.pathname === '/testapi/local-apply') {
+        let body = ''; req.on('data', data => { body += data; }); req.on('end', () => {
+            res.setHeader('Content-Type', 'application/json');
+            const mode = url.searchParams.get('case');
+            if (url.pathname.endsWith('-upload')) {
+                if (!body.includes('name="token"') || !body.includes('browser-token')) { res.statusCode = 403; res.end('{}'); return; }
+                const newer = appVersion.split('.').map((n, i) => i === 2 ? +n + 1 : n).join('.');
+                res.end(JSON.stringify({ success: true, current_version: appVersion, archive_version: mode === 'same' ? appVersion : mode === 'newer' ? newer : '4.7.0', same_version: mode === 'same', can_update: mode === 'newer' }));
+            } else {
+                const params = Object.fromEntries(new URLSearchParams(body));
+                if (params.token !== 'browser-token') { res.statusCode = 403; res.end('{}'); return; }
+                localApplyRequests.push({ mode, params });
+                res.end(JSON.stringify(localApplyFailure ? { success: false, error: 'Update application failed', details: 'mock IO failure' } : { success: true, reinstalled: mode === 'same' }));
+            }
+        });
+    } else if (url.pathname === '/diagnostics-form') {
+        res.setHeader('Content-Type', 'text/html'); res.end(diagnosticsFixture());
+    } else if (url.pathname === '/admin/services/podkop') {
+        res.setHeader('Content-Type', 'text/html');
+        res.end(`<!doctype html><html><body><ul class="cbi-tabmenu"><li data-tab="diagnostic"><a href="#">Diagnostics</a></li></ul><div id="tabs" data-initialized="false"><div id="pane" data-tab="diagnostic" data-tab-active="false">Native Podkop diagnostics</div></div><script>setTimeout(()=>{document.querySelector('a').onclick=(event)=>{event.preventDefault();document.getElementById('pane').setAttribute('data-tab-active','true');};document.getElementById('tabs').setAttribute('data-initialized','true');},300);</script></body></html>`);
+    } else if (url.pathname === '/testapi/chain') {
+        res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ resolvers: [] }));
+    } else if (url.pathname === '/testapi/probe.png') {
+        res.setHeader('Content-Type', 'image/png'); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jPioAAAAASUVORK5CYII=', 'base64'));
+    } else if (url.pathname === '/testapi/dns-start' || url.pathname === '/testapi/dns-results') {
+        let body = ''; req.on('data', data => { body += data; }); req.on('end', () => {
+            res.setHeader('Content-Type', 'application/json');
+            if (new URLSearchParams(body).get('token') !== 'browser-token') { res.statusCode = 403; res.end('{}'); return; }
+            res.end(JSON.stringify(url.pathname.endsWith('-start') ? { success: true, id: 'native', hosts: Array.from({ length: 6 }, (_, i) => `${i + 1}.native.bash.ws`) } :
+                { success: true, complete: true, provider: 'bash.ws', scope: 'current_browser', resolvers: [{ ip: '1.1.1.1', asn: 'AS13335' }], control_request_ips: [{ ip: '203.0.113.1' }], control_request_scope: 'router', conclusion: 'Observations collected, compare intended policy' }));
+        });
+    } else if (url.pathname === '/api/appearance' || url.pathname === '/api/typography') {
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify(url.pathname.endsWith('/appearance') ? { settings: appearanceState } : { settings: { font_size: '17', font_weight: '550', line_height: '1.7' }, stale: false }));
     } else if (['/api/appearance-save', '/api/appearance-reset', '/api/appearance-colors-reset'].includes(url.pathname)) {
@@ -208,7 +299,7 @@ async function main() {
             await evaluate(`(() => {const el=document.getElementById(${JSON.stringify(id)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('input'));})()`);
         };
         const reports = [];
-        for (const [scenario, s, profile] of Object.entries(scenarios).flatMap(([name, settings]) => ['soft', 'contrast'].map(profile => [name, settings, profile]))) {
+        for (const [scenario, s, profile] of (focused ? [] : Object.entries(scenarios)).flatMap(([name, settings]) => ['soft', 'contrast'].map(profile => [name, settings, profile]))) {
             const name = scenario + (profile === 'contrast' ? '-contrast' : '');
             await cdp.call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: s.os }] }, sessionId);
             await cdp.call('Page.navigate', { url: base + '/' + scenario + '?profile=' + profile }, sessionId);
@@ -275,6 +366,7 @@ async function main() {
             console.log(`PASS ${name}: ${result.colors.length} computed text contrasts, distinct surfaces, modal`);
         }
         // Execute the real Argon Config form code, not a hand-written imitation.
+        if (!focused) {
         await cdp.call('Page.navigate', { url: base + '/appearance-form' }, sessionId);
         await wait('document.readyState', 'complete');
         await wait('document.getElementById("ps-appearance-save").disabled', false);
@@ -392,8 +484,196 @@ async function main() {
         assert.equal(await evaluate('document.getElementById("ps-color-success-dark-hex").value'), '#123456');
         fs.writeFileSync(path.join(artifacts, 'appearance-form.json'), JSON.stringify({ preview, colorPreview, requests: appearanceRequests }, null, 2));
         console.log('PASS real Argon Config form: picker/HEX sync, live colors, computed contrast, invalid HEX, exact save+CSRF, reload, isolated resets, narrow layout, failure recovery');
-        fs.writeFileSync(path.join(artifacts, 'computed-colors.json'), JSON.stringify(reports, null, 2));
-        console.log(`Native browser theme checks: PASS (${reports.length} scheme/profile scenarios + appearance form; screenshots in ROOT/tmp/theme-smoke)`);
+        }
+        if (!updateOnly && !copyOnly) {
+        await cdp.call('Page.navigate', { url: base + '/diagnostics-form' }, sessionId);
+        await wait('document.readyState', 'complete');
+        await evaluate('document.getElementById("ps-leak-run").click()');
+        await wait('document.getElementById("ps-leak-status").textContent', 'OBSERVATIONS COLLECTED');
+        const observed = await evaluate(`({probes:window.probeURLs,log:JSON.parse(sessionStorage.getItem('pt-diag-run-log'))})`);
+        assert.equal(observed.probes.length, 6);
+        assert.equal(observed.log[observed.log.length - 1].data.probes_completed, 6);
+        assert.equal(observed.log[observed.log.length - 1].data.resolvers[0].ip, '1.1.1.1');
+        assert.equal(await evaluate('document.getElementById("ps-leak-run").disabled'), false);
+        await screenshot('diagnostics-external-dns', 1440);
+        await evaluate('document.getElementById("ps-dns-observation-help").open=true');
+        await screenshot('diagnostics-dns-help-dark', 1440);
+        await evaluate('document.getElementById("ps-theme-context").setAttribute("data-mode","light")');
+        await wait('document.documentElement.getAttribute("data-pt-dark")', 'false');
+        await screenshot('diagnostics-dns-help-light', 1440);
+        await evaluate('document.getElementById("ps-dns-observation-help").open=false');
+        await cdp.call('Runtime.evaluate', { expression: 'document.getElementById("ps-podkop-diagnostics").click()', userGesture: true }, sessionId);
+        let childSession;
+        for (let i = 0; i < 100; i++) {
+            const targets = await cdp.call('Target.getTargets');
+            const popup = targets.targetInfos.find(target => target.url.split('#')[0] === base + '/admin/services/podkop');
+            if (popup) {
+                if (!childSession) childSession = (await cdp.call('Target.attachToTarget', { targetId: popup.targetId, flatten: true })).sessionId;
+                const state = await cdp.call('Runtime.evaluate', { expression: `document.getElementById('pane')?.getAttribute('data-tab-active')`, returnByValue: true }, childSession);
+                if (state.result.value === 'true') break;
+            }
+            if (i === 99) throw new Error('Native Podkop diagnostic tab was not selected');
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        const opener = await cdp.call('Runtime.evaluate', { expression: 'window.opener === null', returnByValue: true }, childSession);
+        assert.equal(opener.result.value, true);
+        console.log('PASS real Diagnostics form: local mock probes, exact resolver run log and bounded native Podkop tab navigation');
+        }
+        if (!diagnosticsOnly && !copyOnly) {
+            for (const mode of ['older', 'newer', 'same']) {
+                await cdp.call('Page.navigate', { url: base + '/local-update-form?case=' + mode }, sessionId);
+                await wait('document.readyState', 'complete');
+                await evaluate(`(() => {const transfer=new DataTransfer();transfer.items.add(new File(['archive'],'luci-app-podkop-tweaker-v${appVersion}.tar.gz'));const input=document.getElementById('ps-file-input');input.files=transfer.files;input.dispatchEvent(new Event('change'));})()`);
+                await wait('document.getElementById("ps-file-input").disabled', false);
+                if (mode === 'older') {
+                    assert.equal(await evaluate('document.getElementById("ps-apply-btn") === null'), true);
+                    assert.match(await evaluate('document.getElementById("ps-update-actions").textContent'), /older than installed/);
+                    continue;
+                }
+                assert.match(await evaluate('document.getElementById("ps-apply-btn").textContent'), mode === 'same' ? /Reinstall/ : /Update/);
+                if (mode === 'same') await screenshot('local-update-reinstall', 1440);
+                localApplyFailure = true;
+                await evaluate('document.getElementById("ps-apply-btn").click()');
+                await wait('document.getElementById("ps-apply-btn").disabled', false);
+                assert.equal(localApplyRequests[localApplyRequests.length - 1].params.reinstall, mode === 'same' ? '1' : undefined);
+                assert.equal(await evaluate('document.getElementById("ps-file-input").disabled'), false);
+                if (mode === 'same') {
+                    localApplyFailure = false;
+                    await evaluate('document.getElementById("ps-apply-btn").click()');
+                    await wait('document.getElementById("ps-apply-status").textContent', 'Reinstallation complete! Reloading...');
+                    assert.equal(await evaluate('document.getElementById("ps-file-input").disabled'), true);
+                }
+            }
+            console.log('PASS real Local Update form: Update/Reinstall/older actions, multipart+CSRF, explicit reinstall flag, failure recovery and success lock');
+        }
+        if (!focused || copyOnly) {
+            const copy = async selector => {
+                const placement = await evaluate(`(() => {
+                    const button=document.querySelector(${JSON.stringify(selector)}),svg=button.querySelector('svg'),status=button.querySelector('.ps-copy-status');
+                    const id=button.getAttribute('data-pt-copy-for'),details=button.closest('.ps-err-details');
+                    const source=id?document.getElementById(id):details.querySelector('pre');
+                    const frame=source.closest('.ps-copy-panel,.ps-copy-editor'),b=button.getBoundingClientRect(),f=frame.getBoundingClientRect(),s=source.getBoundingClientRect();
+                    return {icon:!!svg,hidden:getComputedStyle(status).clipPath==='inset(50%)',width:b.width,height:b.height,
+                        inFrame:details&&!details.open?button.parentElement.tagName==='SUMMARY':b.left>=f.left&&b.right<=f.right&&b.top>=f.top&&b.bottom<=s.top+1};
+                })()`);
+                assert.equal(placement.icon, true, 'copy control must display a fixed SVG icon');
+                assert.equal(placement.hidden, true, 'status labels must be visually hidden, not visible buttons');
+                assert.equal(placement.width, 30); assert.equal(placement.height, 30);
+                assert.equal(placement.inFrame, true, 'icon must be inside its frame and outside the scrolling text');
+                const before = await evaluate('window.copyWrites.length');
+                await cdp.call('Runtime.evaluate', { expression: `document.querySelector(${JSON.stringify(selector)}).click()`, userGesture: true }, sessionId);
+                await wait('window.copyWrites.length', before + 1);
+                await wait(`document.querySelector(${JSON.stringify(selector)}).getAttribute('data-pt-copy-state')`, 'done');
+                return evaluate('window.copyWrites[window.copyWrites.length-1]');
+            };
+            const text = '\tconfig settings\n' + "    option user_domains_text 'line <literal>'\n".repeat(2000) + 'last config line\n';
+            const detail = '<!doctype html>\n<form action="/cgi-bin/luci/admin/services/podkop-tweaker/api/upload_update">Log in</form>\n' + 'full error detail\n'.repeat(2000) + 'last error line';
+            for (const name of ['config', 'stubby', 'singbox']) {
+                await cdp.call('Page.navigate', { url: base + '/copy-form?view=' + name }, sessionId);
+                await wait('document.readyState', 'complete');
+                await wait('document.getElementById("ps-config-editor").disabled', false);
+                await evaluate(`(() => {const e=document.getElementById('ps-config-editor');e.value=${JSON.stringify(text)};e.dispatchEvent(new Event('input'));e.focus();e.setSelectionRange(7,19,'backward');e.scrollTop=150;e.scrollLeft=12;window.editorBefore={start:e.selectionStart,end:e.selectionEnd,direction:e.selectionDirection,top:e.scrollTop,left:e.scrollLeft};})()`);
+                assert.equal(await copy('[data-pt-copy-for="ps-config-editor"]'), text);
+                const unchanged = await evaluate(`(() => {const e=document.getElementById('ps-config-editor');return {focus:document.activeElement.id,value:e.value===${JSON.stringify(text)},before:window.editorBefore,after:{start:e.selectionStart,end:e.selectionEnd,direction:e.selectionDirection,top:e.scrollTop,left:e.scrollLeft}};})()`);
+                assert.equal(unchanged.focus, 'ps-config-editor');
+                assert.equal(unchanged.value, true);
+                assert.deepEqual(unchanged.after, unchanged.before, name + ': copying must retain selection and scroll');
+                assert.equal(await evaluate('document.getElementById("ps-config-save").disabled'), false, 'copy must not change dirty state');
+                await evaluate(`document.getElementById('ps-error-details').textContent=${JSON.stringify(detail)};document.getElementById('ps-error-modal').style.display='flex';document.querySelector('#ps-error-modal .ps-modal-content').style.maxHeight='250px'`);
+                assert.equal(await copy('[data-pt-copy-for="ps-error-details"]'), detail);
+                await evaluate(`document.querySelector('#ps-error-modal .ps-modal-content').scrollTop=160;document.getElementById('ps-error-details').scrollTop=400`);
+                assert.equal(await evaluate(`(() => {const card=document.querySelector('#ps-error-modal .ps-modal-content').getBoundingClientRect(),button=document.querySelector('[data-pt-copy-for="ps-error-details"]').getBoundingClientRect();return button.top>=card.top&&button.bottom<card.bottom&&button.right<=card.right;})()`), true, 'modal Copy must stay visible when content scrolls');
+                if (name === 'config') await screenshot('copy-error-modal-dark', 1440);
+                await evaluate(`document.getElementById('ps-error-close').click();document.getElementById('ps-config-diff').click()`);
+                const expectedDiff = await evaluate('document.getElementById("ps-diff-body").innerText');
+                assert.equal(await copy('[data-pt-copy-for="ps-diff-body"]'), expectedDiff);
+                if (name === 'stubby') {
+                    await evaluate('document.getElementById("ps-diff-close").click();document.getElementById("ps-params-btn").click()');
+                    const help = await evaluate('document.getElementById("ps-params-modal").innerText');
+                    assert.ok(help.includes("log_level '3'"));
+                    for (const level of ['0 Emergency', '1 Alert', '2 Critical', '3 Error', '4 Warning', '5 Notice', '6 Info', '7 Debug']) assert.ok(help.includes(level));
+                    assert.ok(help.includes('Local DNSSEC off') && help.includes('dot.sb'));
+                    await screenshot('stubby-template-guidance', 1440);
+                    await evaluate('document.getElementById("ps-params-close").click();document.getElementById("ps-initfix-btn").click()');
+                    assert.equal(await copy('[data-pt-copy-for="ps-initfix-cmd"]'), await evaluate('document.getElementById("ps-initfix-cmd").textContent'));
+                }
+                assert.equal(await evaluate('document.querySelectorAll(".ps-copy-fallback").length'), 0);
+                // Leave via the real Undo action so the verified dirty-state
+                // beforeunload guard does not block navigation to the next form.
+                await evaluate('window.confirm=()=>true;document.getElementById("ps-config-undo").click()');
+                console.log('PASS clipboard real ' + name + ' editor, error and diff');
+            }
+            await cdp.call('Page.navigate', { url: base + '/copy-form?view=subscriptions' }, sessionId);
+            await wait('document.readyState', 'complete');
+            await wait('document.getElementById("ps-full-log-btn").style.display', '');
+            const recent = await evaluate('document.getElementById("ps-log-wrap").innerText');
+            assert.equal(await copy('[data-pt-copy-for="ps-log-wrap"]'), recent);
+            assert.ok(recent.includes('detail 14: <script>plain text</script>'));
+            await evaluate('document.getElementById("ps-full-log-btn").click()');
+            const fullLog = await evaluate('document.getElementById("ps-full-log-body").innerText');
+            assert.ok(fullLog.includes('detail 0: <script>plain text</script>'));
+            assert.equal(await copy('[data-pt-copy-for="ps-full-log-body"]'), fullLog);
+            await evaluate('PT.initCopyButtons();PT.initCopyButtons()');
+            assert.equal(await evaluate('document.querySelectorAll("[data-pt-copy-for=ps-full-log-body]").length'), 1);
+
+            await cdp.call('Page.navigate', { url: base + '/argon-auto-dark' }, sessionId);
+            await wait('document.readyState', 'complete');
+            await evaluate(`window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText(text){window.copyWrites.push(text);return Promise.resolve();}}});document.getElementById('log').innerHTML='<div class="ps-log-summary">new summary</div><div class="ps-log-detail-line">detail after refresh</div>';PT.setErr(document.getElementById('install-error'),'HTTP error: 403',${JSON.stringify(detail)})`);
+            assert.equal(await copy('[data-pt-copy-for="log"]'), 'new summary\ndetail after refresh');
+            assert.equal(await copy('[data-pt-copy-for="chain"]'), await evaluate('document.getElementById("chain").innerText'));
+            assert.equal(await copy('#install-error summary .ps-copy-btn'), detail, 'copy hidden complete HTML error as literal text');
+            assert.equal(await evaluate('document.querySelector("#install-error details").open'), false, 'Copy must not open or close the disclosure');
+            assert.equal(await evaluate('document.querySelector("#install-error pre").childElementCount'), 0, 'HTML errors remain literal text');
+            const beforeKeyboard = await evaluate('window.copyWrites.length');
+            await cdp.call('Page.bringToFront', {}, sessionId);
+            await evaluate('document.querySelector("#install-error .ps-copy-btn").focus()');
+            await cdp.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' }, sessionId);
+            await cdp.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 }, sessionId);
+            await wait('window.copyWrites.length', beforeKeyboard + 1);
+            assert.equal(await evaluate('document.querySelector("#install-error details").open'), false, 'keyboard Copy must not toggle the disclosure');
+            for (const scheme of ['dark', 'light']) {
+                await evaluate(`document.getElementById('ps-theme-context').setAttribute('data-mode',${JSON.stringify(scheme)});document.querySelector('#install-error details').open=true`);
+                await wait('document.documentElement.getAttribute("data-pt-dark")', String(scheme === 'dark'));
+                await wait('!!document.querySelector("#install-error .ps-copy-tools .ps-copy-btn")', true);
+                assert.equal(await copy('#install-error .ps-copy-tools .ps-copy-btn'), detail, 'expanded error copies through its in-block icon');
+                await screenshot('copy-details-' + scheme, 1440);
+            }
+            await evaluate('document.querySelector("#install-error details").open=false');
+            await wait('!!document.querySelector("#install-error summary .ps-copy-btn")', true);
+            assert.equal(await copy('#install-error summary .ps-copy-btn'), detail);
+            await evaluate('document.querySelector("#install-error details").open=true');
+            await wait('!!document.querySelector("#install-error .ps-copy-tools .ps-copy-btn")', true);
+            await cdp.call('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false }, sessionId);
+            // The theme fixture is deliberately a fixed two-column grid; isolate
+            // the real error block to check its responsive toolbar geometry.
+            await evaluate(`document.querySelector('.fixture-grid').style.display='block'`);
+            assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true);
+            assert.equal(await evaluate(`(() => {const a=document.querySelector('#install-error .ps-copy-panel').getBoundingClientRect(),b=document.querySelector('#install-error .ps-copy-btn').getBoundingClientRect();return b.right<=a.right&&b.left>=a.left;})()`), true);
+            await screenshot('copy-details-mobile', 390);
+            await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false }, sessionId);
+
+            await cdp.call('Page.navigate', { url: base + '/copy-form?view=import-export' }, sessionId);
+            await wait('document.readyState', 'complete');
+            await evaluate(`window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText(text){window.copyWrites.push(text);return Promise.resolve();}}});document.getElementById('ps-error-details').textContent=${JSON.stringify(detail)};document.getElementById('ps-error-modal').style.display='flex'`);
+            assert.equal(await copy('[data-pt-copy-for="ps-error-details"]'), detail);
+
+            await cdp.call('Page.navigate', { url: base + '/diagnostics-form' }, sessionId);
+            await wait('document.readyState', 'complete');
+            await evaluate(`window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText(text){window.copyWrites.push(text);return Promise.resolve();}}});document.getElementById('ps-leak-run').click()`);
+            await wait('document.getElementById("ps-leak-status").textContent', 'OBSERVATIONS COLLECTED');
+            const runLog = await evaluate('document.getElementById("ps-diaglog-wrap").innerText');
+            assert.ok(runLog.includes('probes_completed: 6'));
+            assert.equal(await copy('[data-pt-copy-for="ps-diaglog-wrap"]'), runLog);
+            assert.equal(await copy('[data-pt-copy-for="ps-chain-content"]'), await evaluate('document.getElementById("ps-chain-content").innerText'));
+
+            await cdp.call('Page.navigate', { url: base + '/appearance-form' }, sessionId);
+            await wait('document.readyState', 'complete');
+            await evaluate(`window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText(text){window.copyWrites.push(text);return Promise.resolve();}}})`);
+            assert.equal(await copy('[data-pt-copy-for="ps-appearance-editor"]'), await evaluate('document.getElementById("ps-appearance-editor").value'));
+            console.log('PASS clipboard controls: in-frame SVG/accessible feedback, real editors/error/diff/command/log forms, Stubby guidance, native HTTP copy, secure API, full literal HTML, selection+scroll+dirty preservation, keyboard and light/dark/mobile controls');
+        }
+        if (!focused) fs.writeFileSync(path.join(artifacts, 'computed-colors.json'), JSON.stringify(reports, null, 2));
+        console.log(copyOnly ? 'Native clipboard checks: PASS' : updateOnly ? 'Native Local Update checks: PASS' : diagnosticsOnly ? 'Native Diagnostics checks: PASS (DNS flow, light/dark result guide and Podkop navigation)' : `Native browser theme checks: PASS (${reports.length} scheme/profile scenarios + real forms; screenshots in ROOT/tmp/theme-smoke)`);
     } finally {
         if (cdp) { await cdp.call('Browser.close').catch(() => {}); cdp.close(); }
         child.kill();

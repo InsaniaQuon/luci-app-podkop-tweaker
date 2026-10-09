@@ -75,7 +75,8 @@ describe("api_stubby.save_config", function()
         H.begin({})
         H.vfs_write(CFG, OTHER)
         local SRV = require("podkop-tweaker.services")
-        SRV.write_file_atomic = function() return false, "boom" end
+        local write = SRV.write_file_atomic
+        SRV.write_file_atomic = function(path, ...) if path == CFG then return false, "boom" end; return write(path, ...) end
         assert.same({ error = "boom" }, mod().save_config(VALID))
     end)
 end)
@@ -278,7 +279,8 @@ describe("api_stubby.import_config", function()
         H.begin({})
         H.vfs_write(CFG, OTHER)
         local SRV = require("podkop-tweaker.services")
-        SRV.write_file_atomic = function() return false, "wf" end
+        local write = SRV.write_file_atomic
+        SRV.write_file_atomic = function(path, ...) if path == CFG then return false, "wf" end; return write(path, ...) end
         assert.same({ error = "wf" }, mod().import_config(VALID))
     end)
 end)
@@ -305,7 +307,12 @@ describe("api_stubby.apply_recommended", function()
         assert.truthy(c:find("149.112.112.112", 1, true))
         assert.truthy(c:find("185.222.222.222", 1, true))
         assert.truthy(c:find("45.11.45.11", 1, true))
-        assert.truthy(c:find("dns.sb", 1, true))
+        assert.truthy(c:find("option log_level '3'", 1, true))
+        assert.truthy(c:find("option idle_timeout '30000'", 1, true))
+        local _, count = c:gsub("option tls_auth_name 'dot%.sb'", "")
+        assert.equal(2, count)
+        assert.falsy(c:find("option tls_auth_name 'dns.sb'", 1, true))
+        assert.is_true(require("podkop-tweaker.lib").validate_uci_config(c))
         assert.truthy(c:find("127.0.0.53@53", 1, true))
         assert.equal(OTHER, H.vfs_read(BAK))
         assert.equal("/etc/init.d/stubby restart 2>&1", H.exec_cmds()[1])
@@ -315,7 +322,8 @@ describe("api_stubby.apply_recommended", function()
         H.begin({})
         H.vfs_write(CFG, OTHER)
         local SRV = require("podkop-tweaker.services")
-        SRV.write_file_atomic = function() return false, "x" end
+        local write = SRV.write_file_atomic
+        SRV.write_file_atomic = function(path, ...) if path == CFG then return false, "x" end; return write(path, ...) end
         assert.same({ error = "x" }, mod().apply_recommended())
     end)
 end)

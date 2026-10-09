@@ -82,6 +82,7 @@ end
 function M.import(content, file_raw, sel_param)
     local sys = require("luci.sys")
 
+    if content == nil then content = "" end
     if content == "" then
         if type(file_raw) == "table" and file_raw.data then
             content = file_raw.data
@@ -89,6 +90,7 @@ function M.import(content, file_raw, sel_param)
             content = file_raw
         end
     end
+    if type(content) ~= "string" then return { error = "Bundle content must be text" } end
     if content == "" then
         return { error = "Bundle content is empty" }
     end
@@ -139,7 +141,8 @@ function M.import(content, file_raw, sel_param)
         if type(bundle.items[name]) == "table"
             and not (name == "argon" and argon_ignored)
             and (not selection_used or selected[name]) then
-            local ok, err = BUNDLE.apply_item(name, bundle.items[name], env)
+            local called, ok, err = pcall(BUNDLE.apply_item, name, bundle.items[name], env)
+            if not called then ok, err = false, "Cannot apply item: internal error" end
             results[name] = { ok = (ok == true), error = err }
         end
     end

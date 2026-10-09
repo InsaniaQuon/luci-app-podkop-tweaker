@@ -1,481 +1,302 @@
--- api_update_spec | v1.0.0 | 23.08.2026 | Max-coverage specs for V2 pure handlers of api_update
-
+-- Self-update integration with real tar metadata fixtures and VFS fault injection.
 package.path = "./usr/lib/lua/?.lua;./tests/?.lua;" .. package.path
-
 local H = require("pt_harness")
-
-local CACHE = "/tmp/tweaker_check_cache.json"
-local TMP = "/tmp/pt-update"
-local GTMP = "/tmp/pt-git-update"
-local CTRL_REL = "usr/lib/lua/luci/controller/podkop-tweaker.lua"
-local LOG = "/etc/config/pt-update.log"
-
-local GITHUB_OK = '{"tag_name":"v4.9.9","assets":[{"browser_download_url":' ..
-    '"https://github.com/InsaniaQuon/luci-app-podkop-tweaker/releases/download/v4.9.9/x.tar.gz"}]}'
-local GITHUB_RATE = '{"message":"API rate limit exceeded for client"}'
-
-local STRICT_FILES = {
-    "usr/lib/lua/luci/controller/podkop-tweaker.lua",
-    "usr/lib/lua/podkop-tweaker/lib.lua",
-    "www/luci-static/resources/podkop-tweaker/common.js",
-    "etc/config/podkop-tweaker"
+local T = require("pt_tar")
+local C = "usr/lib/lua/luci/controller/podkop-tweaker.lua"
+local TMP, GTMP, CACHE = "/tmp/pt-update", "/tmp/pt-git-update", "/tmp/tweaker_check_cache.json"
+local NAME = "luci-app-podkop-tweaker-v4.7.0.tar.gz"
+local URL = "https://github.com/InsaniaQuon/luci-app-podkop-tweaker/releases/download/v4.7.0/" .. NAME
+local CTRL = 'local APP_VERSION = "4.7.0"\n'
+local ORPHAN = "/usr/lib/lua/luci/view/podkop-tweaker/podkop-tweaker-css.htm"
+local FILES = {
+    { path = C, content = CTRL },
+    { path = "usr/lib/lua/podkop-tweaker/lib.lua", content = "module" },
+    { path = "www/luci-static/resources/podkop-tweaker/common.js", content = "new JS" },
+    { path = "etc/config/podkop-tweaker", content = "defaults" },
+    { path = "usr/bin/podkop-fragment-patch.sh", content = "script" }
 }
 
-local function b64(data)
-    local B = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-    local out = {}
-    for i = 1, #data, 3 do
-        local a, b, c = data:byte(i, i + 2)
-        local n = a * 65536 + (b or 0) * 256 + (c or 0)
-        out[#out + 1] = B:sub(math.floor(n / 262144) % 64 + 1, math.floor(n / 262144) % 64 + 1)
-        out[#out + 1] = B:sub(math.floor(n / 4096) % 64 + 1, math.floor(n / 4096) % 64 + 1)
-        out[#out + 1] = (b and B:sub(math.floor(n / 64) % 64 + 1, math.floor(n / 64) % 64 + 1) or "=")
-        out[#out + 1] = (c and B:sub(n % 64 + 1, n % 64 + 1) or "=")
-    end
-    return table.concat(out)
-end
-
-local function ctrl_content(ver)
-    if ver == nil then return "-- no version here\n" end
-    return '-- controller\nlocal APP_VERSION = "' .. ver .. '"\n'
-end
-
-local function find_out(dir, rels)
-    local lines = {}
-    for _, r in ipairs(rels) do lines[#lines + 1] = dir .. "/" .. r end
-    return { match = "find '", out = table.concat(lines, "\n") }
-end
-
--- responder for the pre-extraction member check (tar -tzf)
-local function tar_list_out(rels)
-    local lines = {}
-    for _, r in ipairs(rels) do lines[#lines + 1] = "./" .. r end
-    return { match = "tar -tzf", out = table.concat(lines, "\n") }
-end
-
-local function seed_tree(dir, rels, ver)
-    for _, r in ipairs(rels) do
-        H.vfs_write(dir .. "/" .. r, (r == CTRL_REL) and ctrl_content(ver) or "data")
-    end
-end
-
-local function begin_upd(opts)
-    H.begin(opts)
-    local UPD = H.reload("podkop-tweaker.api_update")
-    UPD.init("4.1.0")
-    return UPD
-end
-
-after_each(function()
-    H.finish()
-end)
-
-describe("api_update.cached_latest", function()
-    it("nil without cache file", function()
-        local UPD = begin_upd({})
-        assert.is_nil(UPD.cached_latest())
-    end)
-
-    it("returns latest when cache fresh", function()
-        local UPD = begin_upd({})
-        H.vfs_write(CACHE, '{"latest_version":"4.5.0","cached_at":' .. (os.time() - 10) .. '}')
-        assert.equal("4.5.0", UPD.cached_latest())
-    end)
-
-    it("nil when cache expired or malformed", function()
-        local UPD = begin_upd({})
-        H.vfs_write(CACHE, '{"latest_version":"4.5.0","cached_at":' .. (os.time() - 90000) .. '}')
-        assert.is_nil(UPD.cached_latest())
-        H.finish()
-        local UPD2 = begin_upd({})
-        H.vfs_write(CACHE, "garbage")
-        assert.is_nil(UPD2.cached_latest())
-    end)
-end)
-
-describe("api_update.upload", function()
-    local GOOD_NAME = "luci-app-podkop-tweaker-v4.3.0.tar.gz"
-
-    it("missing data rejected", function()
-        local UPD = begin_upd({})
-        assert.same({ error = "No file uploaded" }, UPD.upload("", GOOD_NAME))
-    end)
-
-    it("undecodable b64 rejected", function()
-        local UPD = begin_upd({})
-        assert.same({ error = "Invalid archive" }, UPD.upload("!@@#", GOOD_NAME))
-    end)
-
-    it("oversize payload rejected", function()
-        local UPD = begin_upd({})
-        assert.same({ error = "Invalid archive" }, UPD.upload(b64(string.rep("a", 130001)), GOOD_NAME))
-    end)
-
-    it("wrong filename pattern rejected", function()
-        local UPD = begin_upd({})
-        assert.same({ error = "Invalid archive" }, UPD.upload(b64("bin"), "backup.tar.gz"))
-    end)
-
-    it("happy: version compared against installed", function()
-        local UPD = begin_upd({ sys = { tar_list_out(STRICT_FILES), find_out(TMP, STRICT_FILES) } })
-        seed_tree(TMP, STRICT_FILES, "4.3.0")
-        local r = UPD.upload(b64("binary"), GOOD_NAME)
-        assert.same({
-            success = true,
-            current_version = "4.1.0",
-            archive_version = "4.3.0",
-            can_update = true,
-            same_version = false
-        }, r)
-        local cmds = H.exec_cmds()
-        assert.equal("rm -rf /tmp/pt-update 2>/dev/null", cmds[1])
-        assert.equal("mkdir -p /tmp/pt-update 2>/dev/null", cmds[2])
-        -- member list is validated (tar -tzf) BEFORE extraction (tar -xzf)
-        assert.truthy(cmds[3]:find("^tar %-tzf"))
-        assert.truthy(cmds[4]:find("^cd /tmp/pt%-update && tar %-xzf upload%.tar%.gz"))
-    end)
-
-    it("controller missing after extract -> cleanup + invalid", function()
-        local UPD = begin_upd({
-            sys = {
-                tar_list_out({ "usr/lib/lua/podkop-tweaker/lib.lua" }),
-                find_out(TMP, { "usr/lib/lua/podkop-tweaker/lib.lua" })
-            }
-        })
-        H.vfs_write(TMP .. "/usr/lib/lua/podkop-tweaker/lib.lua", "x")
-        assert.same({ error = "Invalid archive" },
-            UPD.upload(b64("bin"), "luci-app-podkop-tweaker-v4.3.0.tar.gz"))
-        local cleanups = 0
-        for _, c in ipairs(H.exec_cmds()) do
-            if c == "rm -rf /tmp/pt-update 2>/dev/null" then cleanups = cleanups + 1 end
+local function begin(options)
+    options = options or {}
+    local entries = options.entries or FILES
+    local tar = options.tar or T.archive(entries)
+    local dir = options.git and GTMP or TMP
+    local sys = options.sys or {}
+    sys[#sys + 1] = { match = "tar -xzf", out = function()
+        if options.extract_fail then return "tar failed\nPT_EXIT:1\n" end
+        for _, entry in ipairs(entries) do
+            local path = entry.path:gsub("^%./", ""):gsub("/$", "")
+            if entry.kind == "5" then H.state().dirs[dir .. "/" .. path] = true
+            else H.vfs_write(dir .. "/" .. path, entry.content or "") end
         end
-        -- initial rm -rf + error-path cleanup
-        assert.equal(2, cleanups)
-    end)
+        if options.after_extract then options.after_extract(dir) end
+        return "\nPT_EXIT:0\n"
+    end }
+    H.begin({ sys = sys, failures = options.failures, execute = options.execute,
+        popen = function(cmd)
+            if cmd:find("gzip -dc", 1, true) then return tar .. "\nPT_GZIP_EXIT:" .. (options.gzip_fail and "1" or "0") .. "\n" end
+            if cmd:find("curl", 1, true) then return (options.download or "archive") .. "\nPT_CURL_EXIT:" .. tostring(options.curl_exit or 0) .. "\n" end
+            return ""
+        end })
+    local update = require("podkop-tweaker.api_update")
+    update.init("4.6.0")
+    return update
+end
+local function has_command(part)
+    for _, cmd in ipairs(H.exec_cmds()) do if cmd:find(part, 1, true) then return true end end
+    return false
+end
+local function prepare(update)
+    assert.is_true(update.upload_binary("archive", NAME).success)
+end
+after_each(function() H.finish() end)
 
-    it("strict whitelist violation -> rejected before extraction (M1)", function()
-        local rels = { CTRL_REL, "etc/shadow" }
-        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(TMP, rels) } })
-        seed_tree(TMP, rels, "4.3.0")
-        assert.same({ error = "Invalid archive" },
-            UPD.upload(b64("bin"), "luci-app-podkop-tweaker-v4.3.0.tar.gz"))
-        -- dangerous members must never reach tar -xzf
-        for _, c in ipairs(H.exec_cmds()) do
-            assert.falsy(c:find("tar -xzf", 1, true))
-        end
+describe("update metadata and application", function()
+    it("accepts a bounded archive, writes a manifest and compares versions", function()
+        local update = begin()
+        assert.same({ success = true, current_version = "4.6.0", archive_version = "4.7.0", can_update = true, same_version = false }, update.upload_binary("archive", NAME))
+        assert.truthy(H.vfs_exists(TMP .. "/.pt-manifest.json"))
+        assert.equal("archive", H.vfs_read(TMP .. "/upload.tar.gz"))
     end)
-
-    it("empty member list rejected before extraction", function()
-        local UPD = begin_upd({ sys = {} })
-        assert.same({ error = "Invalid archive" },
-            UPD.upload(b64("bin"), "luci-app-podkop-tweaker-v4.3.0.tar.gz"))
-        for _, c in ipairs(H.exec_cmds()) do
-            assert.falsy(c:find("tar -xzf", 1, true))
-        end
+    it("retains legacy base64 errors and enforces the compressed limit before writes", function()
+        local update = begin()
+        assert.same({ error = "No file uploaded" }, update.upload("", NAME))
+        assert.same({ error = "Invalid archive" }, update.upload("!@#", NAME))
+        assert.same({ error = "Invalid archive" }, update.upload_binary(string.rep("x", 128001), NAME))
+        assert.same({ error = "Invalid archive" }, update.upload_binary("x", "backup.tar.gz"))
+        assert.equal(0, #H.exec_cmds())
     end)
-
-    it("version line missing in controller -> cleanup + invalid", function()
-        local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(TMP, rels) } })
-        seed_tree(TMP, rels, nil)
-        assert.same({ error = "Invalid archive" },
-            UPD.upload(b64("bin"), "luci-app-podkop-tweaker-v4.3.0.tar.gz"))
-    end)
-
-    it("binary upload supports an archive larger than LuCI's text-field limit", function()
-        local UPD = begin_upd({ sys = { tar_list_out(STRICT_FILES), find_out(TMP, STRICT_FILES) } })
-        seed_tree(TMP, STRICT_FILES, "4.3.0")
+    it("handles a binary archive larger than LuCI's text buffer", function()
+        local update = begin()
         local bytes = "\31\139" .. string.rep("\0\255", 55000)
-        assert.truthy(#bytes > 102400)
-        assert.truthy(#bytes < UPD.UPLOAD_MAX_SIZE)
-        local r = UPD.upload_binary(bytes, GOOD_NAME)
-        assert.is_true(r.success)
+        assert.is_true(update.upload_binary(bytes, NAME).success)
         assert.equal(bytes, H.vfs_read(TMP .. "/upload.tar.gz"))
     end)
-
-    it("binary upload enforces the same size limit before writing or extracting", function()
-        local UPD = begin_upd({})
-        local r = UPD.upload_binary(string.rep("x", UPD.UPLOAD_MAX_SIZE + 1), GOOD_NAME)
-        assert.same({ error = "Invalid archive" }, r)
-        assert.equal(0, #H.exec_cmds())
-        assert.falsy(H.vfs_exists(TMP .. "/upload.tar.gz"))
+    it("rejects type, path, size, checksum and gzip failures before extraction", function()
+        local bad = {
+            T.archive({ { path = C, kind = "6" } }),
+            T.archive({ { path = C, kind = "2", options = { link = "/etc/passwd" } } }),
+            T.archive({ { path = C }, { path = "../etc/shadow" } }),
+            T.archive({ { path = C }, { path = "usr/lib/lua/a';printf marker;#/x.lua" } }),
+            T.archive({ { path = C, options = { size = 1048577 } } }), "bad tar"
+        }
+        for _, tar in ipairs(bad) do
+            local update = begin({ tar = tar })
+            assert.equal("Invalid archive", update.upload_binary("archive", NAME).error)
+            assert.is_false(has_command("tar -xzf"))
+            H.finish()
+        end
+        local update = begin({ gzip_fail = true })
+        assert.equal("Invalid archive", update.upload_binary("archive", NAME).error)
+        assert.is_false(has_command("tar -xzf"))
     end)
-
-    it("strict member check accepts normal release directory entries", function()
-        local members = { "./", "./usr/", "./usr/lib/", "./etc/", "./www/", CTRL_REL }
-        local UPD = begin_upd({ sys = { tar_list_out(members), find_out(TMP, { CTRL_REL }) } })
-        seed_tree(TMP, { CTRL_REL }, "4.3.0")
-        assert.is_true(UPD.upload_binary("archive", GOOD_NAME).success)
+    it("requires extraction success and matches extracted types/sizes before reading controller", function()
+        local update = begin({ extract_fail = true })
+        assert.equal("Invalid archive", update.upload_binary("archive", NAME).error)
+        H.finish()
+        update = begin({ after_extract = function(dir) H.state().vfs[dir .. "/" .. C].type = "fifo" end })
+        assert.equal("Invalid archive", update.upload_binary("archive", NAME).error)
+        for _, call in ipairs(H.state().io_log) do assert.falsy(call.operation == "open" and call.path == TMP .. "/" .. C) end
     end)
-
-    it("directory traversal and absolute members are rejected before extraction", function()
-        for _, bad in ipairs({ "../../etc/", "/etc/", "/tmp/evil.lua" }) do
-            local UPD = begin_upd({ sys = { tar_list_out({ CTRL_REL, bad }) } })
-            local r = UPD.upload_binary("archive", GOOD_NAME)
-            assert.same({ error = "Invalid archive" }, r)
-            for _, cmd in ipairs(H.exec_cmds()) do
-                assert.falsy(cmd:find("tar -xzf", 1, true))
-            end
+    it("requires a staged manifest and rejects a changed controller", function()
+        local update = begin()
+        assert.equal("No archive uploaded", update.apply().error)
+        prepare(update)
+        H.vfs_write(TMP .. "/" .. C, 'local APP_VERSION = "4.9.0"\n')
+        assert.equal("Invalid archive", update.apply().error)
+        assert.is_false(has_command("uhttpd restart"))
+    end)
+    it("preserves app configuration, copies all other files, removes orphans and restarts on complete success", function()
+        local update = begin()
+        prepare(update)
+        H.vfs_write("/etc/config/podkop-tweaker", "user appearance + unknown options")
+        H.vfs_write(ORPHAN, "old")
+        local response = update.apply()
+        assert.same({ success = true, new_version = "4.7.0", files_copied = #FILES - 1 }, response)
+        assert.equal(CTRL, H.vfs_read("/" .. C))
+        assert.equal("user appearance + unknown options", H.vfs_read("/etc/config/podkop-tweaker"))
+        assert.falsy(H.vfs_exists(ORPHAN))
+        assert.is_true(has_command("uhttpd restart"))
+        assert.is_true(has_command("luci-modulecache"))
+        local chmod = false
+        for _, cmd in ipairs(H.execute_cmds()) do if cmd:find("chmod 755", 1, true) then chmod = true end end
+        assert.is_true(chmod)
+    end)
+    it("shows exact equality but rejects an equal-version apply without explicit reinstall", function()
+        local update = begin()
+        update.init("4.7.0")
+        local preview = update.upload_binary("archive", NAME)
+        assert.is_true(preview.same_version)
+        assert.is_false(preview.can_update)
+        assert.equal("Archive version is not newer than installed", update.apply().error)
+        assert.is_false(has_command("uhttpd restart"))
+        assert.truthy(H.vfs_exists(TMP .. "/.pt-manifest.json"))
+    end)
+    it("explicit reinstall applies equal-version files through the checked pipeline and preserves app settings", function()
+        local update = begin()
+        update.init("4.7.0")
+        prepare(update)
+        H.vfs_write("/etc/config/podkop-tweaker", "saved colors + unknown options")
+        local response = update.apply("1")
+        assert.same({ success = true, reinstalled = true, new_version = "4.7.0", files_copied = #FILES - 1 }, response)
+        assert.equal("saved colors + unknown options", H.vfs_read("/etc/config/podkop-tweaker"))
+        assert.equal(CTRL, H.vfs_read("/" .. C))
+        assert.is_true(has_command("uhttpd restart"))
+    end)
+    it("reinstall cannot authorize older, newer or differently labeled same-core versions", function()
+        for _, installed in ipairs({ "4.8.0", "4.6.0", "4.7.0-other" }) do
+            local update = begin()
+            update.init(installed)
+            local preview = update.upload_binary("archive", NAME)
+            assert.is_false(preview.same_version)
+            assert.equal("Reinstall is only allowed for the exact installed version", update.apply("1").error)
+            assert.is_false(has_command("uhttpd restart"))
             H.finish()
         end
     end)
-end)
-
-describe("api_update.apply", function()
-    it("no extracted dir -> exact error", function()
-        local UPD = begin_upd({})
-        assert.same({ error = "No archive uploaded" }, UPD.apply())
+    it("older archives remain rejected by ordinary apply", function()
+        local update = begin()
+        update.init("4.8.0")
+        prepare(update)
+        assert.equal("Archive version is not newer than installed", update.apply().error)
+        assert.is_false(has_command("uhttpd restart"))
     end)
-
-    it("unreadable version -> cleanup + invalid", function()
-        local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { find_out(TMP, rels) } })
-        seed_tree(TMP, rels, nil)
-        assert.same({ error = "Invalid archive" }, UPD.apply())
-        assert.truthy(H.exec_cmds()[#H.exec_cmds()]:find("rm %-rf /tmp/pt%-update"))
-    end)
-
-    it("same version gate: error without any cleanup", function()
-        local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { find_out(TMP, rels) } })
-        seed_tree(TMP, rels, "4.1.0")
-        assert.same({ error = "Archive version is not newer than installed" }, UPD.apply())
-        for _, c in ipairs(H.exec_cmds()) do
-            assert.falsy(c:find("rm -rf", 1, true))
+    it("unrecognized reinstall flags do not bypass equality gating", function()
+        local update = begin()
+        update.init("4.7.0")
+        prepare(update)
+        for _, flag in ipairs({ "0", "true", true, 1 }) do
+            assert.equal("Archive version is not newer than installed", update.apply(flag).error)
         end
+        assert.is_false(has_command("uhttpd restart"))
     end)
-
-    it("happy strict copy: files land, counters right, caches cleared, uhttpd restarted", function()
-        local rels = STRICT_FILES
-        local UPD = begin_upd({ sys = { find_out(TMP, rels) } })
-        seed_tree(TMP, rels, "4.2.5")
-        local r = UPD.apply()
-        assert.same({ success = true, new_version = "4.2.5", files_copied = #rels }, r)
-        assert.equal(ctrl_content("4.2.5"), H.vfs_read("/usr/lib/lua/luci/controller/podkop-tweaker.lua"))
-        assert.equal("data", H.vfs_read("/www/luci-static/resources/podkop-tweaker/common.js"))
-        local saw_modulecache, saw_uhttpd = false, false
-        for _, c in ipairs(H.exec_cmds()) do
-            if c:find("luci-modulecache", 1, true) then saw_modulecache = true end
-            if c:find("uhttpd restart", 1, true) then saw_uhttpd = true end
-        end
-        assert.truthy(saw_modulecache)
-        assert.truthy(saw_uhttpd)
-    end)
-
-    it("files missing on disk are skipped by copier", function()
-        local rels = { CTRL_REL, "usr/lib/lua/podkop-tweaker/ghost.lua" }
-        local UPD = begin_upd({ sys = { find_out(TMP, rels) } })
-        seed_tree(TMP, { CTRL_REL }, "4.2.0")
-        local r = UPD.apply()
-        assert.equal(1, r.files_copied)
-    end)
-
-    it("deprecated orphan file removed after successful apply", function()
-        local ORPHAN = "/usr/lib/lua/luci/view/podkop-tweaker/podkop-tweaker-css.htm"
-        local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { find_out(TMP, rels) } })
-        seed_tree(TMP, rels, "4.2.0")
-        H.vfs_write(ORPHAN, "stale css partial from 3.x")
-        assert.truthy(UPD.apply().success)
-        assert.falsy(H.vfs_exists(ORPHAN))
-    end)
-end)
-
-describe("api_update.clear_cache", function()
-    it("clears luci caches and check cache, restarts uhttpd", function()
-        local UPD = begin_upd({})
-        H.vfs_write(CACHE, "{}")
-        assert.same({ success = true }, UPD.clear_cache())
-        local saw_glob, saw_remove, saw_uhttpd = false, false, false
-        for _, c in ipairs(H.execute_cmds()) do
-            if c:find("rm -rf /tmp/luci-*", 1, true) then saw_glob = true end
-            if c:find("remove " .. CACHE, 1, true) then saw_remove = true end
-        end
-        for _, c in ipairs(H.exec_cmds()) do
-            if c:find("uhttpd restart", 1, true) then saw_uhttpd = true end
-        end
-        assert.truthy(saw_glob)
-        assert.truthy(saw_remove)
-        assert.truthy(saw_uhttpd)
-    end)
-end)
-
-describe("api_update.read_log", function()
-    it("empty when no log file", function()
-        local UPD = begin_upd({})
-        assert.same({ lines = {} }, UPD.read_log())
-    end)
-
-    it("returns lines in order", function()
-        local UPD = begin_upd({})
-        H.vfs_write(LOG, "first\nsecond\nthird\n")
-        assert.same({ lines = { "first", "second", "third" } }, UPD.read_log())
+    it("reinstall does not bypass a changed manifest member or application failure", function()
+        local update = begin({ failures = { ["/www/luci-static/resources/podkop-tweaker/common.js.tmp-update"] = { close = true } } })
+        update.init("4.7.0")
+        prepare(update)
+        local response = update.apply("1")
+        assert.is_false(response.success)
+        assert.is_true(response.staging_retained)
+        assert.is_false(has_command("uhttpd restart"))
         H.finish()
-        local UPD2 = begin_upd({})
-        H.vfs_write(LOG, "")
-        assert.same({ lines = {} }, UPD2.read_log())
+        update = begin()
+        update.init("4.7.0")
+        prepare(update)
+        H.vfs_write(TMP .. "/" .. C, 'local APP_VERSION = "4.9.0"\n')
+        assert.equal("Invalid archive", update.apply("1").error)
+        assert.is_false(has_command("uhttpd restart"))
     end)
-end)
-
-describe("api_update.check_update", function()
-    local function github_responder(out)
-        return { match = "api.github.com", out = out }
+    for _, failure in ipairs({ "open", "write", "close", "rename" }) do
+        local kind = failure
+        it("does not report success, clean staging or restart after " .. kind .. " failure", function()
+            local dest = "/www/luci-static/resources/podkop-tweaker/common.js"
+            local faults = { [kind == "rename" and dest or dest .. ".tmp-update"] = { [kind] = true, partial = 2 } }
+            local update = begin({ failures = faults })
+            prepare(update)
+            H.vfs_write(dest, "old JS")
+            H.vfs_write(ORPHAN, "old")
+            local commands_before = #H.exec_cmds()
+            local response = update.apply()
+            assert.is_false(response.success)
+            assert.is_true(response.staging_retained)
+            assert.matches("common.js", response.details)
+            assert.equal("old JS", H.vfs_read(dest))
+            assert.truthy(H.vfs_exists(ORPHAN))
+            assert.truthy(H.vfs_exists(TMP .. "/.pt-manifest.json"))
+            for i = commands_before + 1, #H.exec_cmds() do
+                assert.falsy(H.exec_cmds()[i]:find("rm -rf", 1, true))
+                assert.falsy(H.exec_cmds()[i]:find("uhttpd restart", 1, true))
+            end
+        end)
     end
-
-    it("fresh cache -> rate limited with retry_after", function()
-        local UPD = begin_upd({})
-        H.vfs_write(CACHE, '{"latest_version":"9","cached_at":' .. os.time() .. '}')
-        local r = UPD.check_update()
-        assert.equal("rate_limited", r.error)
-        -- TTL is 24h since v4.5.0
-        assert.truthy(r.retry_after > 86000 and r.retry_after <= 86400)
-        assert.equal(0, #H.exec_cmds())
-    end)
-
-    it("stale cache falls through to network path", function()
-        local UPD = begin_upd({ sys = { github_responder("") } })
-        H.vfs_write(CACHE, '{"latest_version":"9","cached_at":' .. (os.time() - 90000) .. '}')
-        assert.same({ error = "Failed to connect to GitHub" }, UPD.check_update())
-    end)
-
-    it("check_update_force drops the cache and refetches", function()
-        local UPD = begin_upd({ sys = { github_responder(GITHUB_OK) } })
-        H.vfs_write(CACHE, '{"latest_version":"9","cached_at":' .. os.time() .. '}')
-        local r = UPD.check_update_force()
-        assert.equal("4.9.9", r.latest_version)
-        -- fresh cache was written by the force pass
-        assert.equal("rate_limited", UPD.check_update().error)
-    end)
-
-    it("connection failure and parse failure", function()
-        local UPD = begin_upd({ sys = { github_responder("") } })
-        assert.same({ error = "Failed to connect to GitHub" }, UPD.check_update())
+    it("aborts on missing manifest member, directory failure and chmod failure", function()
+        local update = begin()
+        prepare(update)
+        H.state().vfs[TMP .. "/usr/lib/lua/podkop-tweaker/lib.lua"] = nil
+        assert.equal("Invalid archive", update.apply().error)
         H.finish()
-        local UPD2 = begin_upd({ sys = { github_responder("<<<") } })
-        assert.same({ error = "Failed to parse GitHub response" }, UPD2.check_update())
-    end)
-
-    it("github rate limit message surfaced", function()
-        local UPD = begin_upd({ sys = { github_responder(GITHUB_RATE) } })
-        assert.same({ error = "GitHub API rate limit exceeded" }, UPD.check_update())
-    end)
-
-    it("happy: fields, comparison and cache write-back", function()
-        local UPD = begin_upd({ sys = { github_responder(GITHUB_OK) } })
-        local r = UPD.check_update()
-        assert.equal("4.1.0", r.current_version)
-        assert.equal("4.9.9", r.latest_version)
-        assert.is_true(r.update_available)
-        assert.matches("/releases/download/v4%.9%.9/", r.download_url)
-        local cached = require("luci.jsonc").parse(H.vfs_read(CACHE))
-        assert.equal("4.9.9", cached.latest_version)
-        assert.truthy(cached.cached_at)
-    end)
-
-    it("release without assets -> empty url; equal versions -> not available", function()
-        local UPD = begin_upd({ sys = { github_responder('{"tag_name":"v4.1.0"}') } })
-        local r = UPD.check_update()
-        assert.equal("", r.download_url)
-        assert.is_false(r.update_available)
+        update = begin({ execute = { { match = "chmod", out = 1 } } })
+        prepare(update)
+        assert.is_false(update.apply().success)
+        H.finish()
+        update = begin()
+        prepare(update)
+        H.state().sys_scripts[#H.state().sys_scripts + 1] = { match = "mkdir -p '/usr/lib/lua/luci/controller'", out = "\nPT_EXIT:1\n" }
+        assert.is_false(update.apply().success)
     end)
 end)
 
-describe("api_update.git_update", function()
-    local GOOD_URL = "https://github.com/InsaniaQuon/luci-app-podkop-tweaker/releases/download/v4.3.0/a.tar.gz"
-
-    it("empty and foreign urls rejected", function()
-        local UPD = begin_upd({})
-        assert.same({ error = "Download URL is required" }, UPD.git_update("", nil))
-        assert.same({ error = "Invalid download URL" }, UPD.git_update("https://evil.com/a.tar.gz", nil))
-        assert.equal(0, #H.exec_cmds())
+describe("trusted Git update source", function()
+    it("rejects foreign routes, dot segments, encoded paths and URL globbing before curl", function()
+        local update = begin({ git = true })
+        for _, bad in ipairs({
+            "https://evil.test/a.tar.gz", "https://github.com/InsaniaQuon/luci-app-podkop-tweaker/../../evil/releases/download/v4.7.0/a.tar.gz",
+            URL .. "?redirect=evil", URL:gsub("download", "%%2e%%2e"), URL:gsub("v4.7.0", "v4.{6,7}.0"),
+            "http://github.com/InsaniaQuon/luci-app-podkop-tweaker/releases/download/v4.7.0/a.tar.gz"
+        }) do assert.equal("Invalid download URL", update.git_update(bad).error) end
+        assert.equal(0, #H.popen_cmds())
+        assert.equal("Download URL is required", update.git_update("").error)
     end)
-
-    it("download miss -> cleanup + error", function()
-        local UPD = begin_upd({})
-        assert.same({ error = "Failed to download archive" }, UPD.git_update(GOOD_URL, nil))
-        assert.truthy(H.exec_cmds()[#H.exec_cmds()]:find("rm %-rf /tmp/pt%-git%-update"))
-    end)
-
-    it("oversize archive rejected", function()
-        local UPD = begin_upd({})
-        H.vfs_write(GTMP .. "/download.tar.gz", string.rep("x", 512001))
-        assert.same({ error = "Archive too large" }, UPD.git_update(GOOD_URL, nil))
-    end)
-
-    it("traversal entry rejected before extraction even in relaxed mode (M1)", function()
-        local rels = { CTRL_REL, "../evil" }
-        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
-        seed_tree(GTMP, { CTRL_REL }, "4.3.0")
-        H.vfs_write(GTMP .. "/download.tar.gz", "z")
-        assert.same({ error = "Invalid archive" }, UPD.git_update(GOOD_URL, nil))
-        for _, c in ipairs(H.exec_cmds()) do
-            assert.falsy(c:find("tar -xzf", 1, true))
-        end
-    end)
-
-    it("same version non-force gated with cleanup", function()
-        local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
-        seed_tree(GTMP, rels, "4.1.0")
-        H.vfs_write(GTMP .. "/download.tar.gz", "z")
-        assert.same({ error = "Archive version is not newer than installed" },
-            UPD.git_update(GOOD_URL, nil))
-        local cleanups = 0
-        for _, c in ipairs(H.exec_cmds()) do
-            if c == "rm -rf /tmp/pt-git-update 2>/dev/null" then cleanups = cleanups + 1 end
-        end
-        -- initial rm -rf + gate-error cleanup
-        assert.equal(2, cleanups)
-    end)
-
-    it("force bypasses gate: relaxed copy with chmod, cache invalidated", function()
-        local rels = { CTRL_REL, "usr/bin/podkop-fragment-patch.sh" }
-        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
-        seed_tree(GTMP, rels, "4.1.0")
-        H.vfs_write(GTMP .. "/download.tar.gz", "z")
-        H.vfs_write(CACHE, '{"latest_version":"4.1.0","cached_at":' .. os.time() .. '}')
-        local r = UPD.git_update(GOOD_URL, "1")
-        assert.same({ success = true, new_version = "4.1.0", files_copied = 2 }, r)
-        assert.equal(ctrl_content("4.1.0"), H.vfs_read("/usr/lib/lua/luci/controller/podkop-tweaker.lua"))
-        assert.equal("data", H.vfs_read("/usr/bin/podkop-fragment-patch.sh"))
-        local chmodded = false
-        for _, c in ipairs(H.execute_cmds()) do
-            if c:find("chmod %+x '/usr/bin/podkop%-fragment%-patch%.sh'") then chmodded = true end
-        end
-        assert.truthy(chmodded)
-        local cache_removed = false
-        for _, c in ipairs(H.execute_cmds()) do
-            if c:find("remove " .. CACHE, 1, true) then cache_removed = true end
-        end
-        assert.truthy(cache_removed)
-    end)
-
-    it("newer version applies without force", function()
-        local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
-        seed_tree(GTMP, rels, "4.3.0")
-        H.vfs_write(GTMP .. "/download.tar.gz", "z")
-        local r = UPD.git_update(GOOD_URL, nil)
-        assert.same({ success = true, new_version = "4.3.0", files_copied = 1 }, r)
-    end)
-
-    it("deprecated orphan removed after successful git_update; kept on version-gate failure", function()
-        local ORPHAN = "/usr/lib/lua/luci/view/podkop-tweaker/podkop-tweaker-css.htm"
-        local rels = { CTRL_REL }
-        local UPD = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
-        seed_tree(GTMP, rels, "4.3.0")
-        H.vfs_write(GTMP .. "/download.tar.gz", "z")
-        H.vfs_write(ORPHAN, "stale")
-        assert.truthy(UPD.git_update(GOOD_URL, nil).success)
-        assert.falsy(H.vfs_exists(ORPHAN))
-
+    it("keeps force downgrade and future safe paths working", function()
+        local entries = { { path = C, content = 'local APP_VERSION = "4.5.0"\n' }, { path = "usr/share/future/file.txt", content = "new" } }
+        local update = begin({ git = true, entries = entries })
+        assert.equal("Archive version is not newer than installed", update.git_update(URL).error)
+        assert.is_false(has_command("uhttpd restart"))
         H.finish()
-        local UPD2 = begin_upd({ sys = { tar_list_out(rels), find_out(GTMP, rels) } })
-        seed_tree(GTMP, rels, "4.1.0")
-        H.vfs_write(GTMP .. "/download.tar.gz", "z")
-        H.vfs_write(ORPHAN, "stale")
-        assert.same({ error = "Archive version is not newer than installed" },
-            UPD2.git_update(GOOD_URL, nil))
-        assert.truthy(H.vfs_exists(ORPHAN))
+        update = begin({ git = true, entries = entries })
+        H.vfs_write(CACHE, "cache")
+        assert.same({ success = true, new_version = "4.5.0", files_copied = 2 }, update.git_update(URL, "1"))
+        assert.equal("new", H.vfs_read("/usr/share/future/file.txt"))
+        assert.falsy(H.vfs_exists(CACHE))
+    end)
+    it("enforces compressed download limits and rejects malformed archives before extraction", function()
+        local update = begin({ git = true, download = string.rep("x", 512001) })
+        assert.equal("Archive too large", update.git_update(URL).error)
+        assert.is_false(has_command("tar -xzf"))
+        H.finish()
+        update = begin({ git = true, curl_exit = 18 })
+        assert.equal("Failed to download archive", update.git_update(URL).error)
+        H.finish()
+        update = begin({ git = true, entries = { { path = C, kind = "1", options = { link = "/etc/passwd" } } } })
+        assert.equal("Invalid archive", update.git_update(URL).error)
+        assert.is_false(has_command("tar -xzf"))
+    end)
+end)
+
+describe("update cache and logs", function()
+    it("handles missing, fresh, expired and malformed cache", function()
+        local update = begin()
+        assert.is_nil(update.cached_latest())
+        H.vfs_write(CACHE, '{"latest_version":"4.7.0","cached_at":' .. os.time() .. '}')
+        assert.equal("4.7.0", update.cached_latest())
+        assert.equal("rate_limited", update.check_update().error)
+        H.vfs_write(CACHE, '{"latest_version":"4.7.0","cached_at":' .. (os.time() - 90000) .. '}')
+        assert.is_nil(update.cached_latest())
+        H.vfs_write(CACHE, "invalid")
+        assert.is_nil(update.cached_latest())
+    end)
+    it("checks GitHub, compares versions, writes cache and force rechecks", function()
+        local raw = '{"tag_name":"v4.7.0","assets":[{"browser_download_url":"' .. URL .. '"}]}'
+        local update = begin({ sys = { { match = "api.github.com", out = raw } } })
+        assert.equal("4.7.0", update.check_update().latest_version)
+        assert.equal("rate_limited", update.check_update().error)
+        assert.equal(URL, update.check_update_force().download_url)
+    end)
+    it("reports connection, parse and GitHub rate-limit errors", function()
+        for _, raw in ipairs({ "", "invalid", '{"message":"API rate limit exceeded"}' }) do
+            local update = begin({ sys = { { match = "api.github.com", out = raw } } })
+            assert.truthy(update.check_update().error)
+            H.finish()
+        end
+    end)
+    it("clears cache and restarts only when requested; reads complete log lines", function()
+        local update = begin()
+        assert.same({ lines = {} }, update.read_log())
+        H.vfs_write("/etc/config/pt-update.log", "one\ntwo\n")
+        assert.same({ lines = { "one", "two" } }, update.read_log())
+        H.vfs_write(CACHE, "cache")
+        assert.same({ success = true }, update.clear_cache())
+        assert.falsy(H.vfs_exists(CACHE))
+        assert.is_true(has_command("uhttpd restart"))
     end)
 end)

@@ -1,4 +1,12 @@
 local M = {}
+local LIB = require("podkop-tweaker.lib")
+local SRV = require("podkop-tweaker.services")
+local NET = require("podkop-tweaker.net")
+local ARCHIVE = require("podkop-tweaker.archive")
+
+M.SUB_MAX_SIZE = 1048576
+M.SUB_MAX_PROXIES = 1000
+M.LINK_MAX_SIZE = 16384
 
 local SUBS_VERSION = 1
 
@@ -12,21 +20,29 @@ local b64lut = {}
 for i = 1, #B64 do b64lut[B64:sub(i, i)] = i - 1 end
 b64lut["="] = 0
 
-function M.b64decode(s)
+function M.b64decode(s, limit)
+    if type(s) ~= "string" then return nil, "Base64 input must be text" end
+    limit = limit or M.SUB_MAX_SIZE
+    if #s > limit * 2 + 64 then return nil, "Encoded content exceeds size limit" end
     s = s:gsub("%s+", "")
-    local out = {}
+    local out, block, size = {}, {}, 0
     for i = 1, #s, 4 do
         local a, b, c, d = b64lut[s:sub(i, i)], b64lut[s:sub(i+1, i+1)], b64lut[s:sub(i+2, i+2)], b64lut[s:sub(i+3, i+3)]
         if not a or not b then break end
         local v = a * 262144 + b * 4096 + (c or 0) * 64 + (d or 0)
-        table.insert(out, string.char(math.floor(v / 65536) % 256))
+        local bytes = string.char(math.floor(v / 65536) % 256)
         if s:sub(i+2, i+2) ~= "=" then
-            table.insert(out, string.char(math.floor(v / 256) % 256))
+            bytes = bytes .. string.char(math.floor(v / 256) % 256)
         end
         if s:sub(i+3, i+3) ~= "=" then
-            table.insert(out, string.char(v % 256))
+            bytes = bytes .. string.char(v % 256)
         end
+        size = size + #bytes
+        if size > limit then return nil, "Decoded content exceeds size limit" end
+        block[#block + 1] = bytes
+        if #block >= 1024 then out[#out + 1], block = table.concat(block), {} end
     end
+    if #block > 0 then out[#out + 1] = table.concat(block) end
     return table.concat(out)
 end
 
@@ -38,7 +54,7 @@ function M.url_decode(s)
 end
 
 function M.parse_proxy_link(link)
-    if not link or link == "" then return nil end
+    if type(link) ~= "string" or link == "" or #link > M.LINK_MAX_SIZE or link:find("%c") then return nil end
     local name = ""
     local hash_pos = link:find("#", 1, true)
     local base_link = link
@@ -66,7 +82,7 @@ function M.parse_proxy_link(link)
         security = query:match("security=([^&]+)") or ""
     end
     return {
-        name = name ~= "" and name or (server or "unknown"),
+        name = name ~= "" and name:sub(1, 1024) or (server or "unknown"),
         protocol = proto:upper(),
         server = server or "unknown",
         port = port or "",
@@ -75,9 +91,7 @@ function M.parse_proxy_link(link)
     }
 end
 
-function M.shell_escape(s)
-    return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
-end
+M.shell_escape = LIB.shell_escape
 
 function M.clean_log_field(s)
     if s == nil then return "" end
@@ -85,23 +99,30 @@ function M.clean_log_field(s)
 end
 
 function M.parse_subscription_raw(raw)
+    if type(raw) ~= "string" then return {}, "Subscription content must be text" end
+    if #raw > M.SUB_MAX_SIZE then return {}, "Subscription exceeds size limit" end
+    if raw:find("[%z\1-\8\11\12\14-\31\127]") then return {}, "Subscription contains invalid control bytes" end
     local content = raw
     if not raw:match("vless://") and not raw:match("vmess://")
         and not raw:match("ss://") and not raw:match("trojan://") then
-        local decoded = M.b64decode(raw)
+        local decoded, decode_err = M.b64decode(raw, M.SUB_MAX_SIZE)
+        if not decoded then return {}, decode_err end
         if decoded and type(decoded) == "string"
             and (decoded:match("vless://") or decoded:match("vmess://")
                 or decoded:match("ss://") or decoded:match("trojan://")) then
             content = decoded
         end
     end
+    if content:find("[%z\1-\8\11\12\14-\31\127]") then return {}, "Subscription contains invalid control bytes" end
     local proxies = {}
     for line in content:gmatch("[^\r\n]+") do
         line = line:match("^%s*(.-)%s*$")
         if line:match("^vless://") or line:match("^vmess://")
             or line:match("^ss://") or line:match("^trojan://") then
             local p = M.parse_proxy_link(line)
-            if p then table.insert(proxies, p) end
+            if not p then return {}, "Invalid or oversized proxy link" end
+            table.insert(proxies, p)
+            if #proxies > M.SUB_MAX_PROXIES then return {}, "Too many proxy links" end
         end
     end
     return proxies
@@ -136,16 +157,7 @@ function M.write_subs(subs, subs_file)
     local str = M.json_stringify(subs)
     subs.version = nil
     if not str then return false end
-    local tmp = subs_file .. ".tmp"
-    local fd = io.open(tmp, "w")
-    if not fd then return false end
-    fd:write(str)
-    fd:close()
-    if not os.rename(tmp, subs_file) then
-        os.remove(tmp)
-        return false
-    end
-    return true
+    return SRV.write_file_atomic(subs_file, str, { suffix = ".tmp" })
 end
 
 function M.get_proxy_sections()
@@ -179,88 +191,60 @@ function M.get_proxy_sections()
     return result
 end
 
-function M.replace_proxy_link(section_name, proxy_type, slot_index, new_link)
-    local config_path = "/etc/config/podkop"
-    local fd = io.open(config_path, "r")
-    if not fd then return false, "Cannot read config" end
-    local lines = {}
-    for line in fd:lines() do
-        table.insert(lines, line)
-    end
-    fd:close()
-
-    local safe_link = new_link:gsub("'", "'\\''")
-
-    local list_name
-    if proxy_type == "url" then list_name = "url"
-    elseif proxy_type == "urltest" then list_name = "urltest_proxy_links"
-    elseif proxy_type == "selector" then list_name = "selector_proxy_links"
-    else return false, "Unknown proxy type" end
-
-    local in_section = false
-    local is_option = (proxy_type == "url")
-    local count = 0
-    local found = false
-
-    for i, line in ipairs(lines) do
-        local sn = line:match("^%s*config%s+section%s+'([^']+)'")
-        if not sn then sn = line:match("^%s*config%s+section%s+\"([^\"]+)\"") end
-        if not sn then sn = line:match("^%s*config%s+section%s+(%S+)") end
-        if sn then
-            in_section = (sn == section_name)
-        end
-        if in_section and not found then
-            if is_option then
-                if line:match("^%s*option%s+proxy_string%s+") then
-                    lines[i] = "\toption proxy_string '" .. safe_link .. "'"
-                    found = true
-                end
-            else
-                if line:match("^%s*list%s+" .. list_name .. "%s+") then
-                    if count == slot_index then
-                        lines[i] = "\tlist " .. list_name .. " '" .. safe_link .. "'"
-                        found = true
-                    end
-                    count = count + 1
-                end
-            end
-        end
-    end
-
-    if not found then
-        return false, "Proxy link not found in config"
-    end
-
-    local tmp_path = config_path .. ".tmp"
-    local wfd = io.open(tmp_path, "w")
-    if not wfd then return false, "Cannot write config" end
-    for _, line in ipairs(lines) do
-        wfd:write(line .. "\n")
-    end
-    wfd:close()
-    if not os.rename(tmp_path, config_path) then
-        os.remove(tmp_path)
-        return false, "Cannot apply config"
-    end
+function M.validate_proxy_link(link)
+    if type(link) ~= "string" or not link:match("^%w+://") then return false, "Invalid proxy link format" end
+    if #link > M.LINK_MAX_SIZE then return false, "Proxy link exceeds size limit" end
+    if link:find("%c") then return false, "Proxy link contains invalid control bytes" end
     return true
 end
 
-function M.backup_file(src, dst)
-    local rfd = io.open(src, "r")
-    if not rfd then return false end
-    local data = rfd:read("*a")
-    rfd:close()
-    if not data then return false end
-    local tmp = dst .. ".tmp"
-    local fd = io.open(tmp, "w")
-    if not fd then return false end
-    fd:write(data)
-    fd:close()
-    if not os.rename(tmp, dst) then
-        os.remove(tmp)
-        return false
+function M.prepare_proxy_link(section_name, proxy_type, slot_index, new_link)
+    local valid, link_err = M.validate_proxy_link(new_link)
+    if not valid then return nil, link_err end
+    if not LIB.sanitize_section_name(section_name) or type(slot_index) ~= "number" or
+        slot_index < 0 or slot_index > 999 or slot_index ~= math.floor(slot_index) then return nil, "Invalid proxy slot" end
+    local config_path = "/etc/config/podkop"
+    local content = SRV.read_file(config_path, 1048576)
+    if not content then return nil, "Cannot read config" end
+    local statements, parse_err = LIB.uci_statements(content)
+    if not statements then return nil, parse_err end
+    local list_name
+    if proxy_type == "url" then list_name = "proxy_string"
+    elseif proxy_type == "urltest" then list_name = "urltest_proxy_links"
+    elseif proxy_type == "selector" then list_name = "selector_proxy_links"
+    else return nil, "Unknown proxy type" end
+    local in_section, count = false, 0
+    for _, statement in ipairs(statements) do
+        local tokens = statement.tokens
+        if tokens[1] == "config" then
+            in_section = tokens[2] == "section" and tokens[3] == section_name
+        elseif in_section and tokens[2] == list_name and
+            tokens[1] == (proxy_type == "url" and "option" or "list") then
+            if count == slot_index then
+                local old = content:sub(statement.first, statement.last)
+                local ending = old:sub(-2) == "\r\n" and "\r\n" or (old:sub(-1) == "\n" and "\n" or "")
+                local replacement = (old:match("^[ \t]*") or "\t") .. tokens[1] .. " " .. list_name .. " " .. LIB.shell_escape(new_link)
+                if statement.comment then replacement = replacement .. " " .. content:sub(statement.comment, statement.last - #ending) end
+                local candidate = content:sub(1, statement.first - 1) .. replacement .. ending .. content:sub(statement.last + 1)
+                local ok, err = LIB.validate_uci_config(candidate)
+                if not ok then return nil, "Invalid candidate config: " .. err end
+                return candidate, nil, content
+            end
+            count = count + 1
+        end
     end
-    return true
+    return nil, "Proxy link not found in config"
+end
+
+function M.replace_proxy_link(section_name, proxy_type, slot_index, new_link, backup_path)
+    local candidate, err, original = M.prepare_proxy_link(section_name, proxy_type, slot_index, new_link)
+    if not candidate then return false, err end
+    if backup_path and not SRV.write_file_atomic(backup_path, original, { suffix = ".tmp" }) then return false, "Cannot create subscription backup" end
+    return SRV.write_file_atomic("/etc/config/podkop", candidate, { suffix = ".tmp" })
+end
+
+function M.backup_file(src, dst)
+    return SRV.backup_to(src, dst, true)
 end
 
 function M.backup_config()
@@ -278,37 +262,29 @@ function M.do_update_subscription(section_name, slot_index, sub_url, proxy_name)
     if not sub_url or not sub_url:match("^https?://") then
         return nil, "invalid url"
     end
-    local safe_url = M.shell_escape(sub_url)
-
-    local raw = nil
+    if not NET.valid_url(sub_url) then return nil, "invalid url" end
     local raw_proxies = nil
     local max_retries = 3
     local last_err = "download failed"
     local success_attempt = 0
     for attempt = 1, max_retries do
-        local tmp = (io.popen("mktemp /tmp/pt-sub-XXXXXX 2>/dev/null"):read("*l"))
-            or "/tmp/pt-sub-" .. os.time() .. "-" .. section_name
-        os.execute("curl -sL -m 15 -A 'sing-box' -o " .. tmp .. " " .. safe_url .. " 2>/dev/null")
-
-        local fd = io.open(tmp, "r")
-        if fd then
-            local data = fd:read("*a")
-            fd:close()
-            os.remove(tmp)
-            if data and #data > 0 then
-                local proxies = M.parse_subscription_raw(data)
+        local data, download_err = NET.fetch(sub_url, M.SUB_MAX_SIZE, 15, "sing-box")
+        if data then
+            if #data > 0 then
+                local proxies, parse_err = M.parse_subscription_raw(data)
                 if #proxies > 0 then
-                    raw = data
                     raw_proxies = proxies
                     success_attempt = attempt
                     break
                 end
-                last_err = "no proxies found"
+                last_err = parse_err or "no proxies found"
+                if parse_err then return nil, last_err, attempt end
             else
                 last_err = "empty response"
             end
         else
-            last_err = "download failed"
+            last_err = download_err or "download failed"
+            if last_err:match("size limit") then return nil, last_err, attempt end
         end
 
         if attempt < max_retries then
@@ -316,7 +292,7 @@ function M.do_update_subscription(section_name, slot_index, sub_url, proxy_name)
         end
     end
 
-    if not raw then
+    if not raw_proxies then
         return nil, last_err .. " (" .. max_retries .. " retries)"
     end
 
@@ -410,30 +386,29 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
                 if proxy and proxy.link then
                     local current_link = link or ""
                     if current_link ~= proxy.link then
-                        if need_backup then
-                            M.write_sub_backup()
-                            need_backup = false
-                        end
-                        local rok, _ = M.replace_proxy_link(sec.name, sec.proxy_config_type, i - 1, proxy.link)
+                        local rok, replace_err = M.replace_proxy_link(sec.name, sec.proxy_config_type, i - 1, proxy.link,
+                            need_backup and "/etc/config/podkop.sub-backup" or nil)
                         if rok then
+                            need_backup = false
                             updated = updated + 1
                             need_restart = true
                             table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "updated" .. retry_suffix})
                         else
                             failed = failed + 1
-                            table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "failed"})
+                            table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "failed", error = M.clean_log_field(replace_err)})
                         end
                     else
                         unchanged = unchanged + 1
                         table.insert(details, {section = sec.name, slot = i - 1, proxy = pname, status = "unchanged" .. retry_suffix})
                     end
-                    -- batch timestamps in memory; single write after the loop
-                    sec_subs[i] = {
-                        subscription_url = sub_entry.subscription_url,
-                        proxy_name = sub_entry.proxy_name or "",
-                        last_updated = os.date("%H:%M %d.%m.%Y") .. " (" .. mode .. ")"
-                    }
-                    subs_dirty = true
+                    if current_link == proxy.link or (details[#details] and details[#details].status:match("^updated")) then
+                        sec_subs[i] = {
+                            subscription_url = sub_entry.subscription_url,
+                            proxy_name = sub_entry.proxy_name or "",
+                            last_updated = os.date("%H:%M %d.%m.%Y") .. " (" .. mode .. ")"
+                        }
+                        subs_dirty = true
+                    end
                 else
                     failed = failed + 1
                     local label = "failed"
@@ -475,45 +450,47 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
     }
 end
 
-function M.apply_files_from_dir(extract_dir, relaxed)
+function M.apply_files_from_dir(extract_dir, relaxed, paths)
     local sys = require("luci.sys")
-    local find_cmd = "find '" .. extract_dir .. "' -type f \\! -type l 2>/dev/null"
-    local raw = sys.exec(find_cmd)
+    local find_cmd = "find " .. M.shell_escape(extract_dir) .. " -type f \\! -type l 2>/dev/null"
+    local raw = paths and table.concat(paths, "\n") or sys.exec(find_cmd)
     local prefix_len = #extract_dir + 1
     local copied = 0
 
     for line in raw:gmatch("[^\r\n]+") do
         line = line:match("^%s*(.-)%s*$")
         if line ~= "" then
-            local rel = line:sub(prefix_len):match("^/?(.*)")
+            local rel = paths and line or line:sub(prefix_len):match("^/?(.*)")
             if rel ~= "" and M._is_valid_update_path(rel, relaxed) then
                 local dest = "/" .. rel
                 local dest_dir = dest:match("^(.+)/[^/]+$")
                 if dest_dir then
-                    sys.exec("mkdir -p '" .. dest_dir .. "' 2>/dev/null")
+                    local out = sys.exec("mkdir -p " .. M.shell_escape(dest_dir) .. " 2>/dev/null; printf '\\nPT_EXIT:%s\\n' \"$?\"")
+                    if not out:match("\nPT_EXIT:0\n$") then return copied, "Cannot create directory: " .. dest_dir end
                 end
-                local src_fd = io.open(line, "rb")
-                if src_fd then
-                    local data = src_fd:read("*a")
-                    src_fd:close()
+                local data, read_err = SRV.read_file(paths and (extract_dir .. "/" .. rel) or line, ARCHIVE.MAX_FILE_SIZE)
+                if data then
                     -- Ship defaults for first install, preserve app-owned UCI on
                     -- self-update (appearance and optional-tab visibility).
-                    local existing = rel == "etc/config/podkop-tweaker" and io.open(dest, "rb")
-                    if existing then
-                        existing:close()
-                    else
-                        local dst_fd = io.open(dest, "wb")
-                        if dst_fd then
-                            dst_fd:write(data)
-                            dst_fd:close()
-                            copied = copied + 1
-                            if rel:match("^usr/bin/") or rel:match("^etc/init%.d/") or rel:match("^etc/rc%.d/") then
-                                os.execute("chmod +x '" .. dest .. "' 2>/dev/null")
-                            end
-                        end
+                    local preserve = false
+                    if rel == "etc/config/podkop-tweaker" then
+                        local existing, existing_err, errno = io.open(dest, "rb")
+                        if existing then
+                            if not existing:close() then return copied, "Cannot close existing app configuration" end
+                            preserve = true
+                        elseif errno ~= 2 then return copied, "Cannot read existing app configuration: " .. tostring(existing_err) end
                     end
-                end
-            end
+                    if preserve then
+                        -- Recognized preservation counts as a completed member,
+                        -- but is intentionally not added to files_copied.
+                    else
+                        local ok, err = SRV.write_file_atomic(dest, data, { suffix = ".tmp-update",
+                            executable = rel:match("^usr/bin/") ~= nil or rel:match("^etc/init%.d/") ~= nil or rel:match("^etc/rc%.d/") ~= nil })
+                        if not ok then return copied, "Cannot apply " .. rel .. ": " .. tostring(err) end
+                        copied = copied + 1
+                    end
+                else return copied, "Cannot read " .. rel .. ": " .. tostring(read_err) end
+            else return copied, "Update path is not allowed: " .. rel end
         end
     end
 
@@ -521,19 +498,7 @@ function M.apply_files_from_dir(extract_dir, relaxed)
 end
 
 function M._is_valid_update_path(rel_path, relaxed)
-    if rel_path:find("..", 1, true) then return false end
-    if relaxed then return true end
-    if rel_path:match("^usr/lib/lua/.*%.lua$") then return true end
-    if rel_path:match("^usr/lib/lua/luci/view/podkop%-tweaker/[%w_%-]+%.htm$") then return true end
-    if rel_path:match("^www/luci%-static/resources/podkop%-tweaker/[%w_%-]+%.js$") then return true end
-    if rel_path:match("^www/luci%-static/resources/podkop%-tweaker/[%w_%-]+%.css$") then return true end
-    if rel_path:match("^usr/share/luci/menu%.d/[%w_%-]+%.json$") then return true end
-    if rel_path:match("^usr/share/rpcd/acl%.d/[%w_%-]+%.json$") then return true end
-    if rel_path == "usr/bin/podkop-fragment-patch.sh" then return true end
-    if rel_path == "etc/init.d/podkop-fragment" then return true end
-    if rel_path == "etc/config/podkop-fragment" then return true end
-    if rel_path == "etc/config/podkop-tweaker" then return true end
-    return false
+    return ARCHIVE.is_valid_path(rel_path, relaxed)
 end
 
 return M

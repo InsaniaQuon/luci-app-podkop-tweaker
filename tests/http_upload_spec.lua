@@ -105,6 +105,31 @@ describe("appearance HTTP adapter", function()
     end)
 end)
 
+describe("local reinstall HTTP adapter", function()
+    it("forwards the reinstall flag only after the app CSRF check", function()
+        H.begin({ fv = { token = TOKEN, reinstall = "1" } })
+        H.vfs_write("/etc/podkop-tweaker.token", TOKEN)
+        package.loaded[CTRL] = nil
+        local ctl = require(CTRL)
+        local received
+        require("podkop-tweaker.api_update").apply = function(flag) received = flag; return { success = true, reinstalled = true } end
+        ctl.api_apply_update()
+        assert.equal("1", received)
+        assert.is_true(H.last_json().reinstalled)
+    end)
+    it("invalid CSRF prevents invoking apply even with reinstall=1", function()
+        H.begin({ fv = { token = "invalid", reinstall = "1" } })
+        H.vfs_write("/etc/podkop-tweaker.token", TOKEN)
+        package.loaded[CTRL] = nil
+        local ctl = require(CTRL)
+        local called = false
+        require("podkop-tweaker.api_update").apply = function() called = true end
+        ctl.api_apply_update()
+        assert.is_false(called)
+        assert.equal(403, H.http()._status[1].code)
+    end)
+end)
+
 local function begin_upload(opts)
     opts = opts or {}
     H.begin({

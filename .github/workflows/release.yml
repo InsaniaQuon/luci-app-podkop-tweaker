@@ -31,6 +31,12 @@ jobs:
       - name: Run frontend theme regression tests
         run: node tests/frontend_theme_spec.js
 
+      - name: Run frontend operation regressions
+        run: node tests/frontend_flows_spec.js
+
+      - name: Run frontend clipboard regressions
+        run: node tests/frontend_copy_spec.js
+
   release:
     needs: test
     runs-on: ubuntu-latest

@@ -5,6 +5,7 @@ local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
 local SCHED = require("podkop-tweaker.subsched")
 local S = require("pt-subs-lib")
+local NET = require("podkop-tweaker.net")
 
 local M = {}
 
@@ -35,30 +36,19 @@ function M.subscription_state()
 end
 
 function M.subscription_fetch(sub_url)
-    local sys = require("luci.sys")
-
     if sub_url == "" then
         return { error = "URL is required" }
     end
-    if not sub_url:match("^https?://") then
+    if not NET.valid_url(sub_url) then
         return { error = "Only HTTP(S) URLs allowed" }
     end
 
     local http_warning = sub_url:match("^http://") and true or false
 
-    local safe_url = S.shell_escape(sub_url)
-    local tmp = sys.exec("mktemp /tmp/pt-sub-XXXXXX 2>/dev/null"):match("%S+") or "/tmp/pt-sub-" .. os.time()
-    sys.exec("curl -sL -m 15 -A 'sing-box' -o " .. tmp .. " " .. safe_url .. " 2>/dev/null")
-
-    local fd = io.open(tmp, "r")
-    if not fd then
-        return { error = "Failed to download subscription" }
-    end
-    local raw = fd:read("*a")
-    fd:close()
-    os.remove(tmp)
-
-    local proxies = S.parse_subscription_raw(raw)
+    local raw, download_err = NET.fetch(sub_url, S.SUB_MAX_SIZE, 15, "sing-box")
+    if not raw then return { error = "Failed to download subscription", details = download_err } end
+    local proxies, parse_err = S.parse_subscription_raw(raw)
+    if parse_err then return { error = parse_err } end
 
     if #proxies == 0 then
         return { error = "No proxy links found in subscription" }
@@ -72,7 +62,7 @@ function M.subscription_attach(section_name, slot_index, subscription_url, proxy
 
     slot_index = tonumber(slot_index or "-1")
 
-    if not slot_index or slot_index < 0 or slot_index > 999 then
+    if not slot_index or slot_index < 0 or slot_index > 999 or slot_index ~= math.floor(slot_index) then
         return { error = "Missing required parameters" }
     end
 
@@ -82,9 +72,8 @@ function M.subscription_attach(section_name, slot_index, subscription_url, proxy
     if not LIB.sanitize_section_name(section_name) then
         return { error = "Invalid section name" }
     end
-    if not new_link:match("^%w+://") then
-        return { error = "Invalid proxy link format" }
-    end
+    local valid_link, link_err = S.validate_proxy_link(new_link)
+    if not valid_link then return { error = link_err } end
 
     local sections = S.get_proxy_sections()
     local proxy_type = nil
@@ -121,9 +110,7 @@ function M.subscription_attach(section_name, slot_index, subscription_url, proxy
         return { success = true, unchanged = true }
     end
 
-    S.write_sub_backup()
-
-    local ok2, err2 = S.replace_proxy_link(section_name, proxy_type, slot_index, new_link)
+    local ok2, err2 = S.replace_proxy_link(section_name, proxy_type, slot_index, new_link, "/etc/config/podkop.sub-backup")
     if not ok2 then
         return { error = err2 }
     end

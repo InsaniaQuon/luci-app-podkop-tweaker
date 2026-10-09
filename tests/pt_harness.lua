@@ -11,6 +11,7 @@ local ST = nil
 local CLEAR_LOADED_IDS = {
     "podkop-tweaker.http", "podkop-tweaker.services", "podkop-tweaker.lib",
     "podkop-tweaker.diag", "podkop-tweaker.argon", "podkop-tweaker.subsched", "podkop-tweaker.theme", "podkop-tweaker.appearance",
+    "podkop-tweaker.net", "podkop-tweaker.archive", "podkop-tweaker.dns_observation",
     "podkop-tweaker.bundle", "podkop-tweaker.api_diag", "podkop-tweaker.api_argon",
     "podkop-tweaker.api_stubby", "podkop-tweaker.api_podkop", "podkop-tweaker.api_subs",
     "podkop-tweaker.api_singbox", "podkop-tweaker.api_bundle", "podkop-tweaker.api_update",
@@ -27,7 +28,7 @@ end
 
 -- === fd emulation ===
 
-local function make_fd(entry, mode)
+local function make_fd(entry, mode, path, st)
     local fd = { _entry = entry, _pos = 1, _closed = false }
     local m1 = mode:sub(1, 1)
     if m1 == "w" then entry.content = "" end
@@ -35,6 +36,7 @@ local function make_fd(entry, mode)
 
     function fd:read(fmt)
         if self._closed then return nil end
+        if entry.read_error or st and st.failures[path] and st.failures[path].read then return nil, "Injected read failure" end
         if fmt == nil or fmt == "*l" or fmt == "l" then
             local c = entry.content
             if self._pos > #c then return nil end
@@ -74,6 +76,12 @@ local function make_fd(entry, mode)
         local strs = {}
         for i = 1, select("#", ...) do strs[#strs + 1] = tostring(select(i, ...)) end
         local s = table.concat(strs)
+        if st then table.insert(st.io_log, { operation = "write", path = path, size = #s }) end
+        local failure = st and st.failures[path]
+        if failure and failure.write then
+            if failure.partial then entry.content = s:sub(1, failure.partial) end
+            return nil, "Injected write failure", 28
+        end
         local head = entry.content:sub(1, self._pos - 1)
         entry.content = head .. s
         self._pos = #entry.content + 1
@@ -95,6 +103,8 @@ local function make_fd(entry, mode)
 
     function fd:close()
         self._closed = true
+        if st then table.insert(st.io_log, { operation = "close", path = path }) end
+        if entry.close_error or st and st.failures[path] and st.failures[path].close then return nil, "Injected close failure" end
         return true
     end
 
@@ -112,8 +122,8 @@ local function run_responders(list, cmd)
             hit = cmd:find(r.match, 1, true) ~= nil
         end
         if hit then
-            if type(r.out) == "function" then return r.out(cmd) end
-            return r.out or ""
+            if type(r.out) == "function" then return r.out(cmd), true end
+            return r.out or "", true
         end
     end
     return ""
@@ -125,7 +135,9 @@ local function make_sys(st)
     return {
         exec = function(cmd)
             table.insert(st.exec_log, cmd)
-            return run_responders(st.sys_scripts, cmd)
+            local output, matched = run_responders(st.sys_scripts, cmd)
+            if not matched and cmd:find("PT_EXIT:", 1, true) then return "\nPT_EXIT:0\n" end
+            return output
         end
     }
 end
@@ -251,20 +263,21 @@ local function make_nixio_fs(vfs, dirs)
     local fs = {}
 
     function fs.stat(path)
-        if vfs[path] then return { mtime = os.time(), is_directory = false } end
-        if dirs[path] then return { mtime = os.time(), is_directory = true } end
+        if vfs[path] then return { mtime = os.time(), is_directory = false, type = vfs[path].type or "reg", size = #vfs[path].content } end
+        if dirs[path] then return { mtime = os.time(), is_directory = true, type = "dir" } end
         for p, d in pairs(dirs) do
             if d and path:sub(1, #p + 1) == p .. "/" then
-                return { mtime = os.time(), is_directory = true }
+                return { mtime = os.time(), is_directory = true, type = "dir" }
             end
         end
         for p in pairs(vfs) do
             if p:sub(1, #path + 1) == path .. "/" then
-                return { mtime = os.time(), is_directory = true }
+                return { mtime = os.time(), is_directory = true, type = "dir" }
             end
         end
         return nil
     end
+    fs.lstat = fs.stat
 
     function fs.readfile(path)
         local e = vfs[path]
@@ -290,17 +303,19 @@ local function install_wraps(st)
     io.open = function(path, mode)
         if st.active and type(path) == "string" and path:sub(1, 1) == "/" then
             mode = mode or "r"
+            table.insert(st.io_log, { operation = "open", path = path, mode = mode })
+            if st.failures[path] and st.failures[path].open then return nil, "Injected open failure", st.failures[path].errno or 13 end
             local m1 = mode:sub(1, 1)
             local e = st.vfs[path]
             if m1 == "r" then
-                if not e then return nil, path .. ": No such file or directory" end
-                return make_fd(e, "r")
+                if not e then return nil, path .. ": No such file or directory", 2 end
+                return make_fd(e, "r", path, st)
             end
             if not e then
                 e = { content = "" }
                 st.vfs[path] = e
             end
-            return make_fd(e, mode)
+            return make_fd(e, mode, path, st)
         end
         return ORIGINALS["io.open"](path, mode)
     end
@@ -311,7 +326,7 @@ local function install_wraps(st)
             table.insert(st.popen_log, cmd)
             local out = ""
             if type(st.popen_fn) == "function" then out = st.popen_fn(cmd) or "" end
-            local e = { content = out }
+            local e = type(out) == "table" and out or { content = out }
             return make_fd(e, "r")
         end
         return ORIGINALS["io.popen"](cmd, mode)
@@ -321,6 +336,8 @@ local function install_wraps(st)
     os.execute = function(cmd)
         if st.active then
             table.insert(st.execute_log, cmd)
+            local response = run_responders(st.execute_scripts, cmd)
+            if response ~= "" then return response end
             return true, "exit", 0
         end
         return ORIGINALS["os.execute"](cmd)
@@ -330,6 +347,7 @@ local function install_wraps(st)
     os.rename = function(a, b)
         if st.active then
             table.insert(st.execute_log, "rename " .. a .. " -> " .. b)
+            if st.failures[b] and st.failures[b].rename then return nil, "Injected rename failure" end
             local e = st.vfs[a]
             if not e then return nil, "no entry" end
             st.vfs[b] = e
@@ -411,6 +429,7 @@ function M.begin(opts)
         fv = opts.fv or {}, env = opts.env or {},
         uci = opts.uci or {},
         sys_scripts = opts.sys or {},
+        execute_scripts = opts.execute or {}, failures = opts.failures or {}, io_log = {},
         popen_fn = opts.popen,
         legacy_json = opts.legacy_json,
         cjson_fn = opts.cjson,

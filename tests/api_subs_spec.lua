@@ -66,9 +66,8 @@ end
 
 local function mktemp_world(payload)
     return {
-        sys = { { match = "mktemp", out = "/tmp/pt-fixed\n" } },
         popen = function(cmd)
-            if cmd:find("^mktemp") then return "/tmp/pt-fixed\n" end
+            if cmd:find("curl", 1, true) then return (payload or H.vfs_read("/tmp/pt-fixed") or "") .. "\nPT_CURL_EXIT:0\n" end
             return ""
         end
     }, payload
@@ -135,7 +134,9 @@ describe("api_subs.subscription_fetch", function()
         assert.is_true(r.http_warning)
         assert.equal(1, #r.proxies)
         assert.equal("a", r.proxies[1].name)
-        assert.falsy(H.vfs_exists("/tmp/pt-fixed"))
+        for _, call in ipairs(H.state().io_log) do
+            assert.falsy(call.operation == "open" and call.mode:sub(1, 1) == "w", "subscription download must not write an unbounded temporary file")
+        end
     end)
 
     it("base64 payload decoded", function()
@@ -147,10 +148,9 @@ describe("api_subs.subscription_fetch", function()
         assert.equal("VMESS", r.proxies[1].protocol)
     end)
 
-    it("mktemp failure -> download error", function()
-        local SUB = begin_subs({ sys = { { match = "mktemp", out = "" } } })
-        assert.same({ error = "Failed to download subscription" },
-            SUB.subscription_fetch("https://sub.example/x"))
+    it("producer failure -> download error", function()
+        local SUB = begin_subs({ popen = function() return "\nPT_CURL_EXIT:7\n" end })
+        assert.equal("Failed to download subscription", SUB.subscription_fetch("https://sub.example/x").error)
     end)
 
     it("no links in payload -> exact error", function()

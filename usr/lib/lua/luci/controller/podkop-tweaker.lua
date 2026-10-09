@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.6.0 | 08.10.2026 | app appearance and selected status color defaults
+-- Podkop Tweaker | v4.8.1 | 09.10.2026 | in-block copy icons and Stubby template guidance
 
-local APP_VERSION = "4.6.0"
+local APP_VERSION = "4.8.1"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")
@@ -261,6 +261,11 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "read_update_log"},
         call("api_read_update_log")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "dns_observation_start"},
+        call("api_dns_observation_start")).leaf = true
+    entry({"admin", "services", "podkop-tweaker", "api", "dns_observation_results"},
+        call("api_dns_observation_results")).leaf = true
 end
 
 local function render_page(template_name, extra)
@@ -521,6 +526,11 @@ function api_diag_dns() json_api(true, DIA.dns) end
 function api_diag_proxy() json_api(true, DIA.proxy) end
 function api_diag_e2e() json_api(true, DIA.e2e) end
 function api_diag_dns_leak() json_api(true, DIA.dns_leak) end
+function api_dns_observation_start() json_api(true, DIA.dns_observation_start) end
+function api_dns_observation_results()
+    local http = require("luci.http")
+    json_api(true, DIA.dns_observation_results, http.formvalue("id") or "")
+end
 
 -- === Argon ===
 
@@ -603,7 +613,10 @@ function api_upload_update()
     end
     if resp then http.write_json(resp) end
 end
-function api_apply_update() json_api(true, UPD.apply) end
+function api_apply_update()
+    local http = require("luci.http")
+    json_api(true, UPD.apply, http.formvalue("reinstall"))
+end
 function api_clear_cache() json_api(true, UPD.clear_cache) end
 function api_check_updates() json_api(true, PDK.check_updates) end
 function api_read_update_log() json_api(false, UPD.read_log) end

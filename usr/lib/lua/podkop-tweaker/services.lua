@@ -2,6 +2,7 @@
 -- Author: InsaniaQuon
 
 local M = {}
+local LIB = require("podkop-tweaker.lib")
 
 M.podkop = {
     config = "/etc/config/podkop",
@@ -35,28 +36,61 @@ M.UPDATE_LOG_FILE = "/etc/config/pt-update.log"
 M.UPDATE_LOG_MAX = 25
 
 function M.singbox_content_check(content, empty_msg)
+    if type(content) ~= "string" then return false, "Configuration must be text" end
     if content == "" then return false, empty_msg end
     if #content > 2097152 then return false, "Config too large (max 2MB)" end
     if content:find("\0", 1, true) then return false, "Invalid content: contains null bytes" end
     return true
 end
 
-function M.read_file(path)
-    local fd = io.open(path, "r")
-    if not fd then return nil end
-    local content = fd:read("*a")
-    fd:close()
+function M.read_stream(fd, limit)
+    local chunks, size = {}, 0
+    while true do
+        local chunk, err = fd:read(math.min(8192, limit - size + 1))
+        if not chunk then
+            if err then return nil, "Cannot read: " .. tostring(err) end
+            break
+        end
+        if chunk == "" then break end
+        size = size + #chunk
+        if size > limit then return nil, "Content exceeds size limit" end
+        chunks[#chunks + 1] = chunk
+    end
+    return table.concat(chunks)
+end
+
+function M.read_file(path, limit)
+    local fd, err = io.open(path, "rb")
+    if not fd then return nil, err end
+    local content, read_err = M.read_stream(fd, limit or 8388608)
+    local closed, close_err = fd:close()
+    if not content then return nil, read_err end
+    if not closed then return nil, "Cannot close file: " .. tostring(close_err) end
     return content
 end
 
-function M.write_file_atomic(path, content)
-    local tmp = path .. ".tmp-write"
-    local tmpfd = io.open(tmp, "w")
-    if not tmpfd then
-        return false, "Cannot write temporary file"
+function M.write_file_checked(path, content)
+    if type(content) ~= "string" then return false, "Content must be text or binary bytes" end
+    local fd = io.open(path, "wb")
+    if not fd then return false, "Cannot write temporary file" end
+    local written, write_err = fd:write(content)
+    local closed, close_err = fd:close()
+    if not written or not closed then
+        os.remove(path)
+        return false, "Cannot write file: " .. tostring(write_err or close_err or "unknown error")
     end
-    tmpfd:write(content)
-    tmpfd:close()
+    return true
+end
+
+function M.write_file_atomic(path, content, options)
+    options = options or {}
+    local tmp = path .. (options.suffix or ".tmp-write")
+    local written, write_err = M.write_file_checked(tmp, content)
+    if not written then return false, write_err end
+    if options.executable and not LIB.exit_ok(os.execute("chmod 755 " .. LIB.shell_escape(tmp) .. " 2>/dev/null")) then
+        os.remove(tmp)
+        return false, "Cannot set executable permissions"
+    end
     local ok, err = os.rename(tmp, path)
     if not ok then
         os.remove(tmp)
@@ -65,19 +99,18 @@ function M.write_file_atomic(path, content)
     return true
 end
 
-local function backup_to(src_path, dst_path)
-    local data = M.read_file(src_path)
-    if not data then return true end
-    local tmp = dst_path .. ".tmp"
-    local bfd = io.open(tmp, "w")
-    if not bfd then return false end
-    bfd:write(data)
-    bfd:close()
-    if not os.rename(tmp, dst_path) then
-        os.remove(tmp)
-        return false
+local function backup_to(src_path, dst_path, required)
+    local probe, open_err, errno = io.open(src_path, "rb")
+    if not probe then
+        if errno == 2 and not required then return true end
+        return false, open_err or "Cannot read backup source"
     end
-    return true
+    local data, read_err = M.read_stream(probe, 8388608)
+    local closed = probe:close()
+    if not data or not closed then
+        return false, read_err or "Cannot read backup source"
+    end
+    return M.write_file_atomic(dst_path, data, { suffix = ".tmp" })
 end
 
 M.backup_to = backup_to
@@ -87,14 +120,12 @@ function M.backup_current(ops)
 end
 
 function M.restore_backup(ops)
-    local fd = io.open(ops.backup, "r")
+    local fd = io.open(ops.backup, "rb")
     if not fd then return false, "not_found" end
-    local data = fd:read("*a")
-    fd:close()
-    local wfd = io.open(ops.config, "w")
-    if not wfd then return false, "write_failed" end
-    wfd:write(data)
-    wfd:close()
+    local data = M.read_stream(fd, 8388608)
+    local closed = fd:close()
+    if not data or not closed then return false, "read_failed" end
+    if not M.write_file_atomic(ops.config, data) then return false, "write_failed" end
     return true
 end
 
@@ -136,24 +167,16 @@ end
 function M.singbox_apply_checked(content, tmp_suffix, check_err_msg)
     local sys = require("luci.sys")
     local tmp_path = M.SINGBOX_CONFIG .. tmp_suffix
-    local tmpfd = io.open(tmp_path, "w")
-    if not tmpfd then
-        return false, "Cannot write temporary file"
-    end
-    tmpfd:write(content)
-    tmpfd:close()
+    local written, write_err = M.write_file_checked(tmp_path, content)
+    if not written then return false, write_err end
     local check = sys.exec("sing-box check -c " .. tmp_path .. " 2>&1")
     if check and check ~= "" then
         os.remove(tmp_path)
         return false, check_err_msg or "sing-box check failed", check
     end
-    local orig = M.read_file(M.SINGBOX_CONFIG)
-    if orig then
-        local bfd = io.open(M.SINGBOX_BACKUP, "w")
-        if bfd then
-            bfd:write(orig)
-            bfd:close()
-        end
+    if not backup_to(M.SINGBOX_CONFIG, M.SINGBOX_BACKUP) then
+        os.remove(tmp_path)
+        return false, "Cannot create backup"
     end
     if not os.rename(tmp_path, M.SINGBOX_CONFIG) then
         os.remove(tmp_path)

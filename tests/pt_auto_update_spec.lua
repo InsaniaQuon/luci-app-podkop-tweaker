@@ -35,7 +35,7 @@ describe("pt-auto-update", function()
         run_auto({
             uci = UCI_MAIN,
             popen = function(cmd)
-                if cmd:find("^mktemp") then return "/tmp/pt-fixed\n" end
+                if cmd:find("curl", 1, true) then return (H.vfs_read("/tmp/pt-fixed") or "") .. "\nPT_CURL_EXIT:0\n" end
                 return ""
             end
         })
@@ -58,7 +58,7 @@ describe("pt-auto-update", function()
         run_auto({
             uci = UCI_MAIN,
             popen = function(cmd)
-                if cmd:find("^mktemp") then return "/tmp/pt-fixed\n" end
+                if cmd:find("curl", 1, true) then return (H.vfs_read("/tmp/pt-fixed") or "") .. "\nPT_CURL_EXIT:0\n" end
                 return ""
             end
         })
@@ -77,7 +77,7 @@ describe("pt-auto-update", function()
         run_auto({
             uci = UCI_MAIN,
             popen = function(cmd)
-                if cmd:find("^mktemp") then return "/tmp/pt-fixed\n" end
+                if cmd:find("curl", 1, true) then return (H.vfs_read("/tmp/pt-fixed") or "") .. "\nPT_CURL_EXIT:0\n" end
                 return ""
             end
         })

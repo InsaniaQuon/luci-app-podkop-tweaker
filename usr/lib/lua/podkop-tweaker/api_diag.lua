@@ -1,6 +1,7 @@
 -- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
 
 local DIAG = require("podkop-tweaker.diag")
+local DNS_OBSERVATION = require("podkop-tweaker.dns_observation")
 
 local M = {}
 
@@ -129,51 +130,10 @@ function M.e2e()
 end
 
 function M.dns_leak()
-    local uci = require("luci.model.uci").cursor()
-    local results = {}
-    local domain = "google.com"
-
-    local upstreams = {}
-    uci:foreach("stubby", "resolver", function(s)
-        if s.address and s.address ~= "" then
-            table.insert(upstreams, s.address)
-        end
-    end)
-
-    local upstream_ok = false
-    local upstream_ip = ""
-    if #upstreams > 0 then
-        local r_up = DIAG.nslookup(domain, upstreams[1])
-        upstream_ip = r_up.ip
-        upstream_ok = (r_up.status == "OK")
-    end
-
-    local r_dnsmasq = DIAG.nslookup(domain, "127.0.0.1")
-    local dnsmasq_ok = (r_dnsmasq.status == "OK")
-
-    local leak_detected = false
-    local detail = ""
-    if dnsmasq_ok and upstream_ok then
-        detail = "Both dnsmasq and upstream resolve successfully — no leak detected"
-        leak_detected = false
-    elseif dnsmasq_ok and not upstream_ok then
-        detail = "dnsmasq resolves but upstream is unreachable — dnsmasq may bypass Stubby"
-        leak_detected = true
-    elseif not dnsmasq_ok and upstream_ok then
-        detail = "dnsmasq failed but upstream works — dnsmasq may be misconfigured"
-        leak_detected = true
-    else
-        detail = "Both dnsmasq and upstream failed to resolve"
-        leak_detected = true
-    end
-
-    results.upstream_ip = upstream_ip
-    results.dnsmasq_ip = r_dnsmasq.ip
-    results.leak_detected = leak_detected
-    results.detail = detail
-    results.dnsmasq_status = r_dnsmasq.status
-
-    return results
+    return { error = "Legacy DNS leak heuristic removed; use external DNS observation", deprecated = true }
 end
+
+function M.dns_observation_start() return DNS_OBSERVATION.start() end
+function M.dns_observation_results(id) return DNS_OBSERVATION.results(id) end
 
 return M

@@ -3,6 +3,15 @@
 
 local M = {}
 
+function M.shell_escape(value)
+    return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
+end
+
+function M.exit_ok(status, kind, code)
+    if type(status) == "number" then return status == 0 end
+    return status == true and (code == nil or (kind == "exit" and code == 0))
+end
+
 M.ARGON_CASCADE_CSS = "/www/luci-static/argon/css/cascade.css"
 M.ARGON_CSS_MARKER_START = "/* === Podkop Tweaker Typography === */"
 M.ARGON_CSS_MARKER_END = "/* === End Podkop Tweaker Typography === */"
@@ -42,6 +51,7 @@ function M.sanitize_section_name(name)
 end
 
 function M.validate_uci_config(content)
+    if type(content) ~= "string" then return false, "Configuration must be text" end
     if not content or content == "" then
         return false, "Configuration is empty"
     end
@@ -121,6 +131,54 @@ local function clamp_str(v, min, max)
 end
 
 M.clamp_str = clamp_str
+
+-- Logical UCI statements with byte spans. Only short directive tokens are
+-- collected; large multiline values are scanned without a per-byte table.
+function M.uci_statements(content)
+    if type(content) ~= "string" then return nil, "Configuration must be text" end
+    local statements, tokens, token = {}, {}, ""
+    local first, quote, escaped, comment, comment_first = 1, nil, false, false, nil
+    local started, quoted_part = false, false
+    local function finish_token()
+        if started then tokens[#tokens + 1] = token end
+        token, started, quoted_part = "", false, false
+    end
+    local function append(char)
+        started = true
+        if #tokens < 3 and #token < 256 then token = token .. char end
+    end
+    local function finish_statement(last)
+        finish_token()
+        if #tokens > 0 then statements[#statements + 1] = { first = first, last = last, tokens = tokens, comment = comment_first } end
+        tokens, first, comment, comment_first = {}, last + 1, false, nil
+    end
+    for pos = 1, #content do
+        local char = content:sub(pos, pos)
+        if comment then
+            if char == "\n" then finish_statement(pos) end
+        elseif escaped then
+            if char ~= "\n" and char ~= "\r" then append(char) end
+            escaped = false
+        elseif quote then
+            if char == quote then quote, quoted_part = nil, true
+            elseif char == "\\" and quote == '"' then escaped = true
+            else append(char) end
+        elseif char == "\\" then
+            started, escaped = true, true
+        elseif (char == "'" or char == '"') and (not started or quoted_part) then
+            started, quote = true, char
+        elseif char == "#" and not started then
+            comment, comment_first = true, pos
+        elseif char == "\n" then
+            finish_statement(pos)
+        elseif char == " " or char == "\t" or char == "\r" then
+            finish_token()
+        else append(char) end
+    end
+    if quote or escaped then return nil, "Unclosed UCI value" end
+    if first <= #content then finish_statement(#content) end
+    return statements
+end
 
 function M.generate_argon_css(s)
     local lines = {}

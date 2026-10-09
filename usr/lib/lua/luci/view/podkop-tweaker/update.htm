@@ -16,7 +16,7 @@ Author: InsaniaQuon
 
         <div class="ps-update-block">
             <h4>Local Update</h4>
-            <p style="margin:0 0 12px;font-size:13px;color:var(--ps-text-muted)">Upload an archive to update Podkop Tweaker. The archive will be validated before applying.</p>
+            <p style="margin:0 0 12px;font-size:13px;color:var(--ps-text-muted)">Upload an archive to update Podkop Tweaker or reinstall the same version. The archive will be validated before applying.</p>
 
             <div class="ps-drop-zone" id="ps-drop-zone">
                 <input type="file" id="ps-file-input" accept=".tar.gz,.tgz" style="display:none" />
@@ -66,10 +66,18 @@ window.PT = {
     var archiveVerEl = document.getElementById('ps-archive-ver');
     var actionsEl = document.getElementById('ps-update-actions');
     var uploading = false;
+    var applying = false;
 
     function setStatus(text, color) {
         resultEl.style.display = '';
         actionsEl.innerHTML = '<span class="ps-update-status" style="color:' + PT.color(color) + '">' + PT.escapeHtml(text) + '</span>';
+    }
+
+    function showApplyAction(reinstall) {
+        actionsEl.innerHTML = (reinstall ? '<span class="ps-update-status" style="color:var(--ps-warning)">Same version as installed</span>' : '')
+            + '<button class="btn cbi-button cbi-button-apply" id="ps-apply-btn">' + (reinstall ? '&#8635; Reinstall' : '\u2B06 Update') + '</button>'
+            + '<span class="ps-update-status" id="ps-apply-status" style="margin-left:8px"></span>';
+        document.getElementById('ps-apply-btn').addEventListener('click', function() { doApply(reinstall); });
     }
 
     function showResult(data) {
@@ -79,12 +87,10 @@ window.PT = {
 
         if (data.same_version) {
             archiveVerEl.style.color = PT.color('warning');
-            actionsEl.innerHTML = '<span class="ps-update-status" style="color:var(--ps-warning)">Same version as installed</span>';
+            showApplyAction(true);
         } else if (data.can_update) {
             archiveVerEl.style.color = PT.color('success');
-            actionsEl.innerHTML = '<button class="btn cbi-button cbi-button-apply" id="ps-apply-btn">\u2B06 Update</button>'
-                + '<span class="ps-update-status" id="ps-apply-status" style="margin-left:8px"></span>';
-            document.getElementById('ps-apply-btn').addEventListener('click', doApply);
+            showApplyAction(false);
         } else {
             archiveVerEl.style.color = PT.color('error');
             actionsEl.innerHTML = '<span class="ps-update-status" style="color:var(--ps-error)">Archive version is older than installed</span>';
@@ -103,7 +109,7 @@ window.PT = {
     }
 
     function uploadFile(file) {
-        if (uploading) return;
+        if (uploading || applying) return;
         if (file.size > 128000) {
             showError('Archive too large (max 128000 bytes)');
             return;
@@ -133,35 +139,38 @@ window.PT = {
         });
     }
 
-    function doApply() {
+    function doApply(reinstall) {
         var applyBtn = document.getElementById('ps-apply-btn');
         var statusEl = document.getElementById('ps-apply-status');
-        if (!applyBtn) return;
+        if (!applyBtn || applying) return;
 
+        applying = true;
+        fileInput.disabled = true;
         applyBtn.disabled = true;
-        statusEl.textContent = 'Applying update...';
+        statusEl.textContent = reinstall ? 'Reinstalling...' : 'Applying update...';
         statusEl.style.color = PT.color('info');
 
-        PT.xhrPost(PT.urls.apply, '', function(xhr) {
+        PT.xhrPost(PT.urls.apply, reinstall ? 'reinstall=1' : '', function(xhr) {
             if (xhr && xhr.status === 200) {
                 try {
                     var resp = JSON.parse(xhr.responseText);
                     if (resp.success) {
-                        statusEl.textContent = 'Update applied! Reloading...';
+                        statusEl.textContent = reinstall ? 'Reinstallation complete! Reloading...' : 'Update applied! Reloading...';
                         statusEl.style.color = PT.color('success');
                         setTimeout(function() { window.location.reload(); }, 5000);
+                        return;
                     } else {
                         PT.setErr(statusEl, resp.error || 'Update failed', resp.details);
-                        applyBtn.disabled = false;
                     }
                 } catch (e) {
                     PT.setErr(statusEl, 'Invalid response', xhr.responseText);
-                    applyBtn.disabled = false;
                 }
             } else {
                 PT.setErr(statusEl, xhr ? 'HTTP error: ' + xhr.status : 'Network error', xhr && xhr.responseText);
-                applyBtn.disabled = false;
             }
+            applying = false;
+            fileInput.disabled = false;
+            applyBtn.disabled = false;
         });
     }
 

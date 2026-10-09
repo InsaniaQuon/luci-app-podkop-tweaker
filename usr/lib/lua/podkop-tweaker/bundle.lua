@@ -80,12 +80,13 @@ local function apply_subs(data, subs_file)
                 -- index and normalize holes to false (the app's own empty-slot form).
                 local max_n = 0
                 for k in pairs(val) do
-                    if type(k) == "number" and k > max_n then max_n = k end
+                    if type(k) == "number" and k >= 1 and k == math.floor(k) and k > max_n then max_n = k end
                 end
+                if max_n > 1000 then return false, "Too many subscription slots in section: " .. key end
                 local slots = {}
                 for i = 1, max_n do
                     local entry = val[i]
-                    if entry ~= nil and type(entry) ~= "table" then
+                    if entry ~= nil and entry ~= false and type(entry) ~= "table" then
                         return false, "Invalid slot data in section: " .. key
                     end
                     if type(entry) == "table" then
@@ -154,6 +155,9 @@ end
 function M.apply_item(name, item, env)
     if type(item) ~= "table" then
         return false, "Invalid item data"
+    end
+    if name ~= "argon" and name ~= "subs" and item.content ~= nil and type(item.content) ~= "string" then
+        return false, "Item content must be text"
     end
     if name == "podkop" then
         local c = item.content or ""

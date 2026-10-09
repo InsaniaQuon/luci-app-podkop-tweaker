@@ -219,69 +219,12 @@ describe("api_diag.e2e", function()
 end)
 
 describe("api_diag.dns_leak", function()
-    local function begin_leak(resolvers, dnsmasq_raw, first_upstream_raw)
-        local secs = {}
-        for i, a in ipairs(resolvers) do
-            secs[#secs + 1] = H.sec("r" .. i, "resolver", { address = a })
-        end
-        H.begin({
-            uci = { stubby = secs },
-            popen = ns_popen({
-                ["127.0.0.1"] = dnsmasq_raw,
-                [resolvers[1] or "-"] = first_upstream_raw
-            })
-        })
-    end
-
-    it("both OK -> no leak, first upstream used only", function()
-        begin_leak({ "1.1.1.1", "8.8.8.8" }, GOOD_DNSMASQ, GOOD_1111)
-        local DIA = H.reload("podkop-tweaker.api_diag")
-        local r = DIA.dns_leak()
-        assert.is_false(r.leak_detected)
-        assert.equal("142.250.74.14", r.upstream_ip)
-        assert.equal("142.250.74.50", r.dnsmasq_ip)
-        assert.equal("OK", r.dnsmasq_status)
-        assert.matches("no leak detected$", r.detail)
-        local lookups = 0
-        for _, c in ipairs(H.popen_cmds()) do
-            if c:find("^nslookup") then lookups = lookups + 1 end
-        end
-        assert.equal(2, lookups)
-    end)
-
-    it("no upstreams configured -> leak (bypass) text", function()
-        begin_leak({}, GOOD_DNSMASQ, "")
-        local DIA = H.reload("podkop-tweaker.api_diag")
-        local r = DIA.dns_leak()
-        assert.is_true(r.leak_detected)
-        assert.equal("", r.upstream_ip)
-        assert.matches("may bypass Stubby$", r.detail)
-    end)
-
-    it("dnsmasq ok, upstream dead -> leak", function()
-        begin_leak({ "9.9.9.9" }, GOOD_DNSMASQ, TIMEOUT)
-        local DIA = H.reload("podkop-tweaker.api_diag")
-        local r = DIA.dns_leak()
-        assert.is_true(r.leak_detected)
-        assert.matches("upstream is unreachable", r.detail)
-    end)
-
-    it("dnsmasq broken, upstream ok -> misconfigured", function()
-        begin_leak({ "1.1.1.1" }, TIMEOUT, GOOD_1111)
-        local DIA = H.reload("podkop-tweaker.api_diag")
-        local r = DIA.dns_leak()
-        assert.is_true(r.leak_detected)
-        assert.equal("FAIL", r.dnsmasq_status)
-        assert.matches("may be misconfigured$", r.detail)
-    end)
-
-    it("both broken -> both failed", function()
-        begin_leak({ "1.1.1.1" }, TIMEOUT, TIMEOUT)
-        local DIA = H.reload("podkop-tweaker.api_diag")
-        local r = DIA.dns_leak()
-        assert.is_true(r.leak_detected)
-        assert.equal("", r.upstream_ip)
-        assert.equal("", r.dnsmasq_ip)
-        assert.matches("failed to resolve$", r.detail)
+    it("deprecates the heuristic without false leak claims or repeated DNS probes", function()
+        H.begin({})
+        local result = H.reload("podkop-tweaker.api_diag").dns_leak()
+        assert.is_true(result.deprecated)
+        assert.matches("Legacy DNS leak heuristic removed", result.error)
+        assert.is_nil(result.leak_detected)
+        assert.equal(0, #H.popen_cmds())
     end)
 end)

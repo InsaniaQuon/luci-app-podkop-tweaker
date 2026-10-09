@@ -1,0 +1,35 @@
+package.path = "./usr/lib/lua/?.lua;./tests/?.lua;" .. package.path
+local H = require("pt_harness")
+after_each(function() H.finish() end)
+describe("bounded HTTP pipe", function()
+    it("returns exact bytes and keeps URL a single escaped argument", function()
+        H.begin({ popen = function() return "body\nPT_CURL_EXIT:0\n" end })
+        assert.equal("body", require("podkop-tweaker.net").fetch("https://example.test/q?x='a'", 100, 15))
+        local cmd = H.popen_cmds()[1]
+        assert.truthy(cmd:find("--globoff", 1, true))
+        assert.truthy(cmd:find("'\\''", 1, true))
+        assert.equal(0, #H.exec_cmds())
+        assert.same({}, H.state().vfs)
+    end)
+    it("rejects a stream without Content-Length when bytes exceed the cap", function()
+        H.begin({ popen = function() return string.rep("x", 1000) end })
+        local bytes, err = require("podkop-tweaker.net").fetch("https://example.test", 100, 15)
+        assert.is_nil(bytes)
+        assert.matches("size limit", err)
+    end)
+    it("rejects truncated transfer, producer failure and missing exit marker", function()
+        for _, raw in ipairs({ "partial\nPT_CURL_EXIT:18\n", "body", "\nPT_CURL_EXIT:63\n" }) do
+            H.begin({ popen = function() return raw end })
+            assert.is_nil(require("podkop-tweaker.net").fetch("https://example.test", 100, 15))
+            H.finish()
+        end
+    end)
+    it("blocks control bytes, non-HTTP protocols and HTTPS-only downgrades before starting curl", function()
+        H.begin({})
+        local net = require("podkop-tweaker.net")
+        for _, url in ipairs({ "file:///etc/passwd", "https://test\nInjected", "http://test" }) do
+            assert.is_nil(net.fetch(url, 100, 15, nil, true))
+        end
+        assert.equal(0, #H.popen_cmds())
+    end)
+end)

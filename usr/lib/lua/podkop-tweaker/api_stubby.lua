@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.4.0 | 30.08.2026 | transport via http.lua helpers, init_fix checks mv exit code
+-- Podkop Tweaker | v4.8.1 | 09.10.2026 | error-only template logging and canonical DNS.SB TLS name
 -- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local SRV = require("podkop-tweaker.services")
@@ -21,6 +21,7 @@ config stubby 'global'
 	option tls_backoff_time '3600'
 	option timeout '5000'
 	option idle_timeout '30000'
+	option log_level '3'
 	option round_robin_upstreams '1'
 	option dnssec_return_status '0'
 	option edns_client_subnet_private '1'
@@ -48,12 +49,12 @@ config resolver
 
 config resolver
 	option address '185.222.222.222'
-	option tls_auth_name 'dns.sb'
+	option tls_auth_name 'dot.sb'
 	option tls_port '853'
 
 config resolver
 	option address '45.11.45.11'
-	option tls_auth_name 'dns.sb'
+	option tls_auth_name 'dot.sb'
 	option tls_port '853'
 ]]
 

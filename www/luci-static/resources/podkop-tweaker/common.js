@@ -26,6 +26,134 @@ window.PT = window.PT || {};
 			.replace(/>/g, '&gt;');
 	};
 
+	// Clipboard API needs a secure context. Router HTTP pages use a temporary
+	// selected textarea; always restore focus, selection and scroll afterwards.
+	PT.copyText = function (text) {
+		text = String(text === undefined || text === null ? '' : text);
+		function fallback() {
+			var area = null, active = document.activeElement, selection = window.getSelection && window.getSelection();
+			var ranges = [], start, end, direction, top, left, x = window.scrollX, y = window.scrollY, copied = false;
+			try {
+				if (selection) for (var i = 0; i < selection.rangeCount; i++) ranges.push(selection.getRangeAt(i).cloneRange());
+				if (active) {
+					start = active.selectionStart; end = active.selectionEnd; direction = active.selectionDirection;
+					top = active.scrollTop; left = active.scrollLeft;
+				}
+				area = document.createElement('textarea');
+				area.className = 'ps-copy-fallback';
+				area.readOnly = true;
+				area.tabIndex = -1;
+				area.value = text;
+				document.body.appendChild(area);
+				try { area.focus({ preventScroll: true }); } catch (e) { area.focus(); }
+				area.select();
+				copied = !!document.execCommand('copy');
+			} catch (e) {} finally {
+				if (area && area.parentNode) area.parentNode.removeChild(area);
+				if (selection) {
+					selection.removeAllRanges();
+					for (var j = 0; j < ranges.length; j++) selection.addRange(ranges[j]);
+				}
+				// Chromium exposes an input's DOM range separately from its text
+				// selection. Restore the text selection last, or addRange resets it.
+				if (active && active.focus) {
+					try { active.focus({ preventScroll: true }); } catch (e) { active.focus(); }
+					if (typeof start === 'number' && active.setSelectionRange) active.setSelectionRange(start, end, direction);
+					active.scrollTop = top; active.scrollLeft = left;
+				}
+				if (window.scrollTo && typeof x === 'number') window.scrollTo(x, y);
+			}
+			return copied;
+		}
+		var clipboard = window.navigator && window.navigator.clipboard;
+		try {
+			if (clipboard && clipboard.writeText) return Promise.resolve(clipboard.writeText(text)).then(function () { return true; }, fallback);
+		} catch (e) {}
+		return Promise.resolve(fallback());
+	};
+
+	PT.copyContent = function (source) {
+		if (source.tagName === 'TEXTAREA') return source.value;
+		if (source.tagName === 'PRE') return source.textContent;
+		// innerText retains log/diff/diagram line breaks and includes all text
+		// inside a scrollport. The button itself lives outside this source.
+		return typeof source.innerText === 'string' ? source.innerText : source.textContent;
+	};
+
+	// The tools row is inside the text frame, outside its scrolling source.
+	// Editors keep their resizable frame; grid gives the tools their own row.
+	function copyAnchor(source) {
+		var panel = source.closest && source.closest('.ps-editor-wrap');
+		if (panel) panel.classList.add('ps-copy-editor');
+		else {
+			if (!source.parentNode) return null;
+			panel = document.createElement('div');
+			panel.className = 'ps-copy-panel';
+			if (source.tagName === 'PRE' || source.classList.contains('ps-diff-body')) panel.classList.add('ps-copy-raised');
+			if (source.classList.contains('ps-dns-chain')) panel.classList.add('ps-copy-inset');
+			source.parentNode.insertBefore(panel, source);
+			panel.appendChild(source);
+			source.classList.add('ps-copy-source');
+		}
+		var anchor = document.createElement('div');
+		anchor.className = 'ps-copy-tools';
+		panel.insertBefore(anchor, panel.firstChild);
+		return anchor;
+	}
+
+	var COPY_ICONS = {
+		copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h4"/>',
+		done: '<path d="m5 12 4 4L19 6"/>',
+		error: '<path d="m6 6 12 12M18 6 6 18"/>'
+	};
+	PT.addCopyButton = function (source, options) {
+		if (!source || source.__ptCopyButton) return source && source.__ptCopyButton;
+		options = options || {};
+		var anchor = options.anchor || copyAnchor(source);
+		if (!anchor) return null;
+		var button = document.createElement('button');
+		button.type = 'button';
+		button.className = 'btn cbi-button ps-copy-btn';
+		button.setAttribute('aria-live', 'polite');
+		if (source.id) button.setAttribute('data-pt-copy-for', source.id);
+		function state(value) {
+			var label = value === 'done' ? 'Copied' : value === 'error' ? 'Copy failed; select the text and copy manually' : (options.label || 'Copy all text');
+			button.title = label;
+			button.setAttribute('aria-label', label);
+			button.setAttribute('data-pt-copy-state', value);
+			// Only fixed SVG markup is inserted; source text never enters HTML.
+			button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + COPY_ICONS[value] + '</svg><span class="ps-copy-status">' + PT.escapeHtml(label) + '</span>';
+		}
+		state('copy');
+		var resetTimer;
+		button.addEventListener('mousedown', function (e) { e.preventDefault(); });
+		button.addEventListener('click', function (e) {
+			e.preventDefault();
+			e.stopPropagation();
+			if (button.disabled) return;
+			if (resetTimer) clearTimeout(resetTimer);
+			var text = options.getText ? options.getText() : PT.copyContent(source);
+			button.disabled = true;
+			PT.copyText(text).then(function (ok) {
+				button.disabled = false;
+				state(ok ? 'done' : 'error');
+				resetTimer = setTimeout(function () {
+					state('copy');
+				}, 2000);
+			});
+		});
+		anchor.appendChild(button);
+		source.__ptCopyButton = button;
+		return button;
+	};
+
+	// Static sources are present before page scripts run; dynamic error details
+	// bind explicitly in setErr. Repeated initialization never stacks listeners.
+	PT.initCopyButtons = function () {
+		var sources = document.querySelectorAll('#cbi-podkop-tweaker textarea, #cbi-podkop-tweaker pre, #cbi-podkop-tweaker .ps-log-viewer-wrap, #cbi-podkop-tweaker .ps-log-viewer-full, #cbi-podkop-tweaker .ps-dns-chain, #cbi-podkop-tweaker .ps-diff-body, .ps-modal textarea, .ps-modal pre, .ps-modal .ps-log-viewer-full, .ps-modal .ps-diff-body');
+		for (var i = 0; i < sources.length; i++) PT.addCopyButton(sources[i]);
+	};
+
 	// Resolve status roles to CSS variables, so existing messages recolor when
 	// the scheme changes. Legacy literals are accepted while callers migrate.
 	PT.color = function (role) {
@@ -92,6 +220,57 @@ window.PT = window.PT || {};
 			if (e.target === modal) hide();
 		});
 		return hide;
+	};
+
+	// LuCI ui.tabs persists a section index, not a URL fragment. Open its
+	// normal same-origin route and select the initialized diagnostic tab by
+	// clicking the native link. Bounded best-effort; no script injection.
+	PT.openPodkopDiagnostics = function (href) {
+		var target;
+		try { target = new URL(href, window.location.href); } catch (e) { return false; }
+		if (target.origin !== window.location.origin || !/\/admin\/services\/podkop\/?$/.test(target.pathname)) return false;
+		target.hash = '';
+		var child = window.open(target.href, '_blank');
+		if (!child) return false;
+		try { child.opener = null; } catch (e) {}
+		var observer = null, observedDocument = null, stopped = false;
+		function stop() {
+			if (stopped) return;
+			stopped = true;
+			if (observer) observer.disconnect();
+			clearInterval(timer);
+			clearTimeout(timeout);
+			window.removeEventListener('pagehide', stop);
+		}
+		function select() {
+			if (stopped) return;
+			try {
+				if (child.closed) { stop(); return; }
+				if (child.location.href === 'about:blank') return;
+				var current = new URL(child.location.href);
+				if (current.origin !== target.origin || current.pathname !== target.pathname) { stop(); return; }
+				var doc = child.document;
+				if (!doc.documentElement) return;
+				if (window.MutationObserver && doc !== observedDocument) {
+					if (observer) observer.disconnect();
+					observedDocument = doc;
+					observer = new MutationObserver(select);
+					observer.observe(doc.documentElement, { childList: true, subtree: true, attributes: true,
+						attributeFilter: ['data-initialized', 'data-tab-active', 'class', 'style'] });
+				}
+				var tab = doc.querySelector('ul.cbi-tabmenu > li[data-tab="diagnostic"]');
+				var group = tab && tab.parentElement.nextElementSibling;
+				if (!group || group.getAttribute('data-initialized') !== 'true' || tab.style.display === 'none') return;
+				var pane = group.querySelector('[data-tab="diagnostic"]'), link = tab.querySelector('a');
+				if (!pane || !link) return;
+				if (pane.getAttribute('data-tab-active') !== 'true') link.click();
+				if (pane.getAttribute('data-tab-active') === 'true') stop();
+			} catch (e) { stop(); }
+		}
+		var timer = setInterval(select, 200), timeout = setTimeout(stop, 15000);
+		window.addEventListener('pagehide', stop);
+		select();
+		return true;
 	};
 
 	// Apply only bounded app-owned values. Status colors do not depend on the
@@ -279,6 +458,13 @@ window.PT = window.PT || {};
 		d.appendChild(s);
 		d.appendChild(pre);
 		el.appendChild(d);
+		var bodyAnchor = copyAnchor(pre);
+		var copy = PT.addCopyButton(pre, { anchor: s, label: 'Copy complete error details' });
+		d.addEventListener('toggle', function () {
+			var focused = document.activeElement === copy;
+			(d.open ? bodyAnchor : s).appendChild(copy);
+			if (focused) copy.focus({ preventScroll: true });
+		});
 	};
 
 	var appearanceContext = document.getElementById('ps-theme-context');
@@ -295,6 +481,8 @@ window.PT = window.PT || {};
 	});
 	PT.applyAppearance(initialAppearance);
 	PT.detectScheme();
+	if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', PT.initCopyButtons);
+	else PT.initCopyButtons();
 
 	PT.downloadJson = function (filename, obj) {
 		var blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
@@ -609,17 +797,29 @@ window.PT = window.PT || {};
 		}
 
 		function restoreDirtyButtons() {
-			saveBtn.disabled = !isDirty;
-			diffBtn.disabled = !isDirty;
+			saveBtn.disabled = savePending || !isDirty;
+			diffBtn.disabled = savePending || !isDirty;
+			undoBtn.disabled = savePending;
 		}
 
-		function markSaved() {
-			originalContent = editor.value;
-			isDirty = false;
-			diffBtn.disabled = true;
+		var savePending = false;
+		function markSaved(snapshot) {
+			originalContent = snapshot;
+			isDirty = editor.value !== originalContent;
+			restoreDirtyButtons();
+		}
+
+		function finishSave(message, role) {
+			savePending = false;
+			restoreDirtyButtons();
+			setStatus(isDirty ? message + ' — unsaved changes remain' : message, PT.color(isDirty ? 'warning' : role));
 		}
 
 		function doSave() {
+			if (savePending) return;
+			var snapshot = editor.value;
+			savePending = true;
+			undoBtn.disabled = true;
 			saveBtn.disabled = true;
 			diffBtn.disabled = true;
 			rollbackBtn.style.display = 'none';
@@ -627,10 +827,11 @@ window.PT = window.PT || {};
 			editor.disabled = true;
 			setStatus(t.saving, '#2196f3');
 
-			PT.xhrPost(cfg.urls.save, 'content=' + encodeURIComponent(editor.value), function (xhr) {
+			PT.xhrPost(cfg.urls.save, 'content=' + encodeURIComponent(snapshot), function (xhr) {
 				editor.disabled = false;
 				saveBtn.textContent = 'Save Changes';
 				if (!xhr) {
+					savePending = false;
 					restoreDirtyButtons();
 					setStatus('Network error', '#f44336');
 					pushError('Network error', 'Failed to connect to server');
@@ -639,23 +840,23 @@ window.PT = window.PT || {};
 				try {
 					var resp = JSON.parse(xhr.responseText);
 					if (resp.success && resp.restarting) {
+						markSaved(snapshot);
 						setStatus(t.restarting, '#2196f3');
 						watcher.poll(
 							function () {
-								markSaved();
-								setStatus(t.saved, '#4caf50');
+								finishSave(t.saved, 'success');
 							},
 							function () {
-								setStatus(t.notStarted, '#f44336');
+								finishSave(t.notStarted, 'error');
 								rollbackBtn.style.display = 'inline-block';
 								pushError('Restart failed', t.notStartedDetail);
 							}
 						);
 					} else if (resp.success && resp.unchanged) {
-						markSaved();
-						saveBtn.disabled = true;
-						setStatus(t.unchanged, '#4caf50');
+						markSaved(snapshot);
+						finishSave(t.unchanged, 'success');
 					} else {
+						savePending = false;
 						restoreDirtyButtons();
 						setStatus('Save failed', '#f44336');
 						var err = cfg.extractError(resp);
@@ -663,6 +864,7 @@ window.PT = window.PT || {};
 						pushError('Save failed', (err && err.msg) || 'Unknown error');
 					}
 				} catch (e) {
+					savePending = false;
 					restoreDirtyButtons();
 					setStatus('Save failed', '#f44336');
 					pushError('Save failed', 'Invalid response: ' + (xhr.responseText || '').substring(0, 300));

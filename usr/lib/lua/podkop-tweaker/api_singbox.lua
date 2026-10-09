@@ -123,13 +123,7 @@ function M.patch_fragment(tags_raw, mode_raw, use_fragment_raw, use_record_fragm
     if not rfd then
         return { error = "Cannot read config" }
     end
-    local orig = rfd:read("*a")
     rfd:close()
-    local bfd = io.open(SRV.SINGBOX_BACKUP, "w")
-    if bfd then
-        bfd:write(orig)
-        bfd:close()
-    end
     local jq_args = ""
     local jq_select = ""
     for i, t in ipairs(tags) do

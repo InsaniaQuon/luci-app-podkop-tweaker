@@ -251,7 +251,8 @@ describe("api_podkop.save_config/import_config", function()
         local PDK = begin_podkop({})
         H.vfs_write(CFG, OLD)
         local SRV = require("podkop-tweaker.services")
-        SRV.write_file_atomic = function() return false, "werr" end
+        local write = SRV.write_file_atomic
+        SRV.write_file_atomic = function(path, ...) if path == CFG then return false, "werr" end; return write(path, ...) end
         assert.same({ error = "werr" }, PDK.save_config(VALID))
     end)
 
