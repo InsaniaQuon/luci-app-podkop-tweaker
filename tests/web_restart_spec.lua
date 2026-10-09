@@ -18,6 +18,11 @@ local function restarted()
     -- Same PID with a new kernel start time must count as a different instance.
     H.vfs_write("/proc/100/stat", stat("2000"))
 end
+local function assert_no_restart()
+    for _, commands in ipairs({ H.exec_cmds(), H.execute_cmds() }) do
+        for _, command in ipairs(commands) do assert.falsy(command:find("uhttpd restart", 1, true)) end
+    end
+end
 after_each(function() H.finish() end)
 
 describe("web restart operation evidence", function()
@@ -42,7 +47,7 @@ describe("web restart operation evidence", function()
         assert.equal("failed", status.state)
         assert.equal("Copy failed", status.error)
         assert.is_false(status.ready)
-        for _, cmd in ipairs(H.exec_cmds()) do assert.falsy(cmd:find("uhttpd restart", 1, true)) end
+        assert_no_restart()
     end)
 
     it("checks tracking IO and ID before invoking mutation, and rejects duplicate submissions", function()
@@ -85,11 +90,63 @@ describe("web restart operation evidence", function()
     end)
 
     it("reports scheduling failure and never confirms a restart that did not happen", function()
-        local W, U = begin({ sys = { { match = "pidof uhttpd", out = "100" }, { match = "nohup sh", out = "\nPT_EXIT:1\n" } } })
+        local W, U = begin({ execute = { { match = "sh -c", out = 256 } } })
         local r = W.run(ID, "cache", function() return { success = true } end)
         assert.is_false(r.success)
         assert.is_true(r.applied)
+        assert.matches("Launcher exit status: 256", r.details)
         assert.equal("failed", U.restart_status(ID).state)
         assert.is_false(U.restart_status(ID).ready)
     end)
+
+    it("does not infer launch failure from a missing or unparseable stdout marker", function()
+        local W = begin({ sys = { { match = "pidof uhttpd", out = "100" }, { match = "sh -c", out = "launcher error text" } } })
+        local r = W.run(ID, "cache", function() return { success = true } end)
+        assert.is_true(r.success)
+        for _, command in ipairs(H.exec_cmds()) do
+            assert.falsy(command:find("sh -c", 1, true), "launcher must use the direct process exit status")
+        end
+    end)
+
+    it("never confirms a theme operation with no expected or installed version", function()
+        local W, U = begin()
+        require("podkop-tweaker.theme").installed_version = function() return nil end
+        W.run(ID, "theme", function() return { success = true } end)
+        restarted()
+        assert.is_false(U.restart_status(ID).ready)
+    end)
+
+    it("never confirms an empty version as an installed target", function()
+        local W, U = begin()
+        require("podkop-tweaker.theme").installed_version = function() return "" end
+        W.run(ID, "theme", function() return { success = true, new_version = "" } end)
+        restarted()
+        assert.is_false(U.restart_status(ID).ready)
+    end)
+
+    it("retains uncertain evidence and does not restart after a final result-write failure", function()
+        local W, U = begin()
+        local r = W.run(ID, "tweaker", function()
+            H.state().failures[RECORD] = { rename = true }
+            return { success = true, new_version = "4.9.0" }
+        end)
+        assert.is_false(r.success)
+        assert.is_true(r.applied)
+        assert.equal("working", U.restart_status(ID).state)
+        restarted()
+        assert.is_false(U.restart_status(ID).ready)
+        assert_no_restart()
+    end)
+
+    for _, failure in ipairs({ "open", "write", "close", "rename" }) do
+        it("does not mutate before initial tracking " .. failure .. " succeeds", function()
+            local path = failure == "rename" and RECORD or RECORD .. ".tmp-write"
+            local W = begin({ failures = { [path] = { [failure] = true } } })
+            local called = false
+            local r = W.run(ID, "cache", function() called = true; return { success = true } end)
+            assert.truthy(r.error)
+            assert.is_false(called)
+            assert.falsy(H.vfs_exists(RECORD))
+        end)
+    end
 end)

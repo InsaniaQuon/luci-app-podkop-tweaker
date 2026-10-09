@@ -2,6 +2,8 @@
 -- Podkop Tweaker | v4.9.0 | 09.10.2026 | reliable transport, scheduling status and restart confirmation
 
 local APP_VERSION = "4.9.0"
+-- Bump when UI assets change within the same unpublished release train.
+local ASSET_REVISION = "1"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")
@@ -274,7 +276,7 @@ end
 
 local function render_page(template_name, extra)
     local reload = require("luci.http").formvalue("_pt_reload")
-    local asset_version = APP_VERSION
+    local asset_version = APP_VERSION .. "-" .. ASSET_REVISION
     if require("podkop-tweaker.web_restart").valid_id(reload) then asset_version = asset_version .. "-" .. reload end
     local uci = require("luci.model.uci").cursor()
     local media = uci:get("luci", "main", "mediaurlbase") or ""

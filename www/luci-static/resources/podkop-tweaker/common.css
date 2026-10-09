@@ -257,6 +257,7 @@ editor (--ps-editor-bg). All text, borders and status colors are semantic.
 .ps-update-version-value{font-weight:600;color:var(--ps-text)}
 .ps-update-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ps-update-status{font-size:13px;font-weight:600}
+.ps-restart-retry{margin:6px 0 0 8px!important}
 .ps-stale-banner{display:none;background:var(--ps-tint-warning);border:1px solid var(--ps-warning);border-radius:6px;padding:10px 14px;margin:12px 0;font-size:13px;color:var(--ps-warning);align-items:center;gap:10px}
 .ps-stale-banner.ps-stale-visible{display:flex}
 .ps-stale-banner span{flex:1}

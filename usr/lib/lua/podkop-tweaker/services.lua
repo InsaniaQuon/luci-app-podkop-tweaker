@@ -36,6 +36,14 @@ M.SUBS_FILE = "/etc/config/podkop-tweaker-subs.json"
 M.UPDATE_LOG_FILE = "/etc/config/pt-update.log"
 M.UPDATE_LOG_MAX = 25
 
+-- Internal service commands only. POSIX sh supplies HUP handling; optional
+-- BusyBox nohup/setsid applets must not be required by update/restart flows.
+function M.background_command(command, delay)
+    local body = 'trap "" HUP; '
+    if delay and delay > 0 then body = body .. "sleep " .. math.floor(delay) .. "; " end
+    return "sh -c " .. LIB.shell_escape(body .. command) .. " </dev/null >/dev/null 2>&1 & "
+end
+
 function M.singbox_content_check(content, empty_msg)
     if type(content) ~= "string" then return false, "Configuration must be text" end
     if content == "" then return false, empty_msg end

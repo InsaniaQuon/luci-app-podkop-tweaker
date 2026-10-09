@@ -202,11 +202,11 @@ describe("api_subs.subscription_attach", function()
         local r = SUB.subscription_attach("main", "0", "https://sub/1", "OldName", LINK_OLD)
         assert.same({ success = true, unchanged = true }, r)
         assert.falsy(H.vfs_exists(SUBBAK))
-        local nohups = 0
+        local restarts = 0
         for _, c in ipairs(H.exec_cmds()) do
-            if c:find("nohup", 1, true) then nohups = nohups + 1 end
+            if c:find("/etc/init.d/podkop restart", 1, true) then restarts = restarts + 1 end
         end
-        assert.equal(0, nohups)
+        assert.equal(0, restarts)
         local subs = require("pt-subs-lib").read_subs(SUBS)
         assert.equal("https://sub/1", subs.main[1].subscription_url)
         assert.matches("%(manual%)", subs.main[1].last_updated)
@@ -223,7 +223,7 @@ describe("api_subs.subscription_attach", function()
             SUB.subscription_attach("main", "0", "https://sub/1", "OldName", LINK_OLD))
     end)
 
-    it("changed link on url section: backup, replace, subs, nohup restart, log", function()
+    it("changed link on url section: backup, replace, subs, background restart, log", function()
         local SUB = begin_subs({})
         local new_link = "vless://new@n:443#NewName"
         local r = SUB.subscription_attach("main", "0", "https://sub/2", "NewName", new_link)
@@ -232,7 +232,7 @@ describe("api_subs.subscription_attach", function()
         assert.truthy(cfg:find("proxy_string '" .. new_link .. "'", 1, true))
         assert.falsy(cfg:find(LINK_OLD, 1, true))
         assert.equal(CFG_TEXT, H.vfs_read(SUBBAK))
-        assert.truthy(H.exec_cmds()[1]:find("^nohup /etc/init%.d/podkop restart"))
+        assert.truthy(H.exec_cmds()[1]:find("/etc/init.d/podkop restart", 1, true))
         local log = H.vfs_read(LOG)
         assert.truthy(log:find("updated=1", 1, true))
         assert.truthy(log:find("NewName: updated", 1, true))
@@ -432,7 +432,7 @@ describe("api_subs.update_all", function()
         local r = SUB.update_all()
         assert.same({ success = true, updated = 1, unchanged = 0, failed = 0, restarted = true }, r)
         assert.truthy(H.vfs_read(CFG):find("vless://fresh@f:443#OldName", 1, true))
-        assert.truthy(H.exec_cmds()[1]:find("^nohup /etc/init%.d/podkop restart"))
+        assert.truthy(H.exec_cmds()[1]:find("/etc/init.d/podkop restart", 1, true))
         assert.truthy(H.vfs_read(LOG):find("updated=1", 1, true))
         local subs = require("pt-subs-lib").read_subs(SUBS)
         assert.matches("%(manual%)", subs.main[1].last_updated)

@@ -30,7 +30,7 @@ local function begin(route, options)
                 assert.is_function(callback, "collector must precede form/CSRF parsing")
                 local parts = options.parts or { { chunks = { payload:sub(1, 8192), payload:sub(8193) } } }
                 for _, part in ipairs(parts) do
-                    local meta = { name = part.name or "content_file", file = "config.txt" }
+                    local meta = { name = part.name or "content_file", file = part.filename == false and "" or part.filename or "config.txt" }
                     for _, chunk in ipairs(part.chunks or {}) do callback(meta, chunk, false) end
                     if not part.incomplete then callback(meta, "", true) end
                 end
@@ -40,6 +40,7 @@ local function begin(route, options)
     end
     local module = require("podkop-tweaker." .. route[2])
     module[route[3]] = function(content, file, items)
+        if options.handler_error then error("private handler exception") end
         received = { content = content, file = file, items = items }
         return { success = true }
     end
@@ -69,6 +70,15 @@ describe("bounded config/bundle HTTP content", function()
         it(route[1] .. " preserves legacy text POSTs", function()
             assert.equal("old text", begin(route, { legacy = true, payload = "old text" })().content)
         end)
+        it(route[1] .. " accepts its exact documented file-byte limit", function()
+            local payload = string.rep("x", route[4])
+            assert.equal(payload, begin(route, { payload = payload })().content)
+            assert.is_true(H.last_json().success)
+        end)
+        it(route[1] .. " rejects invalid CSRF before invoking its handler", function()
+            assert.is_nil(begin(route, { bad_token = true })())
+            assert.equal(403, H.http()._status[1].code)
+        end)
     end
 
     it("invalid CSRF prevents handlers and all config/backup writes", function()
@@ -89,5 +99,14 @@ describe("bounded config/bundle HTTP content", function()
         assert.is_nil(begin(ROUTES[1], { parse_error = true, legacy = true })())
         assert.equal(400, H.http()._status[1].code)
         assert.matches("maximum allowed length", H.last_json().details)
+    end)
+    it("rejects a file with no filename and preserves generic handler-exception responses", function()
+        assert.is_nil(begin(ROUTES[1], { parts = { { filename = false, chunks = { "data" } } } })())
+        assert.matches("Missing content file filename", H.last_json().error)
+        H.finish()
+        package.loaded[CTRL] = nil
+        assert.is_nil(begin(ROUTES[1], { handler_error = true })())
+        assert.same({ error = "Internal error" }, H.last_json())
+        assert.equal(0, #H.http()._status, "handler failures are not classified as form-parser failures")
     end)
 end)

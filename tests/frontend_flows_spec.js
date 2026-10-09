@@ -30,7 +30,7 @@ class Element {
     getElementsByTagName() { return []; }
 }
 function setup() {
-    const elements = {}, requests = [], timers = [], intervals = [], windowEvents = {}, storage = {}, probes = [];
+    const elements = {}, requests = [], timers = [], intervals = [], windowEvents = {}, documentEvents = {}, storage = {}, probes = [];
     const get = id => elements[id] ||= new Element();
     class XHR {
         constructor() { requests.push(this); this.headers = {}; }
@@ -47,8 +47,8 @@ function setup() {
     class FormData { constructor() { this.parts = []; } append(name, value, filename) { this.parts.push({ name, value, filename }); } }
     class Blob { constructor(parts) { this.data = parts.join(''); } }
     const document = { documentElement: get('root'), body: get('body'), head: get('head'),
-        getElementById: get, querySelectorAll: () => [], querySelector: () => null,
-        createElement: tag => new Element(tag), addEventListener() {} };
+        getElementById: get, querySelectorAll: selector => selector === '.ps-modal' ? Object.values(elements).filter(el => el.__ptModalHide) : [], querySelector: () => null,
+        createElement: tag => new Element(tag), addEventListener(event, fn) { (documentEvents[event] ||= []).push(fn); } };
     const window = { PT: { csrf: 'token', urls: {} },
         location: { href: 'http://router.test/admin/services/podkop-tweaker/diagnostics', origin: 'http://router.test' },
         MutationObserver: Observer,
@@ -63,8 +63,33 @@ function setup() {
         clearInterval(timer) { if (timer) timer.cleared = true; } });
     vm.runInContext(shared, context);
     context.PT = window.PT;
-    return { get, window, context, requests, timers, intervals, windowEvents, storage, probes,
+    return { get, window, context, requests, timers, intervals, windowEvents, documentEvents, storage, probes,
+        key(key, overrides = {}) { const event = { key, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...overrides }; for (const fn of documentEvents.keydown || []) fn(event); return event; },
         timer(delay) { const timer = timers.find(t => !t.cleared && !t.ran && t.delay === delay); assert.ok(timer, `missing ${delay}ms timer`); timer.ran = true; timer.fn(); } };
+}
+
+// Modal keyboard handling closes only the top visible overlay, with one cleanup.
+{
+    const s = setup(), a = s.get('modal-a'), b = s.get('modal-b'), close = s.get('close-a');
+    let cleaned = 0;
+    const hide = s.window.PT.bindModal(a, close, () => cleaned++);
+    assert.equal(s.window.PT.bindModal(a, close), hide, 'rebinding is idempotent');
+    s.window.PT.bindModal(b, s.get('close-b'));
+    assert.equal(s.documentEvents.keydown.length, 1);
+    a.style.display = b.style.display = 'flex';
+    s.key('Enter'); s.key('Escape', { isComposing: true }); s.key('Escape', { defaultPrevented: true });
+    assert.equal(b.style.display, 'flex');
+    const event = s.key('Escape');
+    assert.equal(event.prevented, true); assert.equal(event.stopped, true);
+    assert.equal(b.style.display, 'none'); assert.equal(a.style.display, 'flex');
+    assert.equal(cleaned, 0, 'Esc must not close every overlay');
+    s.key('Escape'); assert.equal(a.style.display, 'none'); assert.equal(cleaned, 1);
+    assert.equal(s.key('Escape').prevented, undefined, 'hidden modals do not consume Esc');
+    a.style.display = 'flex'; a.dispatchEvent({ type: 'click', target: s.get('inside') });
+    assert.equal(a.style.display, 'flex');
+    a.dispatchEvent({ type: 'click', target: a }); assert.equal(cleaned, 2);
+    a.style.display = 'flex'; close.click(); assert.equal(cleaned, 3);
+    assert.equal(s.requests.length, 0, 'closing modals never submits a mutation');
 }
 
 // F2: POST A -> edit B during restart -> success keeps B dirty, diff baseline A.
@@ -95,6 +120,13 @@ function setup() {
     assert.match(s.get('ps-diff-body').innerHTML, /sent A/);
     assert.match(s.get('ps-diff-body').innerHTML, /new B/);
     assert.doesNotMatch(s.get('ps-diff-body').innerHTML, /original/);
+    s.key('Escape');
+    assert.equal(s.get('ps-diff-modal').style.display, 'none');
+    assert.equal(editor.value, 'new B', 'Esc retains the current unsaved editor text');
+    assert.equal(s.get('ps-config-save').disabled, false);
+    s.window.PT.errorReporter(s.get('other-error-btn'), s.get('other-error-modal'), s.get('other-error-details'), s.get('other-error-close')).push('failure', 'complete details');
+    s.get('other-error-btn').click(); s.key('Escape');
+    assert.equal(s.get('other-error-modal').style.display, 'none');
     s.get('ps-config-undo').click();
     assert.equal(editor.value, 'sent A');
     prevented = false;

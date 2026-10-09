@@ -80,10 +80,19 @@ describe("page theme context", function()
         local vars
         luci.template = { render = function(_, input) vars = input end }
         require(CTRL).action_about()
-        assert.equal(vars.app_version .. "-" .. string.rep("a", 32), vars.asset_version)
+        local refreshed = vars.asset_version
+        assert.equal(vars.app_version .. "-1-" .. string.rep("a", 32), refreshed)
         H.state().fv._pt_reload = '\" onclick=\"bad'
         require(CTRL).action_about()
-        assert.equal(vars.app_version, vars.asset_version)
+        assert.equal(vars.app_version .. "-1", vars.asset_version)
+        assert.not_equal(vars.app_version, vars.asset_version, "normal tab navigation must not return to the cached pre-fix URL")
+        local base = vars.asset_version
+        H.state().fv._pt_reload = nil
+        local ctl = require(CTRL)
+        for _, action in ipairs({ "action_config", "action_stubby", "action_singbox", "action_diagnostics", "action_subscriptions", "action_import_export", "action_system_info", "action_update", "action_about" }) do
+            ctl[action]()
+            assert.equal(base, vars.asset_version, action .. " must keep the same build revision after leaving Local Update")
+        end
     end)
 end)
 
@@ -138,6 +147,54 @@ describe("local reinstall HTTP adapter", function()
         ctl.api_apply_update()
         assert.is_false(called)
         assert.equal(403, H.http()._status[1].code)
+    end)
+end)
+
+describe("reliability HTTP wiring", function()
+    local ID = string.rep("a", 32)
+    local targets = {
+        { "api_apply_update", "api_update", "apply", { "1", ID } },
+        { "api_tweaker_git_update", "api_update", "git_update", { "https://release.example/file", "1", ID } },
+        { "api_argon_theme_update", "api_argon", "theme_update", { ID } },
+        { "api_clear_cache", "api_update", "clear_cache", { ID } }
+    }
+    for _, target in ipairs(targets) do
+        it(target[1] .. " forwards the operation ID and protects its handler with CSRF", function()
+            H.begin({ fv = { token = TOKEN, restart_id = ID, reinstall = "1", force = "1", download_url = "https://release.example/file" } })
+            H.vfs_write("/etc/podkop-tweaker.token", TOKEN)
+            package.loaded[CTRL] = nil
+            local ctl = require(CTRL)
+            local received
+            require("podkop-tweaker." .. target[2])[target[3]] = function(...)
+                received = { ... }; return { success = true }
+            end
+            ctl[target[1]]()
+            assert.same(target[4], received)
+            received = nil
+            H.state().fv.token = "wrong"
+            ctl[target[1]]()
+            assert.is_nil(received)
+            assert.equal(403, H.http()._status[1].code)
+        end)
+    end
+    it("forwards restart lookup without mutation and merges log-only settings over the saved schedule", function()
+        H.begin({ fv = { id = ID, token = TOKEN, log_only = "1", log_display_count = "15" } })
+        H.vfs_write("/etc/podkop-tweaker.token", TOKEN)
+        H.vfs_write("/etc/config/podkop-tweaker-subs.json", '{"settings":{"auto_update_interval":4,"auto_update_start":"01:30","auto_update_on_restart":true}}')
+        package.loaded[CTRL] = nil
+        local ctl = require(CTRL)
+        local received
+        require("podkop-tweaker.api_update").restart_status = function(id) received = id; return { id = id, ready = false } end
+        ctl.api_restart_status()
+        assert.equal(ID, received)
+        ctl.api_settings_save()
+        assert.is_true(H.last_json().success)
+        local settings = require("pt-subs-lib").read_subs("/etc/config/podkop-tweaker-subs.json").settings
+        assert.equal(4, settings.auto_update_interval)
+        assert.equal("01:30", settings.auto_update_start)
+        assert.is_true(settings.auto_update_on_restart)
+        assert.equal(15, settings.log_display_count)
+        assert.same({}, H.exec_cmds())
     end)
 end)
 

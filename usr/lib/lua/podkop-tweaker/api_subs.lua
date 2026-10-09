@@ -129,7 +129,7 @@ function M.subscription_attach(section_name, slot_index, subscription_url, proxy
         return { error = "Failed to save data" }
     end
 
-    sys.exec("nohup /etc/init.d/podkop restart >/dev/null 2>&1 &")
+    sys.exec(SRV.background_command("/etc/init.d/podkop restart"))
     local log_text = os.date("%H:%M %d.%m.%Y") .. "|manual|updated=1|unchanged=0|failed=0"
         .. "\n  " .. section_name .. ":\n    " .. S.clean_log_field(proxy_name) .. ": updated"
     S.append_log(SRV.UPDATE_LOG_FILE, SRV.UPDATE_LOG_MAX, log_text)
@@ -229,7 +229,7 @@ function M.update_all()
     local result = S.update_all_subscriptions(SRV.SUBS_FILE, SRV.UPDATE_LOG_FILE, SRV.UPDATE_LOG_MAX, "manual")
 
     if result.need_restart then
-        sys.exec("nohup /etc/init.d/podkop restart >/dev/null 2>&1 &")
+        sys.exec(SRV.background_command("/etc/init.d/podkop restart"))
     end
 
     return {

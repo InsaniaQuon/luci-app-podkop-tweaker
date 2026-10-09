@@ -73,7 +73,8 @@ function M.restart_status(id)
     if response.target == "theme" then response.installed_version = require("podkop-tweaker.theme").installed_version()
     else response.installed_version = VERSION end
     response.ready = response.state == "applied" and response.restarted == true and
-        (response.target == "cache" or response.installed_version == response.expected_version)
+        (response.target == "cache" or type(response.expected_version) == "string" and response.expected_version ~= ""
+            and response.installed_version == response.expected_version)
     return response
 end
 

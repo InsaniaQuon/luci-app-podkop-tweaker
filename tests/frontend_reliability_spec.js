@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const repo = path.resolve(__dirname, '..');
 
 function setup(view, urls) {
-    const elements = {}, requests = [], timers = [], events = {};
+    const elements = {}, requests = [], timers = [], events = {}, documentEvents = {};
     let now = 0, reloads = 0;
     class Element {
         constructor(tag = 'span') {
@@ -50,7 +50,8 @@ function setup(view, urls) {
     class FormData { constructor() { this.parts = []; } append(name, value, filename) { this.parts.push({ name, value, filename }); } }
     class Clock extends Date { static now() { return now; } }
     const document = { documentElement: get('root'), body: get('body'), getElementById: get,
-        querySelectorAll() { return []; }, createElement: tag => new Element(tag), addEventListener() {} };
+        querySelectorAll(selector) { return selector === '.ps-modal' ? Object.values(elements).filter(el => el.__ptModalHide) : []; }, createElement: tag => new Element(tag),
+        addEventListener(event, fn) { (documentEvents[event] ||= []).push(fn); } };
     const window = { PT: { csrf: 'token', version: '4.9.0', urls },
         location: { href: 'http://router.test/admin/services/podkop-tweaker/' + view, origin: 'http://router.test', reload() { reloads++; }, replace(url) { this.href = url; reloads++; } },
         addEventListener(event, cb) { events[event] = cb; }, removeEventListener(event) { delete events[event]; } };
@@ -63,6 +64,7 @@ function setup(view, urls) {
     const scripts = [...source.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
     vm.runInContext(scripts.at(-1)[1], context);
     return { get, window, context, requests, events, FormData,
+        escape() { for (const fn of documentEvents.keydown || []) fn({ key: 'Escape', preventDefault() {}, stopPropagation() {} }); },
         last(url) { return requests.filter(r => r.url === url).at(-1); },
         tick(ms) { now += ms; for (const t of [...timers]) if (!t.cancelled && !t.ran && t.at <= now) { t.ran = true; t.fn(); } },
         reloads() { return reloads; },
@@ -132,6 +134,15 @@ for (const failure of ['network', 'timeout', 'null', '[]', '{}', 'html', '403'])
     assert.match(html, /&lt;script&gt;literal&lt;\/script&gt;/);
     assert.doesNotMatch(html, /<script>/);
 }
+{
+    const s = subscriptions(), button = s.button('ps-sub-btn-attach');
+    s.get('ps-subs-content').dispatch('click', { target: button });
+    assert.equal(s.get('ps-sub-modal').style.display, 'flex');
+    const posts = s.requests.filter(request => request.method === 'POST').length;
+    s.escape();
+    assert.equal(s.get('ps-sub-modal').style.display, 'none');
+    assert.equal(s.requests.filter(request => request.method === 'POST').length, posts);
+}
 
 const updateUrls = { upload: '/upload', apply: '/apply', restartStatus: '/restart/status' };
 function localUpdate() {
@@ -145,6 +156,33 @@ function localUpdate() {
 function operation(s) { return new URLSearchParams(s.last('/apply').body).get('restart_id'); }
 function probe(s) { return s.requests.filter(r => r.url.startsWith('/restart/status?')).at(-1); }
 function ready(id) { return { id, state: 'applied', restarted: true, ready: true, expected_version: '4.9.0', installed_version: '4.9.0' }; }
+for (const invalid of [
+    { id: 'foreign-id' }, { installed_version: '4.8.1' }, { state: 'working' }, { restarted: false }
+]) {
+    const s = localUpdate(), id = operation(s);
+    s.last('/apply').reply({ success: true, restart_id: id, new_version: '4.9.0' });
+    probe(s).reply({ ...ready(id), ...invalid });
+    assert.equal(s.reloads(), 0, 'incomplete or foreign readiness never triggers reload');
+    s.tick(1000); probe(s).reply(ready(id));
+    assert.equal(s.reloads(), 1);
+}
+{
+    const s = localUpdate(), id = operation(s);
+    s.last('/apply').reply({ success: true, restart_id: id });
+    s.events.pagehide();
+    probe(s).reply(ready(id)); s.tick(60000);
+    assert.equal(s.reloads(), 0, 'leaving a page cancels pending verification and late responses');
+}
+{
+    const s = localUpdate();
+    s.last('/apply').reply({ success: false, applied: true, error: 'Cannot record operation result', details: 'write failed' });
+    assert.equal(s.reloads(), 0);
+    assert.equal(s.get('ps-file-input').disabled, true, 'an applied-but-unconfirmed result must not unlock another mutation');
+    const retry = s.get('ps-apply-status').children.find(el => el.tagName === 'BUTTON');
+    assert.ok(retry, 'an uncertain result offers read-only verification');
+    retry.click();
+    assert.equal(s.requests.filter(r => r.url === '/apply').length, 1);
+}
 {
     const s = localUpdate(), id = operation(s);
     s.last('/apply').reply({ success: true, restart_id: id, new_version: '4.9.0' });
@@ -244,6 +282,21 @@ async function contentImports() {
         assert.equal(await part.value.text(), text, 'UTF-8, quotes and multiline values are preserved');
         assert.equal(request.body.parts.find(p => p.name === 'token').value, 'token');
         if (bundle) assert.equal(request.body.parts.find(p => p.name === 'items').value, 'podkop');
+        request.reply(bundle ? { success: true, results: { podkop: { ok: true } } } : { success: true });
+        assert.equal(s.get('ps-import-close').style.display, '');
+        s.escape();
+        assert.equal(s.get('ps-import-modal').style.display, 'none');
+        assert.equal(s.get('ps-import-file').value, '');
+        assert.equal(s.get('ps-import-open').disabled, true, 'Esc after completion follows the normal Close cleanup');
     }
+    const s = setup('import-export', urls);
+    s.context.FileReader = class { readAsText(file) { this.result = file.text; this.onload(); } };
+    s.get('ps-import-file').files = [{ size: 30, name: 'input.txt', text: "config section 'main'\n" }];
+    s.get('ps-import-open').click();
+    assert.equal(s.get('ps-import-modal').style.display, 'flex');
+    s.escape();
+    assert.equal(s.get('ps-import-modal').style.display, 'none');
+    s.get('ps-import-confirm').click();
+    assert.equal(s.requests.filter(request => request.method === 'POST').length, 0, 'Esc clears pending import and never applies it');
 }
 contentImports().then(() => console.log('Frontend reliability: PASS (independent settings, failed transports, locks, auto status, cached Git URL, restart recovery, raw UTF-8 config/bundle multipart)')).catch(error => { console.error(error); process.exitCode = 1; });

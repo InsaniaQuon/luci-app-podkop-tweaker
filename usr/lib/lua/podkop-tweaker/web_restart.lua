@@ -2,6 +2,7 @@
 local M = {}
 local SRV = require("podkop-tweaker.services")
 local S = require("pt-subs-lib")
+local LIB = require("podkop-tweaker.lib")
 local RECORD = "/tmp/pt-web-restart.json"
 local TTL = 900
 
@@ -46,8 +47,10 @@ end
 
 local function queue_restart()
     -- Give the dispatcher time to send its JSON response before losing the socket.
-    local raw = require("luci.sys").exec("nohup sh -c 'sleep 1; /etc/init.d/uhttpd restart' >/dev/null 2>&1 & printf '\\nPT_EXIT:%s\\n' \"$?\"") or ""
-    return raw:match("\nPT_EXIT:0\n$") ~= nil
+    local command = SRV.background_command("/etc/init.d/uhttpd restart", 1)
+    local status, kind, code = os.execute(command)
+    local details = "Launcher exit status: " .. tostring(status) .. "; kind: " .. tostring(kind) .. "; code: " .. tostring(code)
+    return LIB.exit_ok(status, kind, code), details
 end
 
 function M.run(id, target, fn)
@@ -77,9 +80,13 @@ function M.run(id, target, fn)
         if not written then return { success = false, applied = response.success == true, error = "Cannot record operation result", details = err } end
         response.restart_id = id
     end
-    if response.success == true and not queue_restart() then
-        if record then record.state, record.error = "failed", "Applied, but web restart could not be scheduled"; store(record) end
-        return { success = false, applied = true, error = "Applied, but web restart could not be scheduled", restart_id = tracked and id or nil }
+    if response.success == true then
+        local queued, output = queue_restart()
+        if not queued then
+            if record then record.state, record.error = "failed", "Applied, but web restart could not be scheduled"; store(record) end
+            return { success = false, applied = true, error = "Applied, but web restart could not be scheduled",
+                details = output ~= "" and output or "Restart launcher returned no status output", restart_id = tracked and id or nil }
+        end
     end
     return response
 end

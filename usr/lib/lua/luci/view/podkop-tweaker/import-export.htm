@@ -549,28 +549,15 @@ window.PT = {
 
     asSelect.addEventListener('change', updateRawSummary);
 
-    reviewCancelBtn.addEventListener('click', function() {
-        reviewModal.style.display = 'none';
+    PT.bindModal(reviewModal, [reviewCancelBtn, reviewCloseBtn], function() {
         _pendingBundle = null;
         _pendingRaw = null;
         reviewList.removeEventListener('change', updateBundleSummary);
-    });
-    reviewModal.addEventListener('click', function(e) {
-        if (e.target === reviewModal) {
-            reviewModal.style.display = 'none';
-            _pendingBundle = null;
-            _pendingRaw = null;
-            reviewList.removeEventListener('change', updateBundleSummary);
+        if (reviewCloseBtn.style.display !== 'none') {
+            importFile.value = '';
+            importOpenBtn.disabled = true;
+            importFname.textContent = 'No file selected';
         }
-    });
-    reviewCloseBtn.addEventListener('click', function() {
-        reviewModal.style.display = 'none';
-        _pendingBundle = null;
-        _pendingRaw = null;
-        importFile.value = '';
-        importOpenBtn.disabled = true;
-        importFname.textContent = 'No file selected';
-        reviewList.removeEventListener('change', updateBundleSummary);
     });
 
     function finishImportModal() {

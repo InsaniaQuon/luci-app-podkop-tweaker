@@ -353,15 +353,9 @@ window.PT = {
         subModal.style.display = 'flex';
     }
 
-    function closeModal() {
-        subModal.style.display = 'none';
+    var closeModal = PT.bindModal(subModal, subCancelBtn, function() {
         currentSection = null;
         currentIndex = -1;
-    }
-
-    subCancelBtn.addEventListener('click', closeModal);
-    subModal.addEventListener('click', function(e) {
-        if (e.target === subModal) closeModal();
     });
 
     function doFetch() {

@@ -18,10 +18,10 @@ local function run_auto(opts)
     H.begin(opts)
 end
 
-local function nohup_count()
+local function restart_count()
     local n = 0
     for _, c in ipairs(H.execute_cmds()) do
-        if c:find("^nohup /etc/init%.d/podkop restart") then n = n + 1 end
+        if c:find("/etc/init.d/podkop restart", 1, true) then n = n + 1 end
     end
     return n
 end
@@ -47,7 +47,7 @@ describe("pt-auto-update", function()
         require("pt-auto-update")
 
         assert.truthy(H.vfs_read(CFG):find("vless://fresh@f:443#OldName", 1, true))
-        assert.equal(1, nohup_count())
+        assert.equal(1, restart_count())
         local log = H.vfs_read(LOG)
         assert.truthy(log:find("|auto|", 1, true))
         assert.truthy(log:find("updated=1", 1, true))
@@ -69,7 +69,7 @@ describe("pt-auto-update", function()
         require("pt-auto-update")
 
         assert.equal(CFG_TEXT, H.vfs_read(CFG))
-        assert.equal(0, nohup_count())
+        assert.equal(0, restart_count())
         assert.truthy(H.vfs_read(LOG):find("unchanged=1", 1, true))
     end)
 
@@ -88,7 +88,7 @@ describe("pt-auto-update", function()
         require("pt-auto-update")
 
         assert.equal(CFG_TEXT, H.vfs_read(CFG))
-        assert.equal(0, nohup_count())
+        assert.equal(0, restart_count())
         local log = H.vfs_read(LOG)
         assert.truthy(log:find("failed=1", 1, true))
         local sleeps = 0
@@ -101,7 +101,7 @@ describe("pt-auto-update", function()
     it("empty world: zero counters, log still written, no side effects", function()
         run_auto({})
         require("pt-auto-update")
-        assert.equal(0, nohup_count())
+        assert.equal(0, restart_count())
         assert.equal(0, #H.exec_cmds())
         local log = H.vfs_read(LOG)
         assert.truthy(log)

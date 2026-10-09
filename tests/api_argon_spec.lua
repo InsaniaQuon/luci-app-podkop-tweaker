@@ -365,8 +365,6 @@ describe("api_argon theme (version / check / update)", function()
         local saw_luci_rm, saw_uhttpd = false, false
         for _, c in ipairs(H.execute_cmds()) do
             if c:find("rm -rf /tmp/luci-", 1, true) then saw_luci_rm = true end
-        end
-        for _, c in ipairs(H.exec_cmds()) do
             if c:find("sleep 1; /etc/init.d/uhttpd restart", 1, true) then saw_uhttpd = true end
         end
         assert.truthy(saw_luci_rm)

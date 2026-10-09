@@ -210,7 +210,7 @@ window.PT = window.PT || {};
 			if (!xhr) error = { kind: 'transport', message: reason || 'Network error' };
 			else if (xhr.status !== 200) error = { kind: 'http', message: data && data.error || 'HTTP error: ' + xhr.status, details: data && data.details || xhr.responseText };
 			else if (!data || typeof data !== 'object' || Array.isArray(data)) error = { kind: 'parse', message: 'Invalid response', details: xhr.responseText };
-			else if (data.error || data.success === false) error = { kind: 'application', message: data.error || 'Operation failed', details: data.details };
+			else if (data.error || data.success === false) error = { kind: 'application', message: data.error || 'Operation failed', details: data.details, applied: data.applied === true };
 			cb(error ? null : data, error, xhr);
 		}, timeout || 120000);
 	};
@@ -314,7 +314,7 @@ window.PT = window.PT || {};
 			PT.setErr(cfg.status, error.message, error.details);
 			if (uncertain) {
 				var button = document.createElement('button');
-				button.type = 'button'; button.className = 'btn cbi-button'; button.textContent = 'Retry verification';
+				button.type = 'button'; button.className = 'btn cbi-button ps-restart-retry'; button.textContent = 'Retry verification';
 				button.addEventListener('click', function () { button.disabled = true; verify(); });
 				cfg.status.appendChild(button);
 			}
@@ -335,7 +335,8 @@ window.PT = window.PT || {};
 		}
 		PT.postJson(cfg.url, params, function (resp, error, xhr) {
 			if (error) {
-				if (error.kind === 'transport' || error.kind === 'parse' || xhr && xhr.status >= 500) verify();
+				if (error.applied) fail(error, true);
+				else if (error.kind === 'transport' || error.kind === 'parse' || xhr && xhr.status >= 500) verify();
 				else fail(error, false);
 				return;
 			}
@@ -348,14 +349,37 @@ window.PT = window.PT || {};
 		return id;
 	};
 
-	// Wire the standard modal close behavior: close button + backdrop click.
+	var modalEscapeBound = false;
+	// All close paths share the same optional cleanup; Esc closes the top overlay.
 	// Returns the hide function so callers can close programmatically.
-	PT.bindModal = function (modal, closeBtn) {
-		function hide() { modal.style.display = 'none'; }
-		if (closeBtn) closeBtn.addEventListener('click', hide);
+	PT.bindModal = function (modal, closeBtn, onHide) {
+		if (modal.__ptModalHide) return modal.__ptModalHide;
+		function hide() {
+			modal.style.display = 'none';
+			if (onHide) onHide();
+		}
+		modal.__ptModalHide = hide;
+		(Array.isArray(closeBtn) ? closeBtn : [closeBtn]).forEach(function (button) {
+			if (button) button.addEventListener('click', hide);
+		});
 		modal.addEventListener('click', function (e) {
 			if (e.target === modal) hide();
 		});
+		if (!modalEscapeBound) {
+			modalEscapeBound = true;
+			document.addEventListener('keydown', function (e) {
+				if (e.defaultPrevented || e.isComposing || (e.key !== 'Escape' && e.key !== 'Esc' && e.keyCode !== 27)) return;
+				var modals = document.querySelectorAll('.ps-modal');
+				for (var i = modals.length - 1; i >= 0; i--) {
+					var current = modals[i];
+					var display = window.getComputedStyle ? window.getComputedStyle(current).display : current.style.display;
+					if (!current.__ptModalHide || !display || display === 'none') continue;
+					e.preventDefault(); e.stopPropagation();
+					current.__ptModalHide();
+					return;
+				}
+			});
+		}
 		return hide;
 	};
 
@@ -680,7 +704,7 @@ window.PT = window.PT || {};
 		var errorTimer = null;
 		var TTL = 600000;
 
-		function hide() { errorModal.style.display = 'none'; }
+		PT.bindModal(errorModal, errorClose);
 
 		function push(shortMsg, fullDetails) {
 			var ts = new Date();
@@ -701,10 +725,6 @@ window.PT = window.PT || {};
 			if (!lastError) return;
 			errorDetails.textContent = lastError;
 			errorModal.style.display = 'flex';
-		});
-		errorClose.addEventListener('click', hide);
-		errorModal.addEventListener('click', function (e) {
-			if (e.target === errorModal) hide();
 		});
 
 		return { push: push };
@@ -1110,12 +1130,7 @@ window.PT = window.PT || {};
 			if (g('ps-diff-modal').style.display !== 'none') renderDiffPreview();
 		});
 
-		g('ps-diff-close').addEventListener('click', function () {
-			g('ps-diff-modal').style.display = 'none';
-		});
-		g('ps-diff-modal').addEventListener('click', function (e) {
-			if (e.target === g('ps-diff-modal')) g('ps-diff-modal').style.display = 'none';
-		});
+		PT.bindModal(g('ps-diff-modal'), g('ps-diff-close'));
 
 		window.addEventListener('beforeunload', function (e) {
 			if (isDirty) { e.preventDefault(); e.returnValue = ''; }

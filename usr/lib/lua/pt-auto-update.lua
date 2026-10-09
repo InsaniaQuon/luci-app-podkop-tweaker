@@ -7,5 +7,5 @@ local LOG_MAX = 25
 local result = M.update_all_subscriptions(SUBS_FILE, LOG_FILE, LOG_MAX, "auto")
 
 if result.need_restart then
-    os.execute("nohup /etc/init.d/podkop restart >/dev/null 2>&1 &")
+    os.execute(require("podkop-tweaker.services").background_command("/etc/init.d/podkop restart"))
 end

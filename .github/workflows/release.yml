@@ -40,15 +40,14 @@ jobs:
       - name: Run frontend reliability regressions
         run: node tests/frontend_reliability_spec.js
 
-  release:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
+      - name: Check portable background execution
+        run: lua5.1 tests/native_background.lua
 
-      - name: Build archive
+      - name: Build and verify release archive
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          tar -czf luci-app-podkop-tweaker-${{ github.ref_name }}.tar.gz \
+          tar -czf "luci-app-podkop-tweaker-${RELEASE_TAG}.tar.gz" \
             usr/lib/lua/luci/controller/podkop-tweaker.lua \
             usr/lib/lua/luci/view/podkop-tweaker/ \
             usr/lib/lua/podkop-tweaker/ \
@@ -61,6 +60,28 @@ jobs:
             etc/config/podkop-tweaker \
             etc/init.d/podkop-fragment \
             usr/bin/podkop-fragment-patch.sh
+          lua5.1 tests/verify_release_archive.lua "luci-app-podkop-tweaker-${RELEASE_TAG}.tar.gz" "${RELEASE_TAG}"
+
+      - name: Preserve verified release bytes
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-release-archive
+          path: luci-app-podkop-tweaker-*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download verified release bytes
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-release-archive
 
       - name: Create Release
         uses: softprops/action-gh-release@v3

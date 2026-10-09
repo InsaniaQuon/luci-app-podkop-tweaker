@@ -10,7 +10,9 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const repo = path.resolve(__dirname, '..');
 const root = path.dirname(repo);
-const appVersion = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/controller/podkop-tweaker.lua'), 'utf8').match(/APP_VERSION = "([^"]+)"/)[1];
+const controller = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/controller/podkop-tweaker.lua'), 'utf8');
+const appVersion = controller.match(/APP_VERSION = "([^"]+)"/)[1];
+const assetBaseVersion = appVersion + '-' + controller.match(/ASSET_REVISION = "([^"]+)"/)[1];
 const browser = process.argv[process.argv.indexOf('--browser') + 1];
 const diagnosticsOnly = process.argv.includes('--diagnostics-only');
 const updateOnly = process.argv.includes('--update-only');
@@ -54,7 +56,7 @@ const scenarios = {
 
 function fixture(name, profile) {
     const s = scenarios[name];
-    const app = `<link rel="stylesheet" href="/common.css?v=${appVersion}">`;
+    const app = `<link rel="stylesheet" href="/common.css?v=${assetBaseVersion}">`;
     const darkLink = s.darkLink ? `<link rel="stylesheet" href="/luci-static/argon/css/dark.css?v=2.4.8#version" ${s.media ? `media="${s.media}"` : ''}>` : '';
     return `<!doctype html><html ${s.bootstrap === undefined ? '' : `data-darkmode="${s.bootstrap}"`}><head><meta charset="utf-8">
 <link rel="stylesheet" href="/luci-static/argon/css/cascade.css?v=2.4.8">
@@ -85,7 +87,7 @@ github.com'</textarea></div><button id="apply" class="btn cbi-button cbi-button-
 <div class="ps-warning-box" id="warning">Config contains credentials.</div><div class="ps-danger-box" id="danger">Service restart failed.</div><table class="ps-sysinfo-table"><tbody><tr><th>Service</th><th>Version</th></tr><tr><td>Argon Theme</td><td class="ps-sysinfo-value" id="table-value">2.4.7 <span class="ps-ver-outdated" id="update-available">(Update available 2.4.8)</span><span id="install-error"></span></td></tr></tbody></table></section>
 </div></div></div><input id="outside" value="Theme-owned control outside the application">
 <div class="ps-modal" id="modal" style="display:none"><div class="ps-modal-content"><h3>Attach subscription</h3><input id="modal-input" class="ps-sub-url-input" value="https://example.test/sub"><label class="ps-check-item"><input id="modal-check" type="checkbox" checked><span>Import settings</span></label><label class="ps-diff-toggle"><input id="diff-check" type="checkbox" checked>Only changed</label><pre class="ps-error-details" id="error-details">ERROR: unable to select packages</pre><button class="btn cbi-button" id="modal-close">Close</button></div></div>
-<script>window.PT={urls:{},csrf:'test'};</script><script src="/common.js?v=${appVersion}"></script>
+<script>window.PT={urls:{},csrf:'test'};</script><script src="/common.js?v=${assetBaseVersion}"></script>
 <script>document.getElementById('live-status').style.color=PT.color('success');PT.setErr(document.getElementById('install-error'),'Theme package installation failed','ERROR: ucode dependency conflict');document.querySelector('#install-error summary').id='install-summary';</script></body></html>`;
 }
 
@@ -104,7 +106,7 @@ function appearanceFixture() {
     const markup = view.slice(view.indexOf('<div class="cbi-map"'), view.indexOf('<link rel="stylesheet"')).replace('<%+podkop-tweaker/tabs%>', marker);
     const scripts = [...view.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
     const bootstrap = { csrf: 'browser-token', urls: { typography: '/api/typography', appearance: '/api/appearance', appearanceSave: '/api/appearance-save', appearanceReset: '/api/appearance-reset', appearanceColorsReset: '/api/appearance-colors-reset' } };
-    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style><link rel="stylesheet" href="/common.css?v=${appVersion}"></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};</script><script src="/common.js?v=${appVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style><link rel="stylesheet" href="/common.css?v=${assetBaseVersion}"></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};</script><script src="/common.js?v=${assetBaseVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
 }
 
 function diagnosticsFixture() {
@@ -117,15 +119,16 @@ function diagnosticsFixture() {
     // Provider probes are mapped to a local image: exercise real browser events
     // without sending DNS/HTTP test traffic to a third-party from the host.
     const probes = `window.probeURLs=[];window.Image=class{constructor(){this.img=document.createElement('img');this.img.onload=()=>this.onload&&this.onload();this.img.onerror=()=>this.onerror&&this.onerror();}set src(url){if(!url)return;window.probeURLs.push(url);this.img.src='/testapi/probe.png';}};`;
-    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${appVersion}"><style>${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};${probes}</script><script src="/common.js?v=${appVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${assetBaseVersion}"><style>${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};${probes}</script><script src="/common.js?v=${assetBaseVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
 }
 
 const localApplyRequests = [];
 let localApplyFailure = false;
+let localApplyUncertain = false;
 let localRestart = null;
 const resourceVersions = [];
 function updateFixture(mode, nonce) {
-    const assetVersion = appVersion + (nonce ? '-' + nonce : '');
+    const assetVersion = assetBaseVersion + (nonce ? '-' + nonce : '');
     const view = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/view/podkop-tweaker/update.htm'), 'utf8');
     const marker = '<span hidden id="ps-theme-context" data-theme="argon" data-mode="dark" data-profile="soft"></span>';
     const markup = view.slice(view.indexOf('<div class="cbi-map"'), view.indexOf('<link rel="stylesheet"')).replace('<%+podkop-tweaker/tabs%>', marker);
@@ -147,7 +150,7 @@ function copyFixture(name) {
         const endpoint = expr.match(/api\/([^"']+)/);
         return endpoint ? '/copyapi/' + endpoint[1] : '';
     });
-    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${appVersion}"></head><body><div class="main-right">${markup}</div><script>${bootstrap};window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:undefined});document.addEventListener('copy',event=>{window.copyWrites.push(document.activeElement.value);event.preventDefault();});</script><script src="/common.js?v=${appVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${assetBaseVersion}"></head><body><div class="main-right">${markup}</div><script>${bootstrap};window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:undefined});document.addEventListener('copy',event=>{window.copyWrites.push(document.activeElement.value);event.preventDefault();});</script><script src="/common.js?v=${assetBaseVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
 }
 
 const copyLogLines = Array.from({ length: 15 }, (_, i) => [`09.10.2026 12:${String(i).padStart(2, '0')}|manual|updated=1|unchanged=0|failed=0`, `  main-${i}: updated`, `    detail ${i}: <script>plain text</script>`]).flat();
@@ -175,7 +178,10 @@ function multipartFields(body, contentType) {
 
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
-    if (url.pathname === '/copy-form') {
+    if (url.pathname === '/cache-prime') {
+        res.setHeader('Content-Type', 'text/html');
+        res.end(`<!doctype html><html><script src="/common.js?v=${appVersion}"></script></html>`);
+    } else if (url.pathname === '/copy-form') {
         res.setHeader('Content-Type', 'text/html'); res.end(copyFixture(url.searchParams.get('view')));
     } else if (url.pathname.startsWith('/copyapi/')) {
         const endpoint = url.pathname.slice('/copyapi/'.length);
@@ -209,7 +215,7 @@ const server = http.createServer((req, res) => {
             res.setHeader('Content-Type', 'text/plain'); res.end("config settings 'settings'\n    option enabled '1'\n");
         } else {
             res.setHeader('Content-Type', 'application/json');
-            const response = endpoint === 'read_update_log' ? { lines: copyLogLines } : endpoint === 'subscription_state' ? { sections: [] } : endpoint === 'settings_read' ? subscriptionSettings : endpoint === 'auto_update_status' ? {
+            const response = endpoint === 'read_update_log' ? { lines: copyLogLines } : endpoint === 'subscription_state' ? { sections: [{ name: 'main', proxy_config_type: 'url', slots: [{ index: 0, proxy: { name: 'Example', server: 'example.test', protocol: 'VLESS', security: 'tls' } }] }] } : endpoint === 'settings_read' ? subscriptionSettings : endpoint === 'auto_update_status' ? {
                 cron: { enabled: true, matches: !brokenSchedule, running: !brokenSchedule, expected: '30 1,5,9,13,17,21 * * * /usr/bin/pt-auto-update' },
                 launcher: { matches: !brokenSchedule, executable: !brokenSchedule }, hotplug: { enabled: true, matches: !brokenSchedule, executable: !brokenSchedule },
                 last_auto: { ts: '12:00 09.10.2026', updated: 0, unchanged: 2, failed: 1 }
@@ -234,8 +240,8 @@ const server = http.createServer((req, res) => {
                 const params = Object.fromEntries(new URLSearchParams(body));
                 if (params.token !== 'browser-token') { res.statusCode = 403; res.end('{}'); return; }
                 localApplyRequests.push({ mode, params });
-                localRestart = { id: params.restart_id, at: Date.now(), state: localApplyFailure ? 'failed' : 'applied', expected_version: appVersion, installed_version: appVersion };
-                res.end(JSON.stringify(localApplyFailure ? { success: false, error: 'Update application failed', details: 'mock IO failure' } : { success: true, reinstalled: mode === 'same', restart_id: params.restart_id, new_version: appVersion }));
+                localRestart = { id: params.restart_id, at: Date.now(), state: localApplyUncertain ? 'working' : localApplyFailure ? 'failed' : 'applied', expected_version: appVersion, installed_version: appVersion };
+                res.end(JSON.stringify(localApplyUncertain ? { success: false, applied: true, error: 'Applied, but web restart could not be scheduled' } : localApplyFailure ? { success: false, error: 'Update application failed', details: 'mock IO failure' } : { success: true, reinstalled: mode === 'same', restart_id: params.restart_id, new_version: appVersion }));
             }
         });
     } else if (url.pathname === '/diagnostics-form') {
@@ -278,6 +284,11 @@ const server = http.createServer((req, res) => {
     } else if (url.pathname === '/common.css' || url.pathname === '/common.js') {
         resourceVersions.push(url.searchParams.get('v'));
         res.setHeader('Content-Type', url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript');
+        res.setHeader('Cache-Control', 'public, max-age=31536000');
+        if (url.pathname === '/common.js' && url.searchParams.get('v') === appVersion) {
+            res.end('window.__ptOldAsset=true;');
+            return;
+        }
         res.end(fs.readFileSync(path.join(repo, 'www/luci-static/resources/podkop-tweaker', url.pathname.slice(1))));
     } else if (url.pathname.endsWith('/cascade.css') || url.pathname.endsWith('/dark.css')) {
         res.setHeader('Content-Type', 'text/css');
@@ -350,6 +361,12 @@ async function main() {
                 await new Promise(resolve => setTimeout(resolve, 30));
             }
             throw new Error(`Waiting for ${expression} === ${expected} failed`);
+        };
+        const escape = async modalId => {
+            await cdp.call('Page.bringToFront', {}, sessionId);
+            await cdp.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
+            await cdp.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }, sessionId);
+            await wait(`document.getElementById(${JSON.stringify(modalId)}).style.display`, 'none');
         };
         const screenshot = async (name, width) => {
             await cdp.call('Page.bringToFront', {}, sessionId);
@@ -611,6 +628,18 @@ async function main() {
                 assert.equal(await evaluate('document.getElementById("ps-file-input").disabled'), false);
                 if (mode === 'same') {
                     localApplyFailure = false;
+                    localApplyUncertain = true;
+                    await evaluate('document.getElementById("ps-apply-btn").click()');
+                    await wait('!!document.querySelector("#ps-apply-status .ps-restart-retry")', true);
+                    const gap = await evaluate(`(() => {const status=document.getElementById('ps-apply-status'),button=status.querySelector('.ps-restart-retry'),range=document.createRange();range.selectNodeContents(status.firstChild);return button.getBoundingClientRect().left-range.getBoundingClientRect().right;})()`);
+                    assert.ok(gap >= 8, 'Retry verification must be spaced from the preceding error text');
+                    assert.equal(await evaluate('document.getElementById("ps-apply-btn").disabled'), true);
+                    assert.equal(await evaluate('document.getElementById("ps-file-input").disabled'), true);
+                    localApplyUncertain = false;
+                    await cdp.call('Page.navigate', { url: base + '/local-update-form?case=same' }, sessionId);
+                    await wait('document.readyState', 'complete');
+                    await evaluate(`(() => {const transfer=new DataTransfer();transfer.items.add(new File(['archive'],'luci-app-podkop-tweaker-v${appVersion}.tar.gz'));const input=document.getElementById('ps-file-input');input.files=transfer.files;input.dispatchEvent(new Event('change'));})()`);
+                    await wait('document.getElementById("ps-file-input").disabled', false);
                     await evaluate('document.getElementById("ps-apply-btn").click()');
                     await wait('document.getElementById("ps-apply-status").textContent', 'Waiting for LuCI and operation confirmation...');
                     assert.equal(await evaluate('document.getElementById("ps-file-input").disabled'), true);
@@ -618,7 +647,7 @@ async function main() {
                     assert.match(id, /^[a-f0-9]{32}$/);
                     await wait('location.search.includes("_pt_reload=")', true);
                     await wait('document.readyState', 'complete');
-                    assert.ok(resourceVersions.includes(appVersion + '-' + id), 'reinstall refreshes equal-version assets');
+                    assert.ok(resourceVersions.includes(assetBaseVersion + '-' + id), 'reinstall refreshes equal-version assets');
                 }
             }
             console.log('PASS real Local Update form: Update/Reinstall/older actions, multipart+CSRF, explicit reinstall flag, failure recovery and success lock');
@@ -674,6 +703,8 @@ async function main() {
             brokenSchedule = false;
         }
         if (!focused || copyOnly) {
+            await cdp.call('Page.navigate', { url: base + '/cache-prime' }, sessionId);
+            await wait('window.__ptOldAsset', true);
             const copy = async selector => {
                 const placement = await evaluate(`(() => {
                     const button=document.querySelector(${JSON.stringify(selector)}),svg=button.querySelector('svg'),status=button.querySelector('.ps-copy-status');
@@ -699,6 +730,7 @@ async function main() {
                 await cdp.call('Page.navigate', { url: base + '/copy-form?view=' + name }, sessionId);
                 await wait('document.readyState', 'complete');
                 await wait('document.getElementById("ps-config-editor").disabled', false);
+                assert.equal(await evaluate('window.__ptOldAsset === true'), false, 'ordinary tab URLs must not reuse the stale same-version JS cache');
                 await evaluate(`(() => {const e=document.getElementById('ps-config-editor');e.value=${JSON.stringify(text)};e.dispatchEvent(new Event('input'));e.focus();e.setSelectionRange(7,19,'backward');e.scrollTop=150;e.scrollLeft=12;window.editorBefore={start:e.selectionStart,end:e.selectionEnd,direction:e.selectionDirection,top:e.scrollTop,left:e.scrollLeft};})()`);
                 assert.equal(await copy('[data-pt-copy-for="ps-config-editor"]'), text);
                 const unchanged = await evaluate(`(() => {const e=document.getElementById('ps-config-editor');return {focus:document.activeElement.id,value:e.value===${JSON.stringify(text)},before:window.editorBefore,after:{start:e.selectionStart,end:e.selectionEnd,direction:e.selectionDirection,top:e.scrollTop,left:e.scrollLeft}};})()`);
@@ -711,18 +743,36 @@ async function main() {
                 await evaluate(`document.querySelector('#ps-error-modal .ps-modal-content').scrollTop=160;document.getElementById('ps-error-details').scrollTop=400`);
                 assert.equal(await evaluate(`(() => {const card=document.querySelector('#ps-error-modal .ps-modal-content').getBoundingClientRect(),button=document.querySelector('[data-pt-copy-for="ps-error-details"]').getBoundingClientRect();return button.top>=card.top&&button.bottom<card.bottom&&button.right<=card.right;})()`), true, 'modal Copy must stay visible when content scrolls');
                 if (name === 'config') await screenshot('copy-error-modal-dark', 1440);
-                await evaluate(`document.getElementById('ps-error-close').click();document.getElementById('ps-config-diff').click()`);
+                await escape('ps-error-modal');
+                await evaluate(`document.getElementById('ps-config-diff').click()`);
                 const expectedDiff = await evaluate('document.getElementById("ps-diff-body").innerText');
                 assert.equal(await copy('[data-pt-copy-for="ps-diff-body"]'), expectedDiff);
+                await escape('ps-diff-modal');
+                assert.equal(await evaluate('document.getElementById("ps-config-editor").value'), text, 'Esc does not discard editor changes');
+                assert.equal(await evaluate('document.getElementById("ps-config-save").disabled'), false);
                 if (name === 'stubby') {
-                    await evaluate('document.getElementById("ps-diff-close").click();document.getElementById("ps-params-btn").click()');
+                    await evaluate('document.getElementById("ps-params-btn").click()');
                     const help = await evaluate('document.getElementById("ps-params-modal").innerText');
                     assert.ok(help.includes("log_level '3'"));
                     for (const level of ['0 Emergency', '1 Alert', '2 Critical', '3 Error', '4 Warning', '5 Notice', '6 Info', '7 Debug']) assert.ok(help.includes(level));
                     assert.ok(help.includes('Local DNSSEC off') && help.includes('dot.sb'));
+                    assert.ok(help.includes('Available upstreams are used round-robin.'));
+                    assert.ok(!help.includes('Podkop block sections') && !help.includes('getdns handles upstream failures'));
                     await screenshot('stubby-template-guidance', 1440);
-                    await evaluate('document.getElementById("ps-params-close").click();document.getElementById("ps-initfix-btn").click()');
+                    await evaluate('document.getElementById("ps-initfix-btn").click()');
                     assert.equal(await copy('[data-pt-copy-for="ps-initfix-cmd"]'), await evaluate('document.getElementById("ps-initfix-cmd").textContent'));
+                    await escape('ps-initfix-modal');
+                    assert.equal(await evaluate('document.getElementById("ps-params-modal").style.display'), 'flex', 'Esc closes only the front overlay');
+                    await escape('ps-params-modal');
+                }
+                if (name === 'singbox') {
+                    await evaluate('document.getElementById("ps-patch-btn").click()');
+                    await wait('document.getElementById("ps-patch-modal").style.display', 'flex');
+                    await escape('ps-patch-modal');
+                    await wait('document.getElementById("ps-wrapper-btn").textContent', 'Enable Wrapper');
+                    await evaluate('document.getElementById("ps-wrapper-btn").click()');
+                    await wait('document.getElementById("ps-wrapper-modal").style.display', 'flex');
+                    await escape('ps-wrapper-modal');
                 }
                 assert.equal(await evaluate('document.querySelectorAll(".ps-copy-fallback").length'), 0);
                 // Leave via the real Undo action so the verified dirty-state
@@ -742,6 +792,23 @@ async function main() {
             assert.equal(await copy('[data-pt-copy-for="ps-full-log-body"]'), fullLog);
             await evaluate('PT.initCopyButtons();PT.initCopyButtons()');
             assert.equal(await evaluate('document.querySelectorAll("[data-pt-copy-for=ps-full-log-body]").length'), 1);
+            await escape('ps-full-log-modal');
+            await evaluate('document.querySelector(".ps-sub-btn-attach").click();document.getElementById("ps-sub-url").focus()');
+            await escape('ps-sub-modal');
+
+            await cdp.call('Page.navigate', { url: base + '/copy-form?view=import-export' }, sessionId);
+            await wait('document.readyState', 'complete');
+            await evaluate('document.getElementById("ps-export-open").click()');
+            await escape('ps-export-modal');
+            await evaluate(`(() => {const transfer=new DataTransfer();transfer.items.add(new File(["config section 'main'\\n"],'input.txt'));const input=document.getElementById('ps-import-file');input.files=transfer.files;input.dispatchEvent(new Event('change'));document.getElementById('ps-import-open').click();})()`);
+            await wait('document.getElementById("ps-import-modal").style.display', 'flex');
+            const beforeCancel = contentRequests.length;
+            await escape('ps-import-modal');
+            await evaluate('document.getElementById("ps-import-confirm").click()');
+            assert.equal(contentRequests.length, beforeCancel, 'Esc clears pending import without applying it');
+            await evaluate('document.getElementById("ps-error-modal").style.display="flex"');
+            await escape('ps-error-modal');
+            console.log('PASS modal Esc: all editors/error/diff, Stubby template/init, sing-box patch/wrapper, subscriptions/history and import/export; top overlay, cleanup and dirty preservation');
 
             await cdp.call('Page.navigate', { url: base + '/argon-auto-dark' }, sessionId);
             await wait('document.readyState', 'complete');
