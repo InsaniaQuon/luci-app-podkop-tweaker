@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.8.1 | 09.10.2026 | in-block copy icons and Stubby template guidance
+-- Podkop Tweaker | v4.9.0 | 09.10.2026 | reliable transport, scheduling status and restart confirmation
 
-local APP_VERSION = "4.8.1"
+local APP_VERSION = "4.9.0"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")
@@ -228,6 +228,8 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "settings_save"},
         call("api_settings_save")).leaf = true
+    entry({"admin", "services", "podkop-tweaker", "api", "auto_update_status"},
+        call("api_auto_update_status")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "update_all_subs"},
         call("api_update_all_subs")).leaf = true
@@ -258,6 +260,8 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "app_version"},
         call("api_app_version")).leaf = true
+    entry({"admin", "services", "podkop-tweaker", "api", "restart_status"},
+        call("api_restart_status")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "read_update_log"},
         call("api_read_update_log")).leaf = true
@@ -269,6 +273,9 @@ function index()
 end
 
 local function render_page(template_name, extra)
+    local reload = require("luci.http").formvalue("_pt_reload")
+    local asset_version = APP_VERSION
+    if require("podkop-tweaker.web_restart").valid_id(reload) then asset_version = asset_version .. "-" .. reload end
     local uci = require("luci.model.uci").cursor()
     local media = uci:get("luci", "main", "mediaurlbase") or ""
     local theme, mode = "", ""
@@ -290,6 +297,7 @@ local function render_page(template_name, extra)
     end
     local vars = {
         app_version = APP_VERSION,
+        asset_version = asset_version,
         csrf_token = H.ensure_csrf_token(),
         show_argon = (uci:get("podkop-tweaker", "settings", "show_argon_tab") == "1"),
         active = template_name,
@@ -382,6 +390,35 @@ local function json_api(csrf, fn, ...)
     http.write_json(resp)
 end
 
+-- Bounded file transport for config/bundle content; legacy text fields still work.
+-- Register the collector before CSRF/formvalue triggers multipart parsing.
+local function content_api(fn, max_size)
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+    H.no_cache()
+    local ok, resp = pcall(function()
+        local upload
+        if (http.getenv("CONTENT_TYPE") or ""):match("^multipart/form%-data") then
+            upload = H.file_upload("content_file", max_size, "Content file")
+        end
+        if not H.verify_csrf() then return end
+        local content
+        if upload then
+            local data, _, err = upload()
+            if err then http.status(400, "Bad Request"); return { error = err } end
+            content = data
+        else content = http.formvalue("content") or "" end
+        if type(content) ~= "string" or #content > max_size then return { error = "Content exceeds size limit" } end
+        local handled, result = pcall(fn, content, http.formvalue("file"), http.formvalue("items"))
+        return handled and result or { error = "Internal error" }
+    end)
+    if not ok then
+        http.status(400, "Bad Request")
+        resp = { error = "Cannot read content request", details = tostring(resp) }
+    end
+    if resp then http.write_json(resp) end
+end
+
 -- === Podkop ===
 
 function api_read_config() return PDK.read_config() end
@@ -391,12 +428,10 @@ function api_download_backup() return PDK.download_backup() end
 function api_system_info() json_api(false, PDK.system_info) end
 function api_update_start() json_api(true, PDK.update_start) end
 function api_save_config()
-    local http = require("luci.http")
-    json_api(true, PDK.save_config, http.formvalue("content") or "")
+    content_api(PDK.save_config, PDK.CONFIG_MAX_SIZE)
 end
 function api_import_config()
-    local http = require("luci.http")
-    json_api(true, PDK.import_config, http.formvalue("content") or "", http.formvalue("file"))
+    content_api(PDK.import_config, PDK.CONFIG_MAX_SIZE)
 end
 function api_service_status() json_api(false, PDK.service_status) end
 function api_rollback() json_api(true, PDK.rollback) end
@@ -435,13 +470,15 @@ function api_subscription_detach()
         http.formvalue("index"))
 end
 function api_settings_read() json_api(false, SUB.settings_read) end
+function api_auto_update_status() json_api(false, SUB.auto_update_status) end
 function api_settings_save()
     local http = require("luci.http")
     json_api(true, SUB.settings_save,
         http.formvalue("auto_update_interval"),
         http.formvalue("auto_update_start") or "",
         http.formvalue("auto_update_on_restart") == "1",
-        http.formvalue("log_display_count"))
+        http.formvalue("log_display_count"),
+        http.formvalue("log_only") == "1")
 end
 function api_update_all_subs() json_api(true, SUB.update_all) end
 
@@ -452,8 +489,7 @@ function api_export_stubby_config() return STB.export_config() end
 function api_download_stubby_backup() return STB.download_backup() end
 
 function api_save_stubby_config()
-    local http = require("luci.http")
-    json_api(true, STB.save_config, http.formvalue("content") or "")
+    content_api(STB.save_config, STB.CONFIG_MAX_SIZE)
 end
 function api_stubby_service_status() json_api(false, STB.service_status) end
 function api_stubby_service_toggle()
@@ -465,8 +501,7 @@ function api_stubby_chain_info() json_api(false, STB.chain_info) end
 function api_stubby_init_check() json_api(false, STB.init_check) end
 function api_stubby_init_fix() json_api(true, STB.init_fix) end
 function api_import_stubby_config()
-    local http = require("luci.http")
-    json_api(true, STB.import_config, http.formvalue("content") or "")
+    content_api(STB.import_config, STB.CONFIG_MAX_SIZE)
 end
 function api_apply_recommended_stubby() json_api(true, STB.apply_recommended) end
 function api_stubby_autostart() json_api(false, STB.autostart) end
@@ -482,8 +517,7 @@ function api_export_singbox_config() return SBX.export_config() end
 function api_download_singbox_backup() return SBX.download_backup() end
 
 function api_save_singbox_config()
-    local http = require("luci.http")
-    json_api(true, SBX.save_config, http.formvalue("content") or "")
+    content_api(SBX.save_config, SBX.CONFIG_MAX_SIZE)
 end
 function api_singbox_service_status() json_api(false, SBX.service_status) end
 function api_singbox_service_toggle()
@@ -492,8 +526,7 @@ function api_singbox_service_toggle()
 end
 function api_rollback_singbox() json_api(true, SBX.rollback) end
 function api_import_singbox_config()
-    local http = require("luci.http")
-    json_api(true, SBX.import_config, http.formvalue("content") or "")
+    content_api(SBX.import_config, SBX.CONFIG_MAX_SIZE)
 end
 function api_singbox_outbounds() json_api(false, SBX.outbounds) end
 
@@ -552,7 +585,9 @@ end
 
 function api_argon_typography_reset() json_api(true, ARG.typography_reset) end
 function api_argon_reinject() json_api(true, ARG.reinject) end
-function api_argon_theme_update() json_api(true, ARG.theme_update) end
+function api_argon_theme_update()
+    json_api(true, ARG.theme_update, require("luci.http").formvalue("restart_id"))
+end
 
 function api_tweaker_appearance() json_api(false, ARG.appearance) end
 function api_tweaker_appearance_save()
@@ -578,11 +613,7 @@ function api_tweaker_appearance_colors_reset() json_api(true, ARG.appearance_col
 function api_export_bundle() return BND.export() end
 
 function api_import_bundle()
-    local http = require("luci.http")
-    json_api(true, BND.import,
-        http.formvalue("content") or "",
-        http.formvalue("file"),
-        http.formvalue("items"))
+    content_api(BND.import, BND.MAX_SIZE)
 end
 
 -- === Update ===
@@ -615,9 +646,10 @@ function api_upload_update()
 end
 function api_apply_update()
     local http = require("luci.http")
-    json_api(true, UPD.apply, http.formvalue("reinstall"))
+    json_api(true, UPD.apply, http.formvalue("reinstall"), http.formvalue("restart_id"))
 end
-function api_clear_cache() json_api(true, UPD.clear_cache) end
+function api_clear_cache() json_api(true, UPD.clear_cache, require("luci.http").formvalue("restart_id")) end
+function api_restart_status() json_api(false, UPD.restart_status, require("luci.http").formvalue("id") or "") end
 function api_check_updates() json_api(true, PDK.check_updates) end
 function api_read_update_log() json_api(false, UPD.read_log) end
 function api_tweaker_check_update() json_api(false, UPD.check_update) end
@@ -625,5 +657,6 @@ function api_tweaker_git_update()
     local http = require("luci.http")
     json_api(true, UPD.git_update,
         http.formvalue("download_url") or "",
-        http.formvalue("force"))
+        http.formvalue("force"),
+        http.formvalue("restart_id"))
 end

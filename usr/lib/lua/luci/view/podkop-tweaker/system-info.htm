@@ -80,7 +80,7 @@ Author: InsaniaQuon
     </div>
 </div>
 
-<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=asset_version%>">
 <script>
 window.PT = {
     version: '<%= app_version %>',
@@ -92,11 +92,12 @@ window.PT = {
         tweakerUpdate: '<%=url("admin/services/podkop-tweaker/api/tweaker_git_update")%>',
         checkUpdates: '<%=url("admin/services/podkop-tweaker/api/check_updates")%>',
         argonThemeUpdate: '<%=url("admin/services/podkop-tweaker/api/argon_theme_update")%>',
-        clearCache: '<%=url("admin/services/podkop-tweaker/api/clear_cache")%>'
+        clearCache: '<%=url("admin/services/podkop-tweaker/api/clear_cache")%>',
+        restartStatus: '<%=url("admin/services/podkop-tweaker/api/restart_status")%>'
     }
 };
 </script>
-<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=asset_version%>"></script>
 
 <script>
 (function() {
@@ -115,6 +116,22 @@ window.PT = {
     var tweakerLatest = null;
     var tweakerDownloadUrl = '';
     var lastData = null;
+    var webPending = false;
+
+    function runWebUpdate(url, params, status, button, expectedVersion, target) {
+        if (webPending) return;
+        webPending = true;
+        checkUpdatesBtn.disabled = refreshBtn.disabled = clearCacheBtn.disabled = true;
+        if (button) button.disabled = true;
+        PT.restartAction({ target: target, url: url, params: params, status: status, expectedVersion: expectedVersion,
+            onFailure: function(error, uncertain) {
+                if (uncertain) return;
+                webPending = false;
+                checkUpdatesBtn.disabled = refreshBtn.disabled = clearCacheBtn.disabled = false;
+                if (button) button.disabled = false;
+            }
+        });
+    }
 
     function setUpdateStatus(text, color) {
         updateStatus.textContent = text;
@@ -183,8 +200,9 @@ window.PT = {
     function renderTweakerRow(data) {
         var cell = document.getElementById('ps-info-tweaker');
         var ver = data.tweaker_version || 'unknown';
-        var latest = data.tweaker_latest || tweakerLatest;
+        var latest = data.tweaker_latest || null;
         tweakerLatest = latest;
+        tweakerDownloadUrl = data.tweaker_download_url || '';
 
         if (!latest) {
             cell.textContent = 'v' + ver;
@@ -199,13 +217,13 @@ window.PT = {
                 ' <button class="btn cbi-button cbi-button-apply" id="ps-tweaker-update-btn" style="font-size:12px;padding:2px 8px">Update from Git</button>' +
                 '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
             var btn = document.getElementById('ps-tweaker-update-btn');
-            if (btn) btn.addEventListener('click', function() { doUpdateTweaker(false); });
+            if (btn) { btn.disabled = webPending || !tweakerDownloadUrl; btn.addEventListener('click', function() { doUpdateTweaker(false); }); }
         } else if (gt) {
             cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span style="font-size:12px;color:var(--ps-warning)">(Newer than repo v' + PT.escapeHtml(latest) + ')</span>' +
                 ' <button class="btn cbi-button" id="ps-tweaker-downgrade-btn" style="font-size:12px;padding:2px 8px">Downgrade from Git</button>' +
                 '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
             var dgBtn = document.getElementById('ps-tweaker-downgrade-btn');
-            if (dgBtn) dgBtn.addEventListener('click', function() { doUpdateTweaker(true); });
+            if (dgBtn) { dgBtn.disabled = webPending || !tweakerDownloadUrl; dgBtn.addEventListener('click', function() { doUpdateTweaker(true); }); }
         } else {
             cell.textContent = 'v' + ver;
         }
@@ -282,7 +300,7 @@ window.PT = {
                 lastData.tweaker_version = tw.current_version || lastData.tweaker_version;
                 tweakerLatest = tw.latest_version || null;
                 lastData.tweaker_latest = tweakerLatest;
-                if (tw.download_url) tweakerDownloadUrl = tw.download_url;
+                lastData.tweaker_download_url = tw.download_url || '';
             }
             var th = resp.theme || {};
             if (!th.error) {
@@ -338,28 +356,11 @@ window.PT = {
         if (btn) btn.disabled = true;
         if (statusEl) { statusEl.textContent = 'Updating...'; statusEl.style.color = PT.color('info'); }
 
-        PT.xhrPost(PT.urls.argonThemeUpdate, '', function(xhr) {
-            if (xhr && xhr.status === 200) {
-                try {
-                    var resp = JSON.parse(xhr.responseText);
-                    if (resp.success) {
-                        if (statusEl) { statusEl.textContent = 'Updated to ' + resp.new_version + '! Reloading...'; statusEl.style.color = PT.color('success'); }
-                        setTimeout(function() { window.location.reload(); }, 5000);
-                        return;
-                    }
-                    PT.setErr(statusEl, resp.error || 'Update failed', resp.details);
-                } catch (e) {
-                    if (statusEl) { statusEl.textContent = 'Invalid response'; statusEl.style.color = PT.color('error'); }
-                }
-            } else {
-                if (statusEl) { statusEl.textContent = xhr ? 'HTTP error: ' + xhr.status : 'Network error'; statusEl.style.color = PT.color('error'); }
-            }
-            if (btn) btn.disabled = false;
-        });
+        runWebUpdate(PT.urls.argonThemeUpdate, '', statusEl, btn, lastData && lastData.argon_theme_latest, 'theme');
     }
 
     function doUpdateTweaker(isDowngrade) {
-        if (!tweakerDownloadUrl && !tweakerLatest) return;
+        if (webPending || !tweakerDownloadUrl) return;
         var confirmed;
         if (isDowngrade) {
             confirmed = confirm('Your version is newer than the repository version (' + tweakerLatest + ').\n\nDowngrade to v' + PT.escapeHtml(tweakerLatest) + '?\n\nThe web interface will restart during the update.');
@@ -377,35 +378,14 @@ window.PT = {
         var params = 'download_url=' + encodeURIComponent(tweakerDownloadUrl);
         if (isDowngrade) params += '&force=1';
 
-        PT.xhrPost(PT.urls.tweakerUpdate, params, function(xhr) {
-            if (xhr && xhr.status === 200) {
-                try {
-                    var resp = JSON.parse(xhr.responseText);
-                    if (resp.success) {
-                        if (statusEl) { statusEl.textContent = 'Update applied! Reloading...'; statusEl.style.color = PT.color('success'); }
-                        setTimeout(function() { window.location.reload(); }, 5000);
-                        return;
-                    }
-                    PT.setErr(statusEl, resp.error || 'Update failed', resp.details);
-                    if (btn) btn.disabled = false;
-                } catch (e) {
-                    if (statusEl) { statusEl.textContent = 'Invalid response'; statusEl.style.color = PT.color('error'); }
-                    if (btn) btn.disabled = false;
-                }
-            } else {
-                if (statusEl) { statusEl.textContent = xhr ? 'HTTP error: ' + xhr.status : 'Network error'; statusEl.style.color = PT.color('error'); }
-                if (btn) btn.disabled = false;
-            }
-        });
+        runWebUpdate(PT.urls.tweakerUpdate, params, statusEl, btn, tweakerLatest, 'tweaker');
     }
 
     clearCacheBtn.addEventListener('click', function() {
         if (!confirm('Clear LuCI cache and restart web interface?\n\nThe page will become unavailable for a few seconds, then reload automatically.')) return;
         clearCacheBtn.disabled = true;
         setUpdateStatus('Clearing cache, restarting...', '#2196f3');
-        PT.xhrPost(PT.urls.clearCache, '', function(xhr) {
-            setTimeout(function() { window.location.reload(true); }, 4000);
-        });
+        runWebUpdate(PT.urls.clearCache, '', updateStatus, clearCacheBtn, null, 'cache');
     });
 
     updatePodkopBtn.addEventListener('click', doUpdatePodkop);

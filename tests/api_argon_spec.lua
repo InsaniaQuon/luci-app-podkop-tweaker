@@ -361,11 +361,13 @@ describe("api_argon theme (version / check / update)", function()
         local css = H.vfs_read(CSS)
         assert.truthy(css:find("Podkop Tweaker Typography", 1, true))
         assert.truthy(css:find("font%-size: 17px"))
-        -- luCI caches cleared + uhttpd restarted (os.execute log)
+        -- Caches cleared and delayed restart queued after installation.
         local saw_luci_rm, saw_uhttpd = false, false
         for _, c in ipairs(H.execute_cmds()) do
             if c:find("rm -rf /tmp/luci-", 1, true) then saw_luci_rm = true end
-            if c:find("uhttpd restart", 1, true) then saw_uhttpd = true end
+        end
+        for _, c in ipairs(H.exec_cmds()) do
+            if c:find("sleep 1; /etc/init.d/uhttpd restart", 1, true) then saw_uhttpd = true end
         end
         assert.truthy(saw_luci_rm)
         assert.truthy(saw_uhttpd)

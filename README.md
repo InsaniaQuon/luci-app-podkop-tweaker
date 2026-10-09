@@ -8,7 +8,7 @@ LuCI web interface for managing Podkop proxy client on OpenWrt routers.
 - **Stubby Config** — Stubby DNS-over-TLS editor with a recommended template (six DoT upstreams across three independent providers, round-robin), init script fix, service start/stop and autostart
 - **Sing-box Config** — sing-box `config.json` editor with `sing-box check` validation, rollback, plus the fragment patch module (TLS fragment / record fragment on selected outbounds, wrapper auto-reinstall after Podkop updates)
 - **Diagnostics** — DNS chain visualization and local probes, a manual browser-origin external DNS resolver observation, direct navigation to Podkop Diagnostics, and a per-run log with JSON export
-- **Subscriptions** — proxy subscription manager (vless/vmess/ss/trojan): attach per slot, manual and scheduled auto-updates (cron + hotplug), update journal
+- **Subscriptions** — proxy subscription manager (vless/vmess/ss/trojan): attach per slot, manual and scheduled auto-updates (cron + hotplug), actual scheduler status and update journal
 - **Import/Export** — JSON bundle backup of selected items (podkop, stubby, sing-box, fragment, argon, tweaker settings, subscriptions + schedule), review modal before applying, per-item results, automatic pre-apply backups, service status panel; single raw config files are supported as well
 - **System Information** — Podkop and system versions, update via ttyd terminal
 - **Local Update / Git Update** — self-update from GitHub Releases or a local archive, with LuCI cache cleanup
@@ -50,6 +50,52 @@ Install this capability initially using an archive newer than the installed vers
 4.7.0 updater cannot expose a button contained only in an equal-version archive.
 After that transition, another archive matching the installed version can be
 applied through **Reinstall**.
+
+### Update confirmation (4.9.0+)
+
+Local Update/Reinstall, Git Update, Argon Theme Update and Clear LuCI Cache wait
+for operation confirmation instead of blindly reloading after a fixed delay.
+The server records the checked result in a private, bounded RAM record and queues
+uhttpd restart after a short response-delivery delay. Readiness requires the same
+operation ID, a changed uhttpd PID/start-time identity and the expected installed
+version; equal-version Reinstall is covered as well.
+
+Verification has a 60-second deadline and 4-second probe timeouts. A lost apply
+response is checked against the recorded result, without automatically submitting
+Apply again. If readiness or the session cannot be confirmed, **Retry verification**
+repeats only the read checks. Git downgrade to a pre-4.9.0 target uses stable target
+version/availability checks only after receiving the successful checked-apply
+response; it does not claim process-identity verification for that older target.
+Reload uses a bounded nonce to refresh equal-version app assets. Podkop installation
+remains interactive in ttyd, followed by the existing Refresh action.
+
+### Large config and bundle transport (4.9.0+)
+
+The three config editors and raw/bundle imports send UTF-8 content as a bounded
+multipart file, avoiding LuCI's approximately 100 KiB text-field limit and URL
+encoding expansion. Application limits remain 1 MiB for UCI, 2 MiB for sing-box and
+4 MiB for a bundle. Existing validation, backups and per-item results still apply.
+The server collects file bytes before parsing the form, verifies CSRF before
+mutation, rejects incomplete/multiple/unexpected files and reports parser failures
+as JSON. Legacy small text POSTs remain supported.
+
+## Subscription scheduling status (4.9.0+)
+
+**Actual Auto-Update Status**, below Auto-Update options, shows the expected and
+installed cron entry, crond presence, launcher/hotplug content and executable state,
+and the last journaled automatic completion with updated/unchanged/failed counts.
+Cron uses the router's time. The last completion is read from a bounded 64 KiB tail;
+missing history is unknown, not a successful run. Cron and WAN triggers share the
+existing `auto` label, so that journal does not distinguish their source.
+
+Schedule setup failures are reported after saved settings, including partial setup;
+the status block reflects the actual files. Unrelated crontab entries are retained.
+Saving the log display count changes only that preference and does not rewrite or
+reschedule auto-updates. Network, timeout, HTTP and malformed-response failures
+release subscription controls for retry. Mobile split panels stack at full width.
+
+Appearance preview can still be discarded by refreshing the page; an additional
+Cancel Preview action is deferred.
 
 ## Copy text (4.8.0+)
 

@@ -104,7 +104,7 @@ end
 -- One-shot update flow: download matching asset -> snapshot typography ->
 -- install (apk/opkg, exit-code checked) -> restore typography + reinject CSS ->
 -- clear LuCI caches -> restart uhttpd.
-function M.update()
+local function update()
     local sys = require("luci.sys")
     local ver, manager = detect()
     if not ver then
@@ -177,9 +177,12 @@ function M.update()
     ARGON.apply()
 
     os.execute("rm -rf /tmp/luci-* 2>/dev/null")
-    os.execute("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
 
     return { success = true, new_version = now_ver or info.latest_version }
+end
+
+function M.update(restart_id)
+    return require("podkop-tweaker.web_restart").run(restart_id, "theme", update)
 end
 
 return M

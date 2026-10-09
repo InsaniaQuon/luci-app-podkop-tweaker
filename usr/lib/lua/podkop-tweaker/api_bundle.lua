@@ -12,7 +12,7 @@ local M = {}
 
 local BUNDLE_FORMAT = "podkop-tweaker-bundle"
 local BUNDLE_VERSION = 1
-local BUNDLE_MAX_SIZE = 4194304
+M.MAX_SIZE = 4194304
 
 function M.export()
     local http = require("luci.http")
@@ -94,7 +94,7 @@ function M.import(content, file_raw, sel_param)
     if content == "" then
         return { error = "Bundle content is empty" }
     end
-    if #content > BUNDLE_MAX_SIZE then
+    if #content > M.MAX_SIZE then
         return { error = "Bundle too large (max 4MB)" }
     end
     if content:find("\0", 1, true) then

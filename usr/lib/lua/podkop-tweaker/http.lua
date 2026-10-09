@@ -56,27 +56,32 @@ end
 
 -- Register before any formvalue()/CSRF call parses the multipart body.
 -- Collect bounded file bytes in memory only; no file is written before CSRF.
-function M.file_upload(field_name, max_size)
+function M.file_upload(field_name, max_size, label)
     local http = require("luci.http")
     local chunks, size = {}, 0
     local filename, completed, upload_error
+    local noun = label and label:lower() or "archive"
 
     http.setfilehandler(function(meta, chunk, eof)
-        if meta.name ~= field_name or upload_error then return end
+        if upload_error then return end
+        if meta.name ~= field_name then
+            if meta.file then upload_error = "Unexpected uploaded file"; chunks = {} end
+            return
+        end
         if completed then
-            upload_error = "Only one update archive is allowed"
+            upload_error = "Only one " .. (label and noun or "update archive") .. " is allowed"
             chunks = {}
             return
         end
         if type(meta.file) ~= "string" or meta.file == "" then
-            upload_error = "Missing archive filename"
+            upload_error = "Missing " .. noun .. " filename"
             return
         end
         filename = meta.file
         if chunk and #chunk > 0 then
             size = size + #chunk
             if size > max_size then
-                upload_error = "Archive too large (max " .. max_size .. " bytes)"
+                upload_error = (label or "Archive") .. " too large (max " .. max_size .. " bytes)"
                 chunks = {}
                 return
             end
@@ -88,7 +93,7 @@ function M.file_upload(field_name, max_size)
     return function()
         if upload_error then return nil, nil, upload_error end
         if not filename then return nil, nil, "No file uploaded" end
-        if not completed then return nil, nil, "Incomplete archive upload" end
+        if not completed then return nil, nil, "Incomplete " .. noun .. " upload" end
         return table.concat(chunks), filename
     end
 end

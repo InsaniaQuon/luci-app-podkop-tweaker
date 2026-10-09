@@ -114,8 +114,8 @@ function M.theme_check(force_raw)
     return THEME.check(force_raw == true or force_raw == "1")
 end
 
-function M.theme_update()
-    return THEME.update()
+function M.theme_update(restart_id)
+    return THEME.update(restart_id)
 end
 
 return M

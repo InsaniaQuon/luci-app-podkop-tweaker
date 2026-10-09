@@ -183,11 +183,16 @@ window.PT = window.PT || {};
 		xhr.send();
 	};
 
-	PT.xhrPost = function (url, params, cb) {
+	PT.xhrPost = function (url, params, cb, timeout) {
 		var xhr = new XMLHttpRequest();
+		var finished = false;
+		function finish(value, reason) { if (!finished) { finished = true; cb(value, reason); } }
 		xhr.open('POST', url);
-		xhr.onload = function () { cb(xhr); };
-		xhr.onerror = function () { cb(null); };
+		if (timeout) xhr.timeout = timeout;
+		xhr.onload = function () { finish(xhr); };
+		xhr.onerror = function () { finish(null, 'Network error'); };
+		xhr.ontimeout = function () { finish(null, 'Request timed out'); };
+		xhr.onabort = function () { finish(null, 'Request aborted'); };
 		if (typeof FormData !== 'undefined' && params instanceof FormData) {
 			params.append('token', PT.csrf || '');
 			// Browser supplies Content-Type with the multipart boundary.
@@ -198,17 +203,149 @@ window.PT = window.PT || {};
 		}
 	};
 
+	PT.postJson = function (url, params, cb, timeout) {
+		PT.xhrPost(url, params, function (xhr, reason) {
+			var data = null, error = null;
+			if (xhr) { try { data = JSON.parse(xhr.responseText); } catch (e) {} }
+			if (!xhr) error = { kind: 'transport', message: reason || 'Network error' };
+			else if (xhr.status !== 200) error = { kind: 'http', message: data && data.error || 'HTTP error: ' + xhr.status, details: data && data.details || xhr.responseText };
+			else if (!data || typeof data !== 'object' || Array.isArray(data)) error = { kind: 'parse', message: 'Invalid response', details: xhr.responseText };
+			else if (data.error || data.success === false) error = { kind: 'application', message: data.error || 'Operation failed', details: data.details };
+			cb(error ? null : data, error, xhr);
+		}, timeout || 120000);
+	};
+
+	PT.contentForm = function (content, fields, filename) {
+		var form = new FormData();
+		form.append('content_file', new Blob([content], { type: 'text/plain;charset=utf-8' }), filename || 'config.txt');
+		Object.keys(fields || {}).forEach(function (key) { form.append(key, fields[key]); });
+		return form;
+	};
+
 	PT.getJson = function (url, cb) {
 		var xhr = new XMLHttpRequest();
+		var finished = false;
+		function finish(data, status, reason) { if (!finished) { finished = true; cb(data, status, reason); } }
 		xhr.open('GET', url);
+		xhr.timeout = 30000;
 		xhr.onload = function () {
+			var data = null;
 			if (xhr.status === 200) {
-				try { cb(JSON.parse(xhr.responseText), xhr.status); return; } catch (e) {}
+				try { data = JSON.parse(xhr.responseText); } catch (e) {}
 			}
-			cb(null, xhr.status);
+			finish(data, xhr.status, data ? null : 'Invalid response');
 		};
-		xhr.onerror = function () { cb(null, 0); };
+		xhr.onerror = function () { finish(null, 0, 'Network error'); };
+		xhr.ontimeout = function () { finish(null, 0, 'Request timed out'); };
+		xhr.onabort = function () { finish(null, 0, 'Request aborted'); };
 		xhr.send();
+	};
+
+	PT.newOperationId = function () {
+		var bytes = new Uint8Array(16);
+		if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+		else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+		return Array.prototype.map.call(bytes, function (n) { return ('0' + n.toString(16)).slice(-2); }).join('');
+	};
+
+	PT.waitForRestart = function (url, id, expectedVersion, cb, legacyUrl) {
+		var done = false, request = null, retry = null;
+		var legacy = false, stable = 0;
+		var deadline = setTimeout(function () {
+			finish({ message: 'Restart verification timed out. The operation may already be applied; retry verification.' }, null, true);
+		}, 60000);
+		function cancel() {
+			done = true;
+			clearTimeout(deadline); clearTimeout(retry);
+			if (window.removeEventListener) window.removeEventListener('pagehide', cancel);
+			if (request) request.abort();
+		}
+		function finish(error, data, uncertain) {
+			if (done) return;
+			cancel(); cb(error, data, uncertain);
+		}
+		function probe() {
+			if (done) return;
+			var xhr = new XMLHttpRequest(), settled = false;
+			request = xhr;
+			var endpoint = legacy ? legacyUrl : url;
+			xhr.open('GET', endpoint + (endpoint.indexOf('?') >= 0 ? '&' : '?') + 'id=' + encodeURIComponent(id) + '&_pt=' + Date.now());
+			xhr.timeout = 4000;
+			function again() { if (settled || done) return; settled = true; request = null; retry = setTimeout(probe, 1000); }
+			xhr.onerror = xhr.ontimeout = xhr.onabort = function () { stable = 0; again(); };
+			xhr.onload = function () {
+				if (settled || done) return;
+				var html = xhr.status === 200 && /^\s*(?:<!doctype\s+html|<html)/i.test(xhr.responseText);
+				// Older target controllers have no operation-status route. This path
+				// is enabled only by a received checked-apply ACK, never response loss.
+				if (!legacy && legacyUrl && (xhr.status === 404 || html)) { legacy = true; again(); return; }
+				if (xhr.status === 401 || xhr.status === 403 || html) {
+					finish({ message: html ? 'LuCI returned an HTML login/error page. Sign in if needed, then retry verification.' : 'LuCI session expired or access denied. Sign in, then retry verification.', details: xhr.responseText }, null, true);
+					return;
+				}
+				var data = null;
+				try { data = JSON.parse(xhr.responseText); } catch (e) {}
+				if (legacy) {
+					stable = xhr.status === 200 && data && data.version === expectedVersion ? stable + 1 : 0;
+					if (stable >= 3) { finish(null, { legacy_ready: true, installed_version: data.version }, false); return; }
+					again(); return;
+				}
+				if (xhr.status === 200 && data && data.id === id) {
+					if (data.state === 'failed') { finish({ message: data.error || 'Operation failed' }, data, false); return; }
+					var expected = data.expected_version || expectedVersion;
+					if (data.state === 'applied' && data.restarted === true && data.ready === true && (!expected || data.installed_version === expected)) {
+						finish(null, data, false); return;
+					}
+				}
+				again();
+			};
+			xhr.send();
+		}
+		if (window.addEventListener) window.addEventListener('pagehide', cancel);
+		probe();
+		return cancel;
+	};
+
+	PT.restartAction = function (cfg) {
+		var id = PT.newOperationId();
+		var legacyUrl = null;
+		var params = (cfg.params ? cfg.params + '&' : '') + 'restart_id=' + id;
+		function fail(error, uncertain) {
+			PT.setErr(cfg.status, error.message, error.details);
+			if (uncertain) {
+				var button = document.createElement('button');
+				button.type = 'button'; button.className = 'btn cbi-button'; button.textContent = 'Retry verification';
+				button.addEventListener('click', function () { button.disabled = true; verify(); });
+				cfg.status.appendChild(button);
+			}
+			if (cfg.onFailure) cfg.onFailure(error, uncertain);
+		}
+		function verify() {
+			cfg.status.textContent = 'Waiting for LuCI and operation confirmation...';
+			cfg.status.style.color = PT.color('info');
+			PT.waitForRestart(cfg.statusUrl || PT.urls.restartStatus, id, cfg.expectedVersion, function (error, data, uncertain) {
+				if (error) { fail(error, uncertain); return; }
+				cfg.status.textContent = data && data.legacy_ready ? 'Target version responding (legacy verification). Reloading...' : 'Operation confirmed. Reloading...';
+				cfg.status.style.color = PT.color('success');
+				// A bounded nonce also refreshes equal-version reinstall assets.
+				var next = new URL(window.location.href);
+				next.searchParams.set('_pt_reload', id);
+				if (window.location.replace) window.location.replace(next.href); else window.location.reload();
+			}, legacyUrl);
+		}
+		PT.postJson(cfg.url, params, function (resp, error, xhr) {
+			if (error) {
+				if (error.kind === 'transport' || error.kind === 'parse' || xhr && xhr.status >= 500) verify();
+				else fail(error, false);
+				return;
+			}
+			if (resp.success !== true || resp.restart_id !== id) { verify(); return; }
+			if (resp.new_version) cfg.expectedVersion = resp.new_version;
+			var version = String(resp.new_version || '').match(/^(\d+)\.(\d+)\.(\d+)/);
+			if (cfg.target === 'tweaker' && version && (+version[1] < 4 || +version[1] === 4 && +version[2] < 9)) legacyUrl = PT.urls.appVersion;
+			verify();
+		}, 300000);
+		return id;
 	};
 
 	// Wire the standard modal close behavior: close button + backdrop click.
@@ -500,9 +637,11 @@ window.PT = window.PT || {};
 		var pollTimer = null;
 
 		function update(running, pid) {
-			dotEl.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
-			textEl.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
-			textEl.style.color = PT.color(running ? 'success' : 'error');
+			if (dotEl) dotEl.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
+			if (textEl) {
+				textEl.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
+				textEl.style.color = PT.color(running ? 'success' : 'error');
+			}
 			if (toggleBtn) {
 				toggleBtn.textContent = running ? 'Stop' : 'Start';
 				toggleBtn.style.display = 'inline-block';
@@ -827,7 +966,7 @@ window.PT = window.PT || {};
 			editor.disabled = true;
 			setStatus(t.saving, '#2196f3');
 
-			PT.xhrPost(cfg.urls.save, 'content=' + encodeURIComponent(snapshot), function (xhr) {
+			PT.xhrPost(cfg.urls.save, PT.contentForm(snapshot), function (xhr) {
 				editor.disabled = false;
 				saveBtn.textContent = 'Save Changes';
 				if (!xhr) {

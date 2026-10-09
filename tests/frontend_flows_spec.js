@@ -44,6 +44,8 @@ function setup() {
         set src(value) { this.url = value; }
     }
     class Observer { constructor(fn) { this.fn = fn; } observe() {} disconnect() { this.disconnected = true; } }
+    class FormData { constructor() { this.parts = []; } append(name, value, filename) { this.parts.push({ name, value, filename }); } }
+    class Blob { constructor(parts) { this.data = parts.join(''); } }
     const document = { documentElement: get('root'), body: get('body'), head: get('head'),
         getElementById: get, querySelectorAll: () => [], querySelector: () => null,
         createElement: tag => new Element(tag), addEventListener() {} };
@@ -52,7 +54,7 @@ function setup() {
         MutationObserver: Observer,
         addEventListener(event, fn) { windowEvents[event] = fn; }, removeEventListener(event) { delete windowEvents[event]; },
         open() { return null; } };
-    const context = vm.createContext({ window, document, URL, Image, MutationObserver: Observer, XMLHttpRequest: XHR,
+    const context = vm.createContext({ window, document, URL, Image, MutationObserver: Observer, XMLHttpRequest: XHR, FormData, Blob,
         sessionStorage: { getItem: key => storage[key] || null, setItem(key, value) { storage[key] = value; } },
         confirm: () => true, Event: class { constructor(type) { this.type = type; } },
         setTimeout(fn, delay) { const timer = { fn, delay }; timers.push(timer); return timer; },
@@ -76,7 +78,9 @@ function setup() {
     const editor = s.get('ps-config-editor');
     editor.value = 'sent A'; editor.dispatchEvent({ type: 'input' });
     s.get('ps-config-save').click();
-    assert.match(s.requests[1].body, /content=sent%20A/);
+    assert.equal(s.requests[1].body.parts[0].name, 'content_file');
+    assert.equal(s.requests[1].body.parts[0].value.data, 'sent A');
+    assert.equal(s.requests[1].body.parts[1].value, 'token');
     s.requests[1].reply({ success: true, restarting: true });
     assert.equal(editor.disabled, false);
     editor.value = 'new B'; editor.dispatchEvent({ type: 'input' });

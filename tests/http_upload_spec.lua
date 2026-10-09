@@ -74,6 +74,17 @@ describe("page theme context", function()
         assert.equal("#00ff00", vars.pt_appearance.color_success_dark)
         assert.equal("#aabbcc", vars.pt_appearance.color_warning_dark)
     end)
+    it("uses only a bounded hexadecimal reload nonce for equal-version asset refresh", function()
+        H.begin({ fv = { _pt_reload = string.rep("a", 32) } })
+        package.loaded[CTRL] = nil
+        local vars
+        luci.template = { render = function(_, input) vars = input end }
+        require(CTRL).action_about()
+        assert.equal(vars.app_version .. "-" .. string.rep("a", 32), vars.asset_version)
+        H.state().fv._pt_reload = '\" onclick=\"bad'
+        require(CTRL).action_about()
+        assert.equal(vars.app_version, vars.asset_version)
+    end)
 end)
 
 describe("appearance HTTP adapter", function()

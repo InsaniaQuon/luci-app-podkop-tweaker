@@ -345,39 +345,34 @@ describe("api_subs.settings_save", function()
     it("interval 0: resets schedule, removes hotplug, clamps log count", function()
         local SUB = begin_subs({})
         H.vfs_write("/etc/hotplug.d/iface/99-pt-subs", "old")
+        H.vfs_write("/etc/crontabs/root", "0 0 * * * /usr/bin/pt-auto-update\n")
         assert.same({ success = true }, SUB.settings_save("0", "01:30", false, "100"))
         local st = read_subs_json().settings
         assert.equal(0, st.auto_update_interval)
         assert.equal("", st.auto_update_start)
         assert.equal(false, st.auto_update_on_restart)
         assert.equal(25, st.log_display_count)
-        assert.truthy(H.vfs_exists("/usr/bin/pt-auto-update"))
+        assert.falsy(H.vfs_exists("/usr/bin/pt-auto-update"), "disabled triggers do not need a launcher")
         local cleanup = false
-        local rmhot = false
         for _, c in ipairs(H.exec_cmds()) do
-            if c:find("grep -v pt-auto-update", 1, true) then cleanup = true end
-        end
-        for _, c in ipairs(H.execute_cmds()) do
-            if c:find("rm -f /etc/hotplug.d/iface/99-pt-subs", 1, true) then rmhot = true end
+            if c:find("crontab '/tmp/pt-subscriptions.cron'", 1, true) then cleanup = true end
         end
         assert.truthy(cleanup)
-        assert.truthy(rmhot)
-        -- actual file removal is shell territory (os.execute stubbed); command log above is the contract
+        assert.falsy(H.vfs_exists("/etc/hotplug.d/iface/99-pt-subs"))
     end)
 
     it("valid interval: cron hours computed, hotplug written when enabled", function()
-        local SUB = begin_subs({})
+        local installed
+        local SUB = begin_subs({ sys = { { match = "crontab '/tmp/pt-subscriptions.cron'", out = function()
+            installed = H.vfs_read("/tmp/pt-subscriptions.cron")
+            return "\nPT_EXIT:0\n"
+        end } } })
         assert.same({ success = true }, SUB.settings_save("4", "01:30", true, "5"))
         local st = read_subs_json().settings
         assert.equal(4, st.auto_update_interval)
         assert.equal("01:30", st.auto_update_start)
         assert.equal(5, st.log_display_count)
-        local cron_line = nil
-        for _, c in ipairs(H.exec_cmds()) do
-            local m = c:match("echo '(%d+ %d+[%d,]*) %* %* %* /usr/bin/pt%-auto%-update'")
-            if m then cron_line = m end
-        end
-        assert.equal("30 1,5,9,13,17,21", cron_line)
+        assert.equal("30 1,5,9,13,17,21 * * * /usr/bin/pt-auto-update\n", installed)
         local hp = H.vfs_read("/etc/hotplug.d/iface/99-pt-subs")
         assert.truthy(hp:find("ifup", 1, true))
         assert.truthy(hp:find("pt%-auto%-update"))
@@ -394,6 +389,36 @@ describe("api_subs.settings_save", function()
         local S = require("pt-subs-lib")
         S.write_subs = function() return false end
         assert.same({ error = "Failed to save settings" }, SUB.settings_save("0", "", false, "10"))
+    end)
+
+    it("log-only save preserves schedule, slots and unknown fields without scheduler commands", function()
+        local SUB = begin_subs({})
+        H.vfs_write(SUBS, '{"settings":{"auto_update_interval":4,"auto_update_start":"01:30","auto_update_on_restart":true,"future":"keep"},"main":[{"subscription_url":"https://s"}]}')
+        assert.same({ success = true }, SUB.settings_save(nil, nil, nil, "15", true))
+        local data = read_subs_json()
+        assert.equal(4, data.settings.auto_update_interval)
+        assert.equal("01:30", data.settings.auto_update_start)
+        assert.is_true(data.settings.auto_update_on_restart)
+        assert.equal("keep", data.settings.future)
+        assert.equal(15, data.settings.log_display_count)
+        assert.equal("https://s", data.main[1].subscription_url)
+        assert.same({}, H.exec_cmds())
+        assert.falsy(H.vfs_exists("/usr/bin/pt-auto-update"))
+    end)
+
+    it("reports launcher and cron failures instead of claiming complete setup success", function()
+        local SUB = begin_subs({ failures = { ["/usr/bin/pt-auto-update.tmp-write"] = { write = true } } })
+        local r = SUB.settings_save("4", "01:30", true, "10")
+        assert.is_false(r.success)
+        assert.is_true(r.settings_saved)
+        assert.equal(4, read_subs_json().settings.auto_update_interval)
+        assert.same({}, H.exec_cmds())
+        H.finish()
+        SUB = begin_subs({ sys = { { match = "crontab ", out = "permission denied\nPT_EXIT:1\n" } } })
+        r = SUB.settings_save("4", "01:30", true, "10")
+        assert.is_false(r.success)
+        assert.matches("permission denied", r.details)
+        assert.truthy(H.vfs_exists("/etc/hotplug.d/iface/99-pt-subs"), "independent WAN setup still runs after cron failure")
     end)
 end)
 

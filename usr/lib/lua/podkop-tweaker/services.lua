@@ -24,6 +24,7 @@ M.singbox = {
 
 M.SINGBOX_CONFIG = M.singbox.config
 M.SINGBOX_BACKUP = M.singbox.backup
+M.SINGBOX_MAX_SIZE = 2097152
 
 M.ops = {
     podkop  = { svc = M.podkop,  init = "podkop",   pid = "sing-box" },
@@ -38,7 +39,7 @@ M.UPDATE_LOG_MAX = 25
 function M.singbox_content_check(content, empty_msg)
     if type(content) ~= "string" then return false, "Configuration must be text" end
     if content == "" then return false, empty_msg end
-    if #content > 2097152 then return false, "Config too large (max 2MB)" end
+    if #content > M.SINGBOX_MAX_SIZE then return false, "Config too large (max 2MB)" end
     if content:find("\0", 1, true) then return false, "Invalid content: contains null bytes" end
     return true
 end
@@ -69,10 +70,17 @@ function M.read_file(path, limit)
     return content
 end
 
-function M.write_file_checked(path, content)
+function M.write_file_checked(path, content, mode)
     if type(content) ~= "string" then return false, "Content must be text or binary bytes" end
     local fd = io.open(path, "wb")
     if not fd then return false, "Cannot write temporary file" end
+    -- Private staging (e.g. root crontab) must be private before any bytes land.
+    if mode and (type(mode) ~= "string" or not mode:match("^[0-7][0-7][0-7]$") or
+        not LIB.exit_ok(os.execute("chmod " .. mode .. " " .. LIB.shell_escape(path) .. " 2>/dev/null"))) then
+        fd:close()
+        os.remove(path)
+        return false, "Cannot set file permissions"
+    end
     local written, write_err = fd:write(content)
     local closed, close_err = fd:close()
     if not written or not closed then
@@ -85,7 +93,7 @@ end
 function M.write_file_atomic(path, content, options)
     options = options or {}
     local tmp = path .. (options.suffix or ".tmp-write")
-    local written, write_err = M.write_file_checked(tmp, content)
+    local written, write_err = M.write_file_checked(tmp, content, options.mode)
     if not written then return false, write_err end
     if options.executable and not LIB.exit_ok(os.execute("chmod 755 " .. LIB.shell_escape(tmp) .. " 2>/dev/null")) then
         os.remove(tmp)

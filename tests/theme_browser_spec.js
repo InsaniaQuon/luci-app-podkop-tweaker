@@ -1,4 +1,4 @@
-// theme_browser_spec.js | v4.1.0 | 09.10.2026 | In-frame clipboard icons and Stubby guidance
+// theme_browser_spec.js | v4.2.0 | 09.10.2026 | Real reliability, multipart and mobile flows
 // node tests/theme_browser_spec.js --browser <installed Chromium/Edge executable>
 // Add --diagnostics-only, --update-only or --copy-only for focused form checks.
 // All generated files and the isolated browser profile live under ROOT/tmp.
@@ -15,8 +15,9 @@ const browser = process.argv[process.argv.indexOf('--browser') + 1];
 const diagnosticsOnly = process.argv.includes('--diagnostics-only');
 const updateOnly = process.argv.includes('--update-only');
 const copyOnly = process.argv.includes('--copy-only');
-const focused = diagnosticsOnly || updateOnly || copyOnly;
-if ([diagnosticsOnly, updateOnly, copyOnly].filter(Boolean).length > 1) throw new Error('Choose one focused mode');
+const reliabilityOnly = process.argv.includes('--reliability-only');
+const focused = diagnosticsOnly || updateOnly || copyOnly || reliabilityOnly;
+if ([diagnosticsOnly, updateOnly, copyOnly, reliabilityOnly].filter(Boolean).length > 1) throw new Error('Choose one focused mode');
 if (!process.argv.includes('--browser') || !browser) throw new Error('Supply --browser <installed executable>');
 const artifacts = path.join(root, 'tmp', 'theme-smoke');
 assert.ok(fs.existsSync(path.dirname(artifacts)), 'ROOT/tmp must exist');
@@ -116,18 +117,21 @@ function diagnosticsFixture() {
     // Provider probes are mapped to a local image: exercise real browser events
     // without sending DNS/HTTP test traffic to a third-party from the host.
     const probes = `window.probeURLs=[];window.Image=class{constructor(){this.img=document.createElement('img');this.img.onload=()=>this.onload&&this.onload();this.img.onerror=()=>this.onerror&&this.onerror();}set src(url){if(!url)return;window.probeURLs.push(url);this.img.src='/testapi/probe.png';}};`;
-    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style><link rel="stylesheet" href="/common.css?v=${appVersion}"></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};${probes}</script><script src="/common.js?v=${appVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${appVersion}"><style>${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};${probes}</script><script src="/common.js?v=${appVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
 }
 
 const localApplyRequests = [];
 let localApplyFailure = false;
-function updateFixture(mode) {
+let localRestart = null;
+const resourceVersions = [];
+function updateFixture(mode, nonce) {
+    const assetVersion = appVersion + (nonce ? '-' + nonce : '');
     const view = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/view/podkop-tweaker/update.htm'), 'utf8');
     const marker = '<span hidden id="ps-theme-context" data-theme="argon" data-mode="dark" data-profile="soft"></span>';
     const markup = view.slice(view.indexOf('<div class="cbi-map"'), view.indexOf('<link rel="stylesheet"')).replace('<%+podkop-tweaker/tabs%>', marker);
     const scripts = [...view.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
-    const bootstrap = { csrf: 'browser-token', urls: { upload: '/testapi/local-upload?case=' + mode, apply: '/testapi/local-apply?case=' + mode } };
-    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${appVersion}"></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};</script><script src="/common.js?v=${appVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+    const bootstrap = { csrf: 'browser-token', urls: { upload: '/testapi/local-upload?case=' + mode, apply: '/testapi/local-apply?case=' + mode, restartStatus: '/testapi/restart-status' } };
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${assetVersion}"></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};</script><script src="/common.js?v=${assetVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
 }
 
 // Use real page markup/bootstrap/scripts; intercept native copy events so the
@@ -135,7 +139,7 @@ function updateFixture(mode) {
 function copyFixture(name) {
     const view = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/view/podkop-tweaker', name + '.htm'), 'utf8');
     const marker = '<span hidden id="ps-theme-context" data-theme="argon" data-mode="dark" data-profile="soft"></span>';
-    const markup = view.slice(view.indexOf('<div class="cbi-map"'), view.indexOf('<link rel="stylesheet"')).replace('<%+podkop-tweaker/tabs%>', marker);
+    const markup = view.slice(view.indexOf('<div class="cbi-map"'), view.indexOf('<link rel="stylesheet"')).replace('<%+podkop-tweaker/tabs%>', marker).replace(/<%[\s\S]*?%>/g, '');
     const scripts = [...view.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
     const bootstrap = scripts[0][1].replace(/<%=([\s\S]*?)%>/g, (_, expr) => {
         if (expr.includes('app_version')) return appVersion;
@@ -147,6 +151,27 @@ function copyFixture(name) {
 }
 
 const copyLogLines = Array.from({ length: 15 }, (_, i) => [`09.10.2026 12:${String(i).padStart(2, '0')}|manual|updated=1|unchanged=0|failed=0`, `  main-${i}: updated`, `    detail ${i}: <script>plain text</script>`]).flat();
+const contentRequests = [], subscriptionRequests = [];
+const subscriptionSettings = { auto_update_interval: 4, auto_update_start: '01:30', auto_update_on_restart: true, log_display_count: 10 };
+let subscriptionFailure = false, brokenSchedule = false;
+function multipartFields(body, contentType) {
+    const match = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/);
+    assert.ok(match, 'multipart boundary is supplied by the browser');
+    const boundary = Buffer.from('--' + (match[1] || match[2]));
+    const result = {};
+    let offset = body.indexOf(boundary) + boundary.length + 2;
+    while (offset > 0 && offset < body.length) {
+        const headerEnd = body.indexOf('\r\n\r\n', offset);
+        if (headerEnd < 0) break;
+        const headers = body.subarray(offset, headerEnd).toString();
+        const end = body.indexOf(Buffer.concat([Buffer.from('\r\n'), boundary]), headerEnd + 4);
+        if (end < 0) break;
+        const name = headers.match(/name="([^"]+)"/);
+        if (name) result[name[1]] = body.subarray(headerEnd + 4, end).toString('utf8');
+        offset = end + 2 + boundary.length + 2;
+    }
+    return result;
+}
 
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -154,14 +179,49 @@ const server = http.createServer((req, res) => {
         res.setHeader('Content-Type', 'text/html'); res.end(copyFixture(url.searchParams.get('view')));
     } else if (url.pathname.startsWith('/copyapi/')) {
         const endpoint = url.pathname.slice('/copyapi/'.length);
+        if (req.method === 'POST') {
+            const chunks = []; let size = 0;
+            req.on('data', data => { size += data.length; assert.ok(size < 5000000); chunks.push(data); });
+            req.on('end', () => {
+                const body = Buffer.concat(chunks);
+                res.setHeader('Content-Type', 'application/json');
+                if (['save_config', 'save_stubby_config', 'save_singbox_config', 'import_config', 'import_stubby_config', 'import_singbox_config', 'import_bundle'].includes(endpoint)) {
+                    const fields = multipartFields(body, req.headers['content-type']);
+                    assert.equal(fields.token, 'browser-token');
+                    assert.ok(Buffer.byteLength(fields.content_file) > 102400);
+                    contentRequests.push({ endpoint, fields });
+                    res.end(JSON.stringify(endpoint === 'import_bundle' ? { success: true, results: { podkop: { ok: true } } } : { success: true, unchanged: true }));
+                } else {
+                    const fields = Object.fromEntries(new URLSearchParams(body.toString()));
+                    assert.equal(fields.token, 'browser-token');
+                    subscriptionRequests.push({ endpoint, fields });
+                    if (subscriptionFailure) { subscriptionFailure = false; res.statusCode = 403; res.end('<html>LuCI login</html>'); return; }
+                    if (endpoint === 'settings_save') {
+                        subscriptionSettings.log_display_count = +fields.log_display_count;
+                        if (fields.log_only !== '1') Object.assign(subscriptionSettings, { auto_update_interval: +fields.auto_update_interval, auto_update_start: fields.auto_update_start, auto_update_on_restart: fields.auto_update_on_restart === '1' });
+                    }
+                    res.end(JSON.stringify({ success: true, updated: 0, unchanged: 1, failed: 0 }));
+                }
+            });
+            return;
+        }
         if (['read_config', 'read_stubby_config', 'read_singbox_config'].includes(endpoint)) {
             res.setHeader('Content-Type', 'text/plain'); res.end("config settings 'settings'\n    option enabled '1'\n");
         } else {
             res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify(endpoint === 'read_update_log' ? { lines: copyLogLines } : endpoint === 'subscription_state' ? { sections: [] } : { running: false, status: 'fixed' }));
+            const response = endpoint === 'read_update_log' ? { lines: copyLogLines } : endpoint === 'subscription_state' ? { sections: [] } : endpoint === 'settings_read' ? subscriptionSettings : endpoint === 'auto_update_status' ? {
+                cron: { enabled: true, matches: !brokenSchedule, running: !brokenSchedule, expected: '30 1,5,9,13,17,21 * * * /usr/bin/pt-auto-update' },
+                launcher: { matches: !brokenSchedule, executable: !brokenSchedule }, hotplug: { enabled: true, matches: !brokenSchedule, executable: !brokenSchedule },
+                last_auto: { ts: '12:00 09.10.2026', updated: 0, unchanged: 2, failed: 1 }
+            } : { running: false, status: 'fixed' };
+            res.end(JSON.stringify(response));
         }
     } else if (url.pathname === '/local-update-form') {
-        res.setHeader('Content-Type', 'text/html'); res.end(updateFixture(url.searchParams.get('case')));
+        res.setHeader('Content-Type', 'text/html'); res.end(updateFixture(url.searchParams.get('case'), url.searchParams.get('_pt_reload')));
+    } else if (url.pathname === '/testapi/restart-status') {
+        res.setHeader('Content-Type', 'application/json');
+        const restarted = localRestart && Date.now() - localRestart.at >= 1500;
+        res.end(JSON.stringify(localRestart && localRestart.id === url.searchParams.get('id') ? { ...localRestart, restarted, ready: restarted } : { error: 'No matching operation' }));
     } else if (url.pathname === '/testapi/local-upload' || url.pathname === '/testapi/local-apply') {
         let body = ''; req.on('data', data => { body += data; }); req.on('end', () => {
             res.setHeader('Content-Type', 'application/json');
@@ -174,7 +234,8 @@ const server = http.createServer((req, res) => {
                 const params = Object.fromEntries(new URLSearchParams(body));
                 if (params.token !== 'browser-token') { res.statusCode = 403; res.end('{}'); return; }
                 localApplyRequests.push({ mode, params });
-                res.end(JSON.stringify(localApplyFailure ? { success: false, error: 'Update application failed', details: 'mock IO failure' } : { success: true, reinstalled: mode === 'same' }));
+                localRestart = { id: params.restart_id, at: Date.now(), state: localApplyFailure ? 'failed' : 'applied', expected_version: appVersion, installed_version: appVersion };
+                res.end(JSON.stringify(localApplyFailure ? { success: false, error: 'Update application failed', details: 'mock IO failure' } : { success: true, reinstalled: mode === 'same', restart_id: params.restart_id, new_version: appVersion }));
             }
         });
     } else if (url.pathname === '/diagnostics-form') {
@@ -215,6 +276,7 @@ const server = http.createServer((req, res) => {
         res.setHeader('Content-Type', 'text/html');
         res.end(appearanceFixture());
     } else if (url.pathname === '/common.css' || url.pathname === '/common.js') {
+        resourceVersions.push(url.searchParams.get('v'));
         res.setHeader('Content-Type', url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript');
         res.end(fs.readFileSync(path.join(repo, 'www/luci-static/resources/podkop-tweaker', url.pathname.slice(1))));
     } else if (url.pathname.endsWith('/cascade.css') || url.pathname.endsWith('/dark.css')) {
@@ -246,7 +308,7 @@ function connect(endpoint) {
             call(method, params = {}, sessionId) {
                 return new Promise((resolve, reject) => {
                     const id = ++seq;
-                    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 15000);
+                    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, method === 'Page.captureScreenshot' ? 60000 : 15000);
                     pending.set(id, { resolve, reject, timer });
                     ws.send(JSON.stringify({ id, method, params, sessionId }));
                 });
@@ -290,7 +352,9 @@ async function main() {
             throw new Error(`Waiting for ${expression} === ${expected} failed`);
         };
         const screenshot = async (name, width) => {
+            await cdp.call('Page.bringToFront', {}, sessionId);
             const metrics = await cdp.call('Page.getLayoutMetrics', {}, sessionId);
+            assert.ok(metrics.cssContentSize.height < 20000, name + ': unexpected page height ' + metrics.cssContentSize.height);
             const shot = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width, height: Math.ceil(metrics.cssContentSize.height), scale: 1 } }, sessionId);
             fs.writeFileSync(path.join(artifacts, name + '.png'), Buffer.from(shot.data, 'base64'));
         };
@@ -518,6 +582,14 @@ async function main() {
         const opener = await cdp.call('Runtime.evaluate', { expression: 'window.opener === null', returnByValue: true }, childSession);
         assert.equal(opener.result.value, true);
         console.log('PASS real Diagnostics form: local mock probes, exact resolver run log and bounded native Podkop tab navigation');
+        for (const width of [390, 768]) {
+            await cdp.call('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: false }, sessionId);
+            const layout = await evaluate(`(() => {const wrap=document.querySelector('.ps-split-5050'),w=wrap.getBoundingClientRect(),a=wrap.querySelector('.ps-split-left').getBoundingClientRect(),b=wrap.querySelector('.ps-split-right').getBoundingClientRect();return {width:w.width,left:a.width,right:b.width,stacked:b.top>=a.bottom,overflow:document.documentElement.scrollWidth>innerWidth,offenders:Array.from(wrap.querySelectorAll('*')).filter(el=>el.getBoundingClientRect().right>innerWidth+1).map(el=>({tag:el.tagName,id:el.id,cls:el.className,right:el.getBoundingClientRect().right,text:el.textContent.slice(0,60)}))};})()`);
+            assert.ok(Math.abs(layout.left - layout.width) < 1 && Math.abs(layout.right - layout.width) < 1, 'both mobile Diagnostics panels must use the full width');
+            assert.equal(layout.stacked, true); assert.equal(layout.overflow, false, JSON.stringify(layout));
+            if (width === 390) await screenshot('diagnostics-mobile', width);
+        }
+        await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false }, sessionId);
         }
         if (!diagnosticsOnly && !copyOnly) {
             for (const mode of ['older', 'newer', 'same']) {
@@ -540,11 +612,66 @@ async function main() {
                 if (mode === 'same') {
                     localApplyFailure = false;
                     await evaluate('document.getElementById("ps-apply-btn").click()');
-                    await wait('document.getElementById("ps-apply-status").textContent', 'Reinstallation complete! Reloading...');
+                    await wait('document.getElementById("ps-apply-status").textContent', 'Waiting for LuCI and operation confirmation...');
                     assert.equal(await evaluate('document.getElementById("ps-file-input").disabled'), true);
+                    const id = localApplyRequests.at(-1).params.restart_id;
+                    assert.match(id, /^[a-f0-9]{32}$/);
+                    await wait('location.search.includes("_pt_reload=")', true);
+                    await wait('document.readyState', 'complete');
+                    assert.ok(resourceVersions.includes(appVersion + '-' + id), 'reinstall refreshes equal-version assets');
                 }
             }
             console.log('PASS real Local Update form: Update/Reinstall/older actions, multipart+CSRF, explicit reinstall flag, failure recovery and success lock');
+        }
+        if (!focused || reliabilityOnly) {
+            await cdp.call('Page.navigate', { url: base + '/copy-form?view=subscriptions' }, sessionId);
+            await wait('document.readyState', 'complete');
+            await wait('!!document.getElementById("ps-opt-save")', true);
+            await wait('document.getElementById("ps-auto-status").textContent.includes("Expected cron entry found")', true);
+            await evaluate('window.confirm=()=>true;document.getElementById("ps-log-display-count").value="15";document.getElementById("ps-log-settings-save").click()');
+            await wait('document.getElementById("ps-log-settings-status").textContent', 'Saved');
+            assert.equal(subscriptionSettings.auto_update_interval, 4);
+            assert.equal(subscriptionSettings.auto_update_start, '01:30');
+            assert.equal(subscriptionSettings.auto_update_on_restart, true);
+            assert.deepEqual(Object.keys(subscriptionRequests.at(-1).fields).sort(), ['log_display_count', 'log_only', 'token']);
+            subscriptionFailure = true;
+            await evaluate('document.getElementById("ps-subs-update-all").click()');
+            await wait('document.getElementById("ps-global-status").textContent.includes("HTTP error: 403")', true);
+            assert.equal(await evaluate('document.getElementById("ps-subs-update-all").disabled'), false);
+            brokenSchedule = true;
+            await evaluate('document.getElementById("ps-subs-refresh").click()');
+            await wait('document.getElementById("ps-auto-status").textContent.includes("Missing or different cron entry")', true);
+            await cdp.call('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false }, sessionId);
+            assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
+            await screenshot('subscriptions-auto-status-mobile', 390);
+            await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false }, sessionId);
+            const text = "config section 'main'\n\toption user_domains_text '" + 'пример.рф\n'.repeat(14000) + "'\n";
+            for (const name of ['config', 'stubby', 'singbox']) {
+                await cdp.call('Page.navigate', { url: base + '/copy-form?view=' + name }, sessionId);
+                await wait('document.getElementById("ps-config-editor")?.disabled', false);
+                const content = name === 'singbox' ? JSON.stringify({ outbounds: [{ type: 'direct', tag: 'direct' }], route: { rules: [{ domain: Array.from({ length: 14000 }, (_, i) => 'домен' + i + '.рф'), outbound: 'direct' }] } }) : text;
+                await evaluate(`document.getElementById('ps-config-editor').value=${JSON.stringify(content)};document.getElementById('ps-config-editor').dispatchEvent(new Event('input'));document.getElementById('ps-config-save').click()`);
+                await wait('document.getElementById("ps-config-editor").disabled', false);
+                assert.equal(contentRequests.at(-1).fields.content_file, content);
+                assert.equal(contentRequests.at(-1).endpoint, name === 'config' ? 'save_config' : name === 'stubby' ? 'save_stubby_config' : 'save_singbox_config');
+                assert.equal(await evaluate('document.getElementById("ps-config-save").disabled'), true);
+            }
+            for (const bundle of [true, false]) {
+                await cdp.call('Page.navigate', { url: base + '/copy-form?view=import-export' }, sessionId);
+                await wait('document.readyState', 'complete');
+                const content = bundle ? JSON.stringify({ format: 'podkop-tweaker-bundle', version: 1, items: { podkop: { content: text }, stubby: { content: "config stubby 'global'" } } }) : text;
+                await evaluate(`(() => {const transfer=new DataTransfer();transfer.items.add(new File([${JSON.stringify(content)}],'input.txt'));const input=document.getElementById('ps-import-file');input.files=transfer.files;input.dispatchEvent(new Event('change'));document.getElementById('ps-import-open').click();})()`);
+                await wait('document.getElementById("ps-import-modal").style.display', 'flex');
+                if (bundle) await evaluate('document.querySelector("#ps-import-review-list input[value=stubby]").checked=false');
+                await evaluate('document.getElementById("ps-import-confirm").click()');
+                await wait('document.getElementById("ps-import-close").style.display', '');
+                assert.equal(contentRequests.at(-1).fields.content_file, content);
+                assert.equal(contentRequests.at(-1).endpoint, bundle ? 'import_bundle' : 'import_config');
+                if (bundle) assert.equal(contentRequests.at(-1).fields.items, 'podkop');
+            }
+            console.log('PASS real reliability forms: isolated log preference, HTTP failure recovery, actual scheduler facts/mobile, large UTF-8 editor saves and config/bundle imports');
+            subscriptionSettings.log_display_count = 10;
+            brokenSchedule = false;
         }
         if (!focused || copyOnly) {
             const copy = async selector => {
@@ -673,7 +800,7 @@ async function main() {
             console.log('PASS clipboard controls: in-frame SVG/accessible feedback, real editors/error/diff/command/log forms, Stubby guidance, native HTTP copy, secure API, full literal HTML, selection+scroll+dirty preservation, keyboard and light/dark/mobile controls');
         }
         if (!focused) fs.writeFileSync(path.join(artifacts, 'computed-colors.json'), JSON.stringify(reports, null, 2));
-        console.log(copyOnly ? 'Native clipboard checks: PASS' : updateOnly ? 'Native Local Update checks: PASS' : diagnosticsOnly ? 'Native Diagnostics checks: PASS (DNS flow, light/dark result guide and Podkop navigation)' : `Native browser theme checks: PASS (${reports.length} scheme/profile scenarios + real forms; screenshots in ROOT/tmp/theme-smoke)`);
+        console.log(copyOnly ? 'Native clipboard checks: PASS' : updateOnly ? 'Native Local Update checks: PASS' : diagnosticsOnly ? 'Native Diagnostics checks: PASS (DNS flow, light/dark result guide and Podkop navigation)' : reliabilityOnly ? 'Native reliability checks: PASS (mobile, multipart, independent schedule settings and restart confirmation)' : `Native browser theme checks: PASS (${reports.length} scheme/profile scenarios + real forms; screenshots in ROOT/tmp/theme-smoke)`);
     } finally {
         if (cdp) { await cdp.call('Browser.close').catch(() => {}); cdp.close(); }
         child.kill();

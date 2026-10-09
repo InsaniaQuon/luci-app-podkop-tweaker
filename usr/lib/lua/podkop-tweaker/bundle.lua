@@ -133,9 +133,8 @@ local function apply_subs(data, subs_file)
             interval = 0
             start_time = ""
         end
-        SCHED.create_auto_update_script()
-        SCHED.setup_cron(interval, start_time)
-        SCHED.setup_hotplug(clean.settings.auto_update_on_restart == true)
+        local ok, err = SCHED.apply(interval, start_time, clean.settings.auto_update_on_restart == true)
+        if not ok then return false, "Subscriptions saved, but scheduling failed: " .. tostring(err) end
     end
     return true
 end

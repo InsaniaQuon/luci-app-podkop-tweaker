@@ -5,6 +5,7 @@ local LIB = require("podkop-tweaker.lib")
 local S = require("pt-subs-lib")
 local ARCHIVE = require("podkop-tweaker.archive")
 local NET = require("podkop-tweaker.net")
+local WEB = require("podkop-tweaker.web_restart")
 
 local M = {}
 
@@ -32,11 +33,7 @@ local function cleanup_tmp(tmp_dir)
 end
 
 local function read_cache()
-    local fd = io.open(CHECK_CACHE_FILE, "r")
-    if not fd then return nil end
-    local raw = fd:read("*a")
-    fd:close()
-    return S.json_parse(raw)
+    return S.json_parse(SRV.read_file(CHECK_CACHE_FILE, 8192))
 end
 
 local VERSION = ""
@@ -59,6 +56,25 @@ function M.cached_latest()
         end
     end
     return latest
+end
+
+function M.cached_update()
+    local cache = read_cache()
+    if type(cache) ~= "table" or type(cache.cached_at) ~= "number" or os.time() - cache.cached_at < 0
+        or os.time() - cache.cached_at >= CHECK_CACHE_TTL or type(cache.latest_version) ~= "string" then return nil end
+    return { latest_version = cache.latest_version,
+        download_url = M.valid_git_url(cache.download_url) and cache.download_url or "",
+        update_available = LIB.version_lt(VERSION, cache.latest_version), current_version = VERSION }
+end
+
+function M.restart_status(id)
+    local response = WEB.status(id)
+    if not response.id then return response end
+    if response.target == "theme" then response.installed_version = require("podkop-tweaker.theme").installed_version()
+    else response.installed_version = VERSION end
+    response.ready = response.state == "applied" and response.restarted == true and
+        (response.target == "cache" or response.installed_version == response.expected_version)
+    return response
 end
 
 local function extract_version_from_file(dir_prefix)
@@ -180,11 +196,10 @@ local function apply_extracted(extract_dir, tmp_dir, relaxed, files)
     cleanup_deprecated()
     cleanup_tmp(tmp_dir)
     sys.exec("rm -rf /tmp/luci-modulecache 2>/dev/null")
-    sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
     return copied
 end
 
-function M.apply(reinstall_raw)
+local function apply(reinstall_raw)
     local nixio = require("nixio")
 
     local tmp_dir = "/tmp/pt-update"
@@ -220,15 +235,19 @@ function M.apply(reinstall_raw)
     return response
 end
 
-function M.clear_cache()
-    local sys = require("luci.sys")
+function M.apply(reinstall_raw, restart_id)
+    return WEB.run(restart_id, "tweaker", function() return apply(reinstall_raw) end)
+end
 
-    os.execute("rm -rf /tmp/luci-* 2>/dev/null")
-    os.remove(CHECK_CACHE_FILE)
-
-    sys.exec("nohup /etc/init.d/uhttpd restart >/dev/null 2>&1 &")
-
-    return { success = true }
+function M.clear_cache(restart_id)
+    return WEB.run(restart_id, "cache", function()
+        if not LIB.exit_ok(os.execute("rm -rf /tmp/luci-* 2>/dev/null")) then return { error = "Cannot clear LuCI caches" } end
+        local fd, err, errno = io.open(CHECK_CACHE_FILE, "rb")
+        if fd then
+            if not fd:close() or not os.remove(CHECK_CACHE_FILE) then return { error = "Cannot clear update cache" } end
+        elseif errno ~= 2 then return { error = "Cannot read update cache", details = err } end
+        return { success = true }
+    end)
 end
 
 function M.read_log()
@@ -313,7 +332,7 @@ function M.check_update()
     }
 end
 
-function M.git_update(download_url, force_raw)
+local function git_update(download_url, force_raw)
 
     local force = force_raw == "1"
 
@@ -344,6 +363,10 @@ function M.git_update(download_url, force_raw)
         new_version = archive_ver,
         files_copied = copied
     }
+end
+
+function M.git_update(download_url, force_raw, restart_id)
+    return WEB.run(restart_id, "tweaker", function() return git_update(download_url, force_raw) end)
 end
 
 function M.valid_git_url(url)

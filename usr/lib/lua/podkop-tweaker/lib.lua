@@ -2,6 +2,7 @@
 -- Author: InsaniaQuon
 
 local M = {}
+M.UCI_MAX_SIZE = 1048576
 
 function M.shell_escape(value)
     return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
@@ -55,7 +56,7 @@ function M.validate_uci_config(content)
     if not content or content == "" then
         return false, "Configuration is empty"
     end
-    if #content > 1048576 then
+    if #content > M.UCI_MAX_SIZE then
         return false, "Config too large (max 1MB)"
     end
     if not content:match("config%s+") then

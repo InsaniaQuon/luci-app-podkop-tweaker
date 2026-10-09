@@ -5,6 +5,7 @@ local H = require("podkop-tweaker.http")
 local SRV = require("podkop-tweaker.services")
 
 local M = {}
+M.CONFIG_MAX_SIZE = SRV.SINGBOX_MAX_SIZE
 
 function M.read_config()
     H.send_text_file(SRV.SINGBOX_CONFIG)

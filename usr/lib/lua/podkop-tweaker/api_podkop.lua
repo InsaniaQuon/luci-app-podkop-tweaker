@@ -9,6 +9,7 @@ local UPD = require("podkop-tweaker.api_update")
 local THEME = require("podkop-tweaker.theme")
 
 local M = {}
+M.CONFIG_MAX_SIZE = LIB.UCI_MAX_SIZE
 
 local PODKOP_INSTALL_URL = "https://raw.githubusercontent.com/itdoginfo/podkop/refs/heads/main/install.sh"
 local PODKOP_CHECK_CACHE = "/tmp/pt_podkop_check.json"
@@ -101,6 +102,7 @@ function M.system_info()
     -- theme detect once; no installed theme -> no network check at all
     local argon_ver = THEME.installed_version()
     local argon_latest = argon_ver and theme_latest_auto() or nil
+    local tweaker = UPD.cached_update() or {}
 
     if not info or not info.podkop_version then
         return {
@@ -112,7 +114,8 @@ function M.system_info()
             device_model = "unknown",
             update_available = false,
             tweaker_version = UPD.get_version(),
-            tweaker_latest = nil,
+            tweaker_latest = tweaker.latest_version,
+            tweaker_download_url = tweaker.download_url,
             argon_theme_version = argon_ver,
             argon_theme_latest = argon_latest,
             error = "Failed to get system info from podkop"
@@ -133,7 +136,8 @@ function M.system_info()
         device_model = info.device_model or "unknown",
         update_available = snapshot.update_available or false,
         tweaker_version = UPD.get_version(),
-        tweaker_latest = UPD.cached_latest(),
+        tweaker_latest = tweaker.latest_version,
+        tweaker_download_url = tweaker.download_url,
         argon_theme_version = argon_ver,
         argon_theme_latest = argon_latest
     }

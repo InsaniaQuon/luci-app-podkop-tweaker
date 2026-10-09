@@ -37,6 +37,9 @@ jobs:
       - name: Run frontend clipboard regressions
         run: node tests/frontend_copy_spec.js
 
+      - name: Run frontend reliability regressions
+        run: node tests/frontend_reliability_spec.js
+
   release:
     needs: test
     runs-on: ubuntu-latest

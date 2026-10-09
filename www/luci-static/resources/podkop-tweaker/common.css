@@ -265,7 +265,11 @@ editor (--ps-editor-bg). All text, borders and status colors are semantic.
 .ps-split-left{flex:0 0 65%;max-width:65%}
 .ps-split-right{flex:1;min-width:0}
 .ps-split-layout.ps-split-5050 .ps-split-left{flex:0 0 50%;max-width:50%}
-@media(max-width:768px){.ps-split-layout{flex-direction:column}.ps-split-left,.ps-split-right{flex:none;max-width:100%}}
+@media(max-width:768px){.ps-split-layout{flex-direction:column}.ps-split-layout>.ps-split-left,.ps-split-layout>.ps-split-right,.ps-split-layout.ps-split-5050>.ps-split-left{flex:none;width:100%;max-width:100%;min-width:0}}
+.ps-auto-status{margin-top:12px}
+.ps-auto-status .ps-sysinfo-table th{width:38%;white-space:normal;overflow-wrap:anywhere}
+.ps-auto-status .ps-sysinfo-table td{white-space:normal;overflow-wrap:anywhere}
+.ps-auto-status-note{color:var(--ps-text-muted);font-size:12px;margin:8px 0}
 .ps-log-settings{display:flex;align-items:center;gap:8px;padding:6px 0;flex-wrap:wrap}
 .ps-log-settings-label{font-size:13px;color:var(--ps-text)}
 .ps-log-settings-select{padding:2px 6px;font-size:13px;border:1px solid var(--ps-border);border-radius:4px;background:var(--ps-bg);color:var(--ps-text)}

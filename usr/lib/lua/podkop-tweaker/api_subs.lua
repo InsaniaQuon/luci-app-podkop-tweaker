@@ -169,17 +169,26 @@ function M.settings_read()
     }
 end
 
-function M.settings_save(interval_raw, start_time, on_restart, log_display_raw)
+function M.settings_save(interval_raw, start_time, on_restart, log_display_raw, log_only)
     local interval = tonumber(interval_raw or "0") or 0
     local log_display = tonumber(log_display_raw or "10") or 10
     if log_display < 1 then log_display = 1 end
     if log_display > 25 then log_display = 25 end
+    log_display = math.floor(log_display)
+
+    if log_only == true then
+        local subs = S.read_subs(SRV.SUBS_FILE)
+        subs.settings = type(subs.settings) == "table" and subs.settings or {}
+        subs.settings.log_display_count = log_display
+        if not S.write_subs(subs, SRV.SUBS_FILE) then return { error = "Failed to save settings" } end
+        return { success = true }
+    end
 
     if interval > 0 then
-        if interval < 1 or interval > 24 then
+        if interval < 1 or interval > 24 or interval ~= math.floor(interval) then
             return { error = "Interval must be 1-24 hours" }
         end
-        if not start_time:match("^%d%d:%d%d$") then
+        if type(start_time) ~= "string" or not start_time:match("^%d%d:%d%d$") then
             return { error = "Invalid start time, use HH:MM" }
         end
         local sh = tonumber(start_time:sub(1, 2))
@@ -203,12 +212,16 @@ function M.settings_save(interval_raw, start_time, on_restart, log_display_raw)
         return { error = "Failed to save settings" }
     end
 
-    SCHED.create_auto_update_script()
-
-    SCHED.setup_cron(interval, start_time)
-    SCHED.setup_hotplug(on_restart)
+    local ok, err = SCHED.apply(interval, start_time, on_restart)
+    if not ok then
+        return { success = false, settings_saved = true, error = "Settings saved, but scheduling failed", details = err }
+    end
 
     return { success = true }
+end
+
+function M.auto_update_status()
+    return SCHED.status(M.settings_read(), SRV.UPDATE_LOG_FILE)
 end
 
 function M.update_all()

@@ -6,6 +6,7 @@ local LIB = require("podkop-tweaker.lib")
 local S = require("pt-subs-lib")
 
 local M = {}
+M.CONFIG_MAX_SIZE = LIB.UCI_MAX_SIZE
 
 local STUBBY_RECOMMENDED = [[
 config stubby 'global'

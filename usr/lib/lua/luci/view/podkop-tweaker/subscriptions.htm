@@ -28,6 +28,7 @@ Author: InsaniaQuon
                 <div class="ps-sysinfo-error" id="ps-subs-error" style="display:none;"></div>
 
                 <div id="ps-options-container" style="display:none;"></div>
+                <div class="ps-auto-status" id="ps-auto-status" aria-live="polite">Loading auto-update status...</div>
 
                 <div class="ps-warning-box">
                     <strong>&#9888; Info:</strong> Attach a subscription URL to each proxy slot. When you update a subscription, the proxy link will be replaced with the selected server from the subscription response. A backup is created automatically before each change.
@@ -94,7 +95,7 @@ Author: InsaniaQuon
     </div>
 </div>
 
-<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=asset_version%>">
 <script>
 window.PT = {
     version: '<%= app_version %>',
@@ -108,12 +109,13 @@ window.PT = {
         service_status: '<%=url("admin/services/podkop-tweaker/api/service_status")%>',
         settings_read: '<%=url("admin/services/podkop-tweaker/api/settings_read")%>',
         settings_save: '<%=url("admin/services/podkop-tweaker/api/settings_save")%>',
+        auto_status: '<%=url("admin/services/podkop-tweaker/api/auto_update_status")%>',
         update_all: '<%=url("admin/services/podkop-tweaker/api/update_all_subs")%>',
         read_log: '<%=url("admin/services/podkop-tweaker/api/read_update_log")%>'
     }
 };
 </script>
-<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=asset_version%>"></script>
 
 <script>
 (function() {
@@ -139,6 +141,38 @@ window.PT = {
     var currentSection = null;
     var currentIndex = -1;
     var fetchedProxies = [];
+    var busySlots = {};
+    var allPending = false;
+    var optionsLoaded = false;
+
+    function requestError(el, error) {
+        PT.setErr(el, error && error.message || 'Invalid response', error && error.details);
+    }
+
+    function slotError(section, index, error) {
+        requestError(document.getElementById('ps-slot-status-' + section + '-' + index), error);
+    }
+
+    function slotBusy(section, index, busy) {
+        var key = section + ':' + index;
+        if (busy) busySlots[key] = true; else delete busySlots[key];
+        contentEl.querySelectorAll('[data-section]').forEach(function(btn) {
+            btn.disabled = allPending || !!busySlots[btn.getAttribute('data-section') + ':' + btn.getAttribute('data-index')];
+        });
+        updateAllBtn.disabled = allPending || Object.keys(busySlots).length > 0;
+    }
+
+    function beginSlot(section, index) {
+        if (!section || index < 0 || allPending || busySlots[section + ':' + index]) return false;
+        slotBusy(section, index, true);
+        return true;
+    }
+
+    function validProxies(resp) {
+        return resp.success === true && Array.isArray(resp.proxies) && resp.proxies.every(function(proxy) {
+            return proxy && typeof proxy.link === 'string' && typeof proxy.name === 'string';
+        });
+    }
 
     function setFetchStatus(text, color) {
         subFetchStatus.textContent = text;
@@ -166,6 +200,7 @@ window.PT = {
         }
 
         contentEl.innerHTML = html;
+        slotBusy('', -1, false);
     }
 
     function renderError(msg) {
@@ -176,17 +211,15 @@ window.PT = {
     }
 
     function fetchState(cb) {
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', PT.urls.state);
-        xhr.onload = function() {
-            if (xhr.status !== 200) { cb(null, xhr.status, false); return; }
-            var data = null;
-            var parseFailed = false;
-            try { data = JSON.parse(xhr.responseText); } catch (e) { parseFailed = true; }
-            cb(data, xhr.status, parseFailed);
-        };
-        xhr.onerror = function() { cb(null, 0, false); };
-        xhr.send();
+        PT.getJson(PT.urls.state, function(data, status) {
+            var valid = data && !data.error && Array.isArray(data.sections) && data.sections.every(function(sec) {
+                return sec && typeof sec.name === 'string' && Array.isArray(sec.slots) && sec.slots.every(function(slot) {
+                    return slot && typeof slot.index === 'number' && slot.index >= 0
+                        && (!slot.proxy || typeof slot.proxy === 'object') && (!slot.subscription || typeof slot.subscription === 'object');
+                });
+            });
+            cb(valid ? data : null, status, status === 200 && !valid);
+        });
     }
 
     function loadState() {
@@ -205,8 +238,9 @@ window.PT = {
     }
 
     function loadStateSilent() {
-        fetchState(function(data) {
+        fetchState(function(data, status) {
             if (data) renderSections(data);
+            else setGlobalStatus(status ? 'Cannot refresh sections (HTTP ' + status + ')' : 'Cannot refresh sections: network error', 'error');
         });
     }
 
@@ -276,6 +310,7 @@ window.PT = {
                 var temp = document.createElement('div');
                 temp.innerHTML = buildSectionHTML(sec);
                 sections[i].parentNode.replaceChild(temp.firstChild, sections[i]);
+                slotBusy('', -1, false);
                 return;
             }
         }
@@ -330,6 +365,7 @@ window.PT = {
     });
 
     function doFetch() {
+        if (subFetchBtn.disabled) return;
         var url = subUrlInput.value.trim();
         if (!url) { setFetchStatus('Enter a URL', '#f44336'); return; }
 
@@ -338,22 +374,15 @@ window.PT = {
         setFetchStatus('Downloading...', '#2196f3');
         subProxiesEl.style.display = 'none';
 
-        PT.xhrPost(PT.urls.fetch, 'url=' + encodeURIComponent(url), function(xhr) {
+        PT.postJson(PT.urls.fetch, 'url=' + encodeURIComponent(url), function(resp, error) {
             subFetchBtn.disabled = false;
             subFetchBtn.textContent = 'Fetch';
-            if (xhr.status === 200) {
-                try {
-                    var resp = JSON.parse(xhr.responseText);
-                    if (resp.success && resp.proxies) {
-                        fetchedProxies = resp.proxies;
-                        renderProxyList();
-                        var warn = resp.http_warning ? ' (HTTP - not encrypted)' : '';
-                        setFetchStatus(resp.proxies.length + ' proxy(ies) found' + warn, resp.http_warning ? '#e67e22' : '#4caf50');
-                    } else {
-                        setFetchStatus(resp.error || 'Unknown error', '#f44336');
-                    }
-                } catch (e) { setFetchStatus('Invalid response', '#f44336'); }
-            } else { setFetchStatus('HTTP error: ' + xhr.status, '#f44336'); }
+            if (!error && validProxies(resp)) {
+                fetchedProxies = resp.proxies;
+                renderProxyList();
+                var warn = resp.http_warning ? ' (HTTP - not encrypted)' : '';
+                setFetchStatus(resp.proxies.length + ' proxy(ies) found' + warn, resp.http_warning ? '#e67e22' : '#4caf50');
+            } else requestError(subFetchStatus, error);
         });
     }
 
@@ -388,148 +417,113 @@ window.PT = {
     }
 
     function waitForRestart(callback) {
-        var attempts = 0, max = 8;
-        var iv = setInterval(function() {
-            var xhr = new XMLHttpRequest();
-            xhr.open('GET', PT.urls.service_status);
-            xhr.onload = function() {
-                attempts++;
-                if (xhr.status === 200) {
-                    try {
-                        var r = JSON.parse(xhr.responseText);
-                        if (r.running) {
-                            clearInterval(iv);
-                            if (callback) callback();
-                        }
-                    } catch(e) {}
-                }
-                if (attempts >= max) {
-                    clearInterval(iv);
-                    if (callback) callback();
-                }
-            };
-            xhr.onerror = function() {
-                attempts++;
-                if (attempts >= max) { clearInterval(iv); if (callback) callback(); }
-            };
-            xhr.send();
-        }, 2000);
+        PT.statusWatcher(PT.urls.service_status).poll(function() { callback(true); }, function() { callback(false); });
     }
 
     function doAttach(section, index, subUrl, proxy) {
         if (!confirm('Apply proxy "' + (proxy.name || 'unknown') + '" to section "' + section + '" slot ' + (index + 1) + '?')) return;
+        if (!beginSlot(section, index)) return;
 
         setFetchStatus('Applying...', '#2196f3');
 
-        PT.xhrPost(PT.urls.attach,
+        PT.postJson(PT.urls.attach,
             'section=' + encodeURIComponent(section)
             + '&index=' + index
             + '&subscription_url=' + encodeURIComponent(subUrl)
             + '&proxy_name=' + encodeURIComponent(proxy.name || '')
             + '&link=' + encodeURIComponent(proxy.link || ''),
-            function(xhr) {
-                if (xhr.status === 200) {
-                    try {
-                        var resp = JSON.parse(xhr.responseText);
-                        if (resp.success) {
-                            closeModal();
-                            setGlobalStatus('Restarting service...', '#2196f3');
-                            waitForRestart(function() {
-                                setGlobalStatus('Updated successfully', '#4caf50');
-                                loadSectionState(section);
-                                loadUpdateLog();
-                            });
-                        } else {
-                            setFetchStatus(resp.error || 'Unknown error', '#f44336');
-                        }
-                    } catch (e) { setFetchStatus('Invalid response', '#f44336'); }
-                } else { setFetchStatus('HTTP error: ' + xhr.status, '#f44336'); }
+            function(resp, error) {
+                if (!error && resp.success === true) {
+                    closeModal();
+                    setGlobalStatus('Restarting service...', '#2196f3');
+                    function finish(running) {
+                        slotBusy(section, index, false);
+                        setGlobalStatus(running ? 'Updated successfully' : 'Applied; service restart not confirmed', running ? 'success' : 'warning');
+                        loadSectionState(section);
+                        loadUpdateLog();
+                    }
+                    if (resp.restarting) waitForRestart(finish); else finish(true);
+                } else { slotBusy(section, index, false); requestError(subFetchStatus, error); }
             });
     }
 
     function doUpdate(section, index, subUrl, proxyName) {
+        if (!beginSlot(section, index)) return;
         setSlotStatus(section, index, 'Updating...', '#2196f3');
 
-        PT.xhrPost(PT.urls.fetch, 'url=' + encodeURIComponent(subUrl), function(xhr) {
-            if (xhr.status === 200) {
-                try {
-                    var resp = JSON.parse(xhr.responseText);
-                    if (resp.success && resp.proxies) {
-                        var found = null;
-                        if (proxyName) {
-                            for (var i = 0; i < resp.proxies.length; i++) {
-                                if (resp.proxies[i].name === proxyName) { found = resp.proxies[i]; break; }
-                            }
-                        }
-                        if (!found && resp.proxies.length === 1) found = resp.proxies[0];
-                        if (found) {
-                            if (resp.http_warning) setSlotStatus(section, index, 'HTTP subscription - not encrypted', '#e67e22');
-                            doAttachDirect(section, index, subUrl, found);
-                        } else {
-                            openModal(section, index, subUrl);
-                            fetchedProxies = resp.proxies;
-                            renderProxyList();
-                            setFetchStatus('Previous proxy not found. Select a new one.', '#ff9800');
-                            setSlotStatus(section, index, '', '');
-                        }
-                    } else {
-                        setSlotStatus(section, index, resp.error || 'Fetch failed', '#f44336');
+        PT.postJson(PT.urls.fetch, 'url=' + encodeURIComponent(subUrl), function(resp, error) {
+            if (!error && validProxies(resp)) {
+                var found = null;
+                if (proxyName) {
+                    for (var i = 0; i < resp.proxies.length; i++) {
+                        if (resp.proxies[i].name === proxyName) { found = resp.proxies[i]; break; }
                     }
-                } catch (e) { setSlotStatus(section, index, 'Invalid response', '#f44336'); }
-            } else { setSlotStatus(section, index, 'HTTP error: ' + xhr.status, '#f44336'); }
+                }
+                if (!found && resp.proxies.length === 1) found = resp.proxies[0];
+                if (found) {
+                    if (resp.http_warning) setSlotStatus(section, index, 'HTTP subscription - not encrypted', '#e67e22');
+                    doAttachDirect(section, index, subUrl, found, true);
+                } else {
+                    slotBusy(section, index, false);
+                    openModal(section, index, subUrl);
+                    fetchedProxies = resp.proxies;
+                    renderProxyList();
+                    setFetchStatus('Previous proxy not found. Select a new one.', '#ff9800');
+                    setSlotStatus(section, index, '', '');
+                }
+            } else { slotBusy(section, index, false); slotError(section, index, error); }
         });
     }
 
-    function doAttachDirect(section, index, subUrl, proxy) {
+    function doAttachDirect(section, index, subUrl, proxy, locked) {
+        if (!locked && !beginSlot(section, index)) return;
         setSlotStatus(section, index, 'Applying...', '#2196f3');
 
-        PT.xhrPost(PT.urls.attach,
+        PT.postJson(PT.urls.attach,
             'section=' + encodeURIComponent(section)
             + '&index=' + index
             + '&subscription_url=' + encodeURIComponent(subUrl)
             + '&proxy_name=' + encodeURIComponent(proxy.name || '')
             + '&link=' + encodeURIComponent(proxy.link || ''),
-            function(xhr) {
-                if (xhr.status === 200) {
-                    try {
-                        var resp = JSON.parse(xhr.responseText);
-                        if (resp.success) {
-                            setSlotStatus(section, index, 'Restarting...', '#2196f3');
-                            waitForRestart(function() {
-                                if (resp.unchanged) {
-                                    setSlotStatus(section, index, 'Up to date', '#4caf50');
-                                } else {
-                                    setSlotStatus(section, index, 'Updated', '#4caf50');
-                                }
-                                loadSectionState(section);
-                                loadUpdateLog();
-                            });
-                        } else {
-                            setSlotStatus(section, index, resp.error || 'Unknown error', '#f44336');
-                        }
-                    } catch (e) { setSlotStatus(section, index, 'Invalid response', '#f44336'); }
-                } else { setSlotStatus(section, index, 'HTTP error: ' + xhr.status, '#f44336'); }
+            function(resp, error) {
+                if (!error && resp.success === true) {
+                    setSlotStatus(section, index, 'Restarting...', '#2196f3');
+                    function finish(running) {
+                        slotBusy(section, index, false);
+                        if (!running) setSlotStatus(section, index, 'Applied; service restart not confirmed', 'warning');
+                        else setSlotStatus(section, index, resp.unchanged ? 'Up to date' : 'Updated', 'success');
+                        loadSectionState(section);
+                        loadUpdateLog();
+                    }
+                    if (resp.restarting) waitForRestart(finish); else finish(true);
+                } else { slotBusy(section, index, false); slotError(section, index, error); }
             });
     }
 
     function doDetach(section, index) {
         if (!confirm('Remove subscription association from slot ' + (index + 1) + '?\nThe proxy link will remain in the config.')) return;
+        if (!beginSlot(section, index)) return;
 
-        PT.xhrPost(PT.urls.detach,
+        PT.postJson(PT.urls.detach,
             'section=' + encodeURIComponent(section) + '&index=' + index,
-            function(xhr) {
-                if (xhr.status === 200) { loadSectionState(section); }
+            function(resp, error) {
+                slotBusy(section, index, false);
+                if (!error && resp.success === true) loadSectionState(section);
+                else slotError(section, index, error);
             });
     }
 
     // === Options ===
     function loadOptions() {
         PT.getJson(PT.urls.settings_read, function(r) {
-            if (r) renderOptions(r);
+            if (r && !r.error && typeof r.auto_update_interval === 'number' && typeof r.auto_update_start === 'string'
+                && typeof r.auto_update_on_restart === 'boolean' && typeof r.log_display_count === 'number') renderOptions(r);
+            else { optionsContainer.style.display = ''; PT.setErr(optionsContainer, 'Cannot load options. Use Refresh Sections to retry.'); }
         });
     }
 
     function renderOptions(settings) {
+        optionsLoaded = true;
         var interval = settings.auto_update_interval || 0;
         var startVal = settings.auto_update_start || '00:00';
         var restartVal = !!settings.auto_update_on_restart;
@@ -617,6 +611,8 @@ window.PT = {
         });
 
         document.getElementById('ps-opt-save').addEventListener('click', function() {
+            var save = this;
+            if (save.disabled) return;
             var cronChecked = document.getElementById('ps-opt-cron').checked;
             var intervalVal = parseInt(document.getElementById('ps-opt-interval').value, 10);
             var startInput = document.getElementById('ps-opt-start').value.trim();
@@ -646,72 +642,83 @@ window.PT = {
             statusEl.textContent = 'Saving...';
             statusEl.style.color = PT.color('info');
 
-            PT.xhrPost(PT.urls.settings_save,
+            save.disabled = true;
+            PT.postJson(PT.urls.settings_save,
                 'auto_update_interval=' + (cronChecked ? intervalVal : '0')
                 + '&auto_update_start=' + encodeURIComponent(cronChecked ? startInput : '')
                 + '&auto_update_on_restart=' + (restartChecked ? '1' : '0')
                 + '&log_display_count=' + (document.getElementById('ps-log-display-count') || {}).value,
-                function(xhr) {
-                    if (xhr.status === 200) {
-                        try {
-                            var resp = JSON.parse(xhr.responseText);
-                            if (resp.success) {
+                function(resp, error) {
+                    save.disabled = false;
+                    if (!error && resp.success === true) {
                                 statusEl.textContent = 'Saved';
                                 statusEl.style.color = PT.color('success');
-                            } else {
-                                statusEl.textContent = resp.error || 'Save failed';
-                                statusEl.style.color = PT.color('error');
-                            }
-                        } catch (e) { statusEl.textContent = 'Invalid response'; statusEl.style.color = PT.color('error'); }
-                    } else { statusEl.textContent = 'HTTP error: ' + xhr.status; statusEl.style.color = PT.color('error'); }
+                    } else requestError(statusEl, error);
+                    loadAutoStatus();
                 });
         });
     }
 
     // === Update All Subs ===
     updateAllBtn.addEventListener('click', function() {
+        if (allPending || Object.keys(busySlots).length > 0) return;
         if (!confirm('Update all subscribed proxy slots from their subscription URLs?')) return;
 
-        updateAllBtn.disabled = true;
+        allPending = true;
+        slotBusy('', -1, false);
         setGlobalStatus('Updating subscriptions...', '#2196f3');
 
-        PT.xhrPost(PT.urls.update_all, '', function(xhr) {
-            if (xhr.status !== 200) {
-                setGlobalStatus('HTTP error: ' + xhr.status, '#f44336');
-                updateAllBtn.disabled = false;
-                return;
-            }
-            var resp;
-            try { resp = JSON.parse(xhr.responseText); } catch (e) {
-                setGlobalStatus('Invalid response', '#f44336');
-                updateAllBtn.disabled = false;
-                return;
-            }
-            if (resp.error) {
-                setGlobalStatus(resp.error, '#f44336');
-                updateAllBtn.disabled = false;
+        PT.postJson(PT.urls.update_all, '', function(resp, error) {
+            if (error || resp.success !== true || !['updated', 'unchanged', 'failed'].every(function(key) {
+                return typeof resp[key] === 'number' && isFinite(resp[key]) && resp[key] >= 0;
+            })) {
+                allPending = false;
+                slotBusy('', -1, false);
+                requestError(globalStatus, error);
                 return;
             }
             var msg = (resp.updated || 0) + ' updated, ' + (resp.unchanged || 0) + ' unchanged'
                 + ((resp.failed || 0) > 0 ? ', ' + resp.failed + ' failed' : '');
             if (resp.restarted) {
                 setGlobalStatus('Restarting service...', '#2196f3');
-                waitForRestart(function() {
-                    setGlobalStatus('Done: ' + msg, (resp.failed || 0) > 0 ? '#ff9800' : '#4caf50');
-                    updateAllBtn.disabled = false;
+                waitForRestart(function(running) {
+                    setGlobalStatus((running ? 'Done: ' : 'Applied; service restart not confirmed: ') + msg, !running || resp.failed > 0 ? 'warning' : 'success');
+                    allPending = false;
+                    slotBusy('', -1, false);
                     loadStateSilent();
                     loadUpdateLog();
                 });
             } else {
                 setGlobalStatus('Done: ' + msg, (resp.failed || 0) > 0 ? '#ff9800' : '#4caf50');
-                updateAllBtn.disabled = false;
+                allPending = false;
+                slotBusy('', -1, false);
                 loadStateSilent();
                 loadUpdateLog();
             }
-        });
+        }, 300000);
     });
 
-    refreshBtn.addEventListener('click', function() { loadStateSilent(); });
+    refreshBtn.addEventListener('click', function() { loadStateSilent(); loadAutoStatus(); if (!optionsLoaded) loadOptions(); });
+
+    function loadAutoStatus() {
+        var el = document.getElementById('ps-auto-status');
+        PT.getJson(PT.urls.auto_status, function(r) {
+            if (!r || !r.cron || !r.launcher || !r.hotplug) { PT.setErr(el, 'Cannot read auto-update status'); return; }
+            var cron = r.cron, launcher = r.launcher, hook = r.hotplug;
+            var enabled = cron.enabled || hook.enabled;
+            var rows = [
+                ['Schedule', cron.error ? 'Cannot read crontab' : cron.matches ? (cron.enabled ? 'Expected cron entry found' : 'Disabled; no cron entry') : 'Missing or different cron entry'],
+                ['Cron daemon', cron.running ? 'Running' : cron.enabled ? 'Not running; scheduled checks cannot start' : 'Not running'],
+                ['Launcher', launcher.error ? 'Cannot read launcher' : launcher.matches && launcher.executable ? 'Expected executable script found' : enabled ? 'Missing, changed or not executable' : 'Not required while auto-update is disabled'],
+                ['WAN trigger', hook.error ? 'Cannot read hotplug hook' : hook.enabled ? (hook.matches && hook.executable ? 'Expected executable WAN hook found' : 'Missing, changed or not executable') : hook.exists ? 'Disabled in settings, but hook is still present' : 'Disabled; no hook'],
+                ['Last completed automatic check', r.last_auto ? r.last_auto.ts + ' — updated=' + r.last_auto.updated + ', unchanged=' + r.last_auto.unchanged + ', failed=' + r.last_auto.failed : 'No completion found in the recent log window']
+            ];
+            if (cron.expected) rows.splice(1, 0, ['Expected entry (router time)', cron.expected]);
+            el.innerHTML = '<h4>Actual Auto-Update Status</h4><table class="ps-sysinfo-table"><tbody>' + rows.map(function(row) {
+                return '<tr><th>' + PT.escapeHtml(row[0]) + '</th><td>' + PT.escapeHtml(row[1]) + '</td></tr>';
+            }).join('') + '</tbody></table><p class="ps-auto-status-note">Current setup facts and the last journaled completion; they do not guarantee a future run. Cron and WAN checks share the auto log label.</p>';
+        });
+    }
 
     var allLogLines = [];
 
@@ -769,8 +776,10 @@ window.PT = {
         var wrap = document.getElementById('ps-log-wrap');
         var fullLogBtn = document.getElementById('ps-full-log-btn');
         PT.getJson(PT.urls.read_log, function(resp) {
-            if (!resp) {
+            if (!resp || !Array.isArray(resp.lines) || !resp.lines.every(function(line) { return typeof line === 'string'; })) {
                 wrap.innerHTML = '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">Failed to load log</div>';
+                fullLogBtn.style.display = 'none';
+                allLogLines = [];
                 return;
             }
             allLogLines = resp.lines || [];
@@ -795,32 +804,20 @@ window.PT = {
     var logSettingsSave = document.getElementById('ps-log-settings-save');
     var logSettingsStatus = document.getElementById('ps-log-settings-status');
     logSettingsSave.addEventListener('click', function() {
+        if (logSettingsSave.disabled) return;
         var count = parseInt(document.getElementById('ps-log-display-count').value) || 10;
         logSettingsStatus.textContent = 'Saving...';
         logSettingsStatus.style.color = PT.color('info');
-        PT.getJson(PT.urls.settings_read, function(current) {
-            current = current || {};
-            PT.xhrPost(PT.urls.settings_save,
-                'auto_update_interval=' + (current.auto_update_interval || 0)
-                + '&auto_update_start=' + encodeURIComponent(current.auto_update_start || '')
-                + '&auto_update_on_restart=' + (current.auto_update_on_restart ? '1' : '0')
-                + '&log_display_count=' + count,
-                function(xhr) {
-                    if (xhr && xhr.status === 200) {
-                        try {
-                            var resp = JSON.parse(xhr.responseText);
-                            if (resp.success) {
+        logSettingsSave.disabled = true;
+        PT.postJson(PT.urls.settings_save, 'log_only=1&log_display_count=' + count,
+                function(resp, error) {
+                    logSettingsSave.disabled = false;
+                    if (!error && resp.success === true) {
                                 logSettingsStatus.textContent = 'Saved';
                                 logSettingsStatus.style.color = PT.color('success');
                                 loadUpdateLog();
-                            } else {
-                                logSettingsStatus.textContent = resp.error || 'Save failed';
-                                logSettingsStatus.style.color = PT.color('error');
-                            }
-                        } catch (e) { logSettingsStatus.textContent = 'Invalid response'; logSettingsStatus.style.color = PT.color('error'); }
-                    } else { logSettingsStatus.textContent = xhr ? 'HTTP error' : 'Network error'; logSettingsStatus.style.color = PT.color('error'); }
+                    } else requestError(logSettingsStatus, error);
                 });
-        });
     });
 
     var fullLogModal = document.getElementById('ps-full-log-modal');
@@ -837,6 +834,7 @@ window.PT = {
 
     loadState();
     loadOptions();
+    loadAutoStatus();
     loadUpdateLog();
 })();
 </script>

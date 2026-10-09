@@ -41,7 +41,7 @@ Author: InsaniaQuon
     </div>
 </div>
 
-<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=app_version%>">
+<link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=asset_version%>">
 <script>
 window.PT = {
     version: '<%= app_version %>',
@@ -49,11 +49,12 @@ window.PT = {
     urls: {
         appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>',
         upload: '<%=url("admin/services/podkop-tweaker/api/upload_update")%>',
-        apply: '<%=url("admin/services/podkop-tweaker/api/apply_update")%>'
+        apply: '<%=url("admin/services/podkop-tweaker/api/apply_update")%>',
+        restartStatus: '<%=url("admin/services/podkop-tweaker/api/restart_status")%>'
     }
 };
 </script>
-<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=app_version%>"></script>
+<script src="<%=resource%>/podkop-tweaker/common.js?v=<%=asset_version%>"></script>
 
 <script>
 (function() {
@@ -67,6 +68,7 @@ window.PT = {
     var actionsEl = document.getElementById('ps-update-actions');
     var uploading = false;
     var applying = false;
+    var archiveVersion = '';
 
     function setStatus(text, color) {
         resultEl.style.display = '';
@@ -81,6 +83,7 @@ window.PT = {
     }
 
     function showResult(data) {
+        archiveVersion = data.archive_version;
         resultEl.style.display = '';
         currentVerEl.textContent = 'v' + data.current_version;
         archiveVerEl.textContent = 'v' + data.archive_version;
@@ -150,27 +153,13 @@ window.PT = {
         statusEl.textContent = reinstall ? 'Reinstalling...' : 'Applying update...';
         statusEl.style.color = PT.color('info');
 
-        PT.xhrPost(PT.urls.apply, reinstall ? 'reinstall=1' : '', function(xhr) {
-            if (xhr && xhr.status === 200) {
-                try {
-                    var resp = JSON.parse(xhr.responseText);
-                    if (resp.success) {
-                        statusEl.textContent = reinstall ? 'Reinstallation complete! Reloading...' : 'Update applied! Reloading...';
-                        statusEl.style.color = PT.color('success');
-                        setTimeout(function() { window.location.reload(); }, 5000);
-                        return;
-                    } else {
-                        PT.setErr(statusEl, resp.error || 'Update failed', resp.details);
-                    }
-                } catch (e) {
-                    PT.setErr(statusEl, 'Invalid response', xhr.responseText);
-                }
-            } else {
-                PT.setErr(statusEl, xhr ? 'HTTP error: ' + xhr.status : 'Network error', xhr && xhr.responseText);
+        PT.restartAction({ target: 'tweaker', url: PT.urls.apply, params: reinstall ? 'reinstall=1' : '', status: statusEl,
+            expectedVersion: archiveVersion, onFailure: function(error, uncertain) {
+                if (uncertain) return;
+                applying = false;
+                fileInput.disabled = false;
+                applyBtn.disabled = false;
             }
-            applying = false;
-            fileInput.disabled = false;
-            applyBtn.disabled = false;
         });
     }
 

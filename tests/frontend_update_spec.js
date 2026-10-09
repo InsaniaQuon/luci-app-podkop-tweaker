@@ -119,7 +119,7 @@ uploadPreview({ current_version: '4.7.0', archive_version: '4.7.0', same_version
 assert.match(elements['ps-update-actions'].textContent, /Reinstall/);
 elements['ps-apply-btn'].listeners.click();
 const reinstall = requests[requests.length - 1];
-assert.equal(reinstall.body, 'token=test-token&reinstall=1');
+assert.match(reinstall.body, /^token=test-token&reinstall=1&restart_id=[a-f0-9]{32}$/);
 assert.equal(elements['ps-apply-btn'].disabled, true);
 assert.equal(input.disabled, true);
 const whileApplying = requests.length;
@@ -139,7 +139,7 @@ uploadPreview({ current_version: '4.7.0', archive_version: '4.7.1', same_version
 assert.match(elements['ps-update-actions'].textContent, /Update/);
 assert.doesNotMatch(elements['ps-update-actions'].textContent, /Reinstall/);
 elements['ps-apply-btn'].listeners.click();
-assert.equal(requests[requests.length - 1].body, 'token=test-token', 'ordinary upgrade keeps its existing POST contract');
+assert.match(requests[requests.length - 1].body, /^token=test-token&restart_id=[a-f0-9]{32}$/, 'ordinary upgrade does not opt into reinstall');
 
 if (process.argv[2]) {
     const archive = fs.readFileSync(process.argv[2]);
