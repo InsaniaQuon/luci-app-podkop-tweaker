@@ -4,12 +4,52 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    outputs:
+      archiveName: ${{ steps.identity.outputs.archiveName }}
+      archiveHash: ${{ steps.archive.outputs.archiveHash }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Resolve canonical archive identity and check execution context
+        id: identity
+        shell: bash
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_REF_TYPE: ${{ github.ref_type }}
+          CI_REF: ${{ github.ref }}
+        run: |
+          APP_VERSION="$(sed -nE 's/^local[[:blank:]]+APP_VERSION[[:blank:]]*=[[:blank:]]*"([^"]+)"[[:blank:]]*$/\1/p' usr/lib/lua/luci/controller/podkop-tweaker.lua)"
+          if [[ ! "$APP_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo '::error::Controller must declare exactly one canonical X.Y.Z APP_VERSION'
+            exit 1
+          fi
+          RELEASE_TAG="v${APP_VERSION}"
+          case "${CI_EVENT_NAME}:${CI_REF_TYPE}:${CI_REF}" in
+            push:tag:"refs/tags/${RELEASE_TAG}"|workflow_dispatch:tag:"refs/tags/${RELEASE_TAG}") ;;
+            workflow_dispatch:branch:refs/heads/main) ;;
+            *)
+              printf 'Unsupported context or tag/APP_VERSION mismatch: event=%s type=%s ref=%s expected=refs/tags/%s\n' \
+                "$CI_EVENT_NAME" "$CI_REF_TYPE" "$CI_REF" "$RELEASE_TAG" >&2
+              exit 1
+              ;;
+          esac
+          printf 'Event: %s; ref: %s; canonical archive version: %s\n' "$CI_EVENT_NAME" "$CI_REF" "$RELEASE_TAG"
+          printf 'releaseTag=%s\narchiveName=luci-app-podkop-tweaker-%s.tar.gz\n' \
+            "$RELEASE_TAG" "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Set up pinned Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
 
       - name: Install Lua 5.1
         run: |
@@ -20,7 +60,29 @@ jobs:
       - name: Install busted
         run: |
           luarocks install --local --lua-version=5.1 busted
-          echo "$HOME/.luarocks/bin" >> $GITHUB_PATH
+          echo "$HOME/.luarocks/bin" >> "$GITHUB_PATH"
+
+      - name: Report and verify environment facts
+        shell: bash
+        run: |
+          source /etc/os-release
+          printf 'OS: %s\n' "$PRETTY_NAME"
+          if [[ "$ID" != ubuntu || "$VERSION_ID" != 26.04 ]]; then
+            echo '::error::Expected Ubuntu 26.04'
+            exit 1
+          fi
+          node <<'NODE'
+          const fs = require('node:fs');
+          const expected = fs.readFileSync('.node-version', 'utf8').trim();
+          console.log(`Node.js: ${process.version}; platform: ${process.platform}; arch: ${process.arch}; executable: ${process.execPath}`);
+          if (process.platform !== 'linux' || process.version !== `v${expected}`) {
+            throw new Error('Expected Linux Node.js at the exact .node-version pin');
+          }
+          NODE
+          lua5.1 -v
+          luarocks --version
+          busted --version
+          python3 --version
 
       - name: Run tests
         run: busted -o utfTerminal tests/
@@ -59,10 +121,13 @@ jobs:
         run: python3 tests/native_io.py
 
       - name: Build and verify release archive
+        id: archive
+        shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.identity.outputs.releaseTag }}
+          ARCHIVE_NAME: ${{ steps.identity.outputs.archiveName }}
         run: |
-          tar -czf "luci-app-podkop-tweaker-${RELEASE_TAG}.tar.gz" \
+          tar -czf "$ARCHIVE_NAME" \
             usr/lib/lua/luci/controller/podkop-tweaker.lua \
             usr/lib/lua/luci/view/podkop-tweaker/ \
             usr/lib/lua/podkop-tweaker/ \
@@ -75,33 +140,115 @@ jobs:
             etc/config/podkop-tweaker \
             etc/init.d/podkop-fragment \
             usr/bin/podkop-fragment-patch.sh
-          lua5.1 tests/verify_release_archive.lua "luci-app-podkop-tweaker-${RELEASE_TAG}.tar.gz" "${RELEASE_TAG}"
+          lua5.1 tests/verify_release_archive.lua "$ARCHIVE_NAME" "$RELEASE_TAG"
+          ARCHIVE_HASH="$(sha256sum -- "$ARCHIVE_NAME")"
+          printf 'archiveHash=%s\n' "${ARCHIVE_HASH%% *}" >> "$GITHUB_OUTPUT"
 
       - name: Preserve verified release bytes
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: verified-release-archive
-          path: luci-app-podkop-tweaker-*.tar.gz
+          archive: true
+          path: ${{ steps.identity.outputs.archiveName }}
           if-no-files-found: error
           retention-days: 1
 
+      - name: Prepare isolated artifact round-trip
+        id: roundtrip
+        shell: bash
+        run: |
+          mkdir -p -- "$GITHUB_WORKSPACE/.test_tmp"
+          DOWNLOAD_DIR="$(mktemp -d "$GITHUB_WORKSPACE/.test_tmp/ci-artifact-roundtrip.XXXXXXXX")"
+          printf 'path=%s\n' "$DOWNLOAD_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Download verified bytes for round-trip
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: verified-release-archive
+          path: ${{ steps.roundtrip.outputs.path }}
+          digest-mismatch: error
+
+      - name: Verify round-trip SHA256 and exact source bytes
+        shell: bash
+        env:
+          ARCHIVE_NAME: ${{ steps.identity.outputs.archiveName }}
+          ARCHIVE_HASH: ${{ steps.archive.outputs.archiveHash }}
+          RELEASE_TAG: ${{ steps.identity.outputs.releaseTag }}
+          DOWNLOAD_DIR: ${{ steps.roundtrip.outputs.path }}
+        run: |
+          shopt -s nullglob dotglob
+          entries=("$DOWNLOAD_DIR"/*)
+          if (( ${#entries[@]} != 1 )); then
+            echo '::error::Expected exactly one downloaded release archive'
+            exit 1
+          fi
+          if [[ "${entries[0]}" != "$DOWNLOAD_DIR/$ARCHIVE_NAME" || ! -f "${entries[0]}" || -L "${entries[0]}" ]]; then
+            echo '::error::Downloaded release archive name or file type mismatch'
+            exit 1
+          fi
+          # This is the application tar.gz hash, not the artifact ZIP digest.
+          printf '%s  %s\n' "$ARCHIVE_HASH" "$DOWNLOAD_DIR/$ARCHIVE_NAME" | sha256sum --check --strict -
+          lua5.1 tests/verify_release_archive.lua "$DOWNLOAD_DIR/$ARCHIVE_NAME" "$RELEASE_TAG"
+
   release:
     needs: test
-    runs-on: ubuntu-latest
+    if: >-
+      ${{ github.event_name == 'push' &&
+          github.ref_type == 'tag' &&
+          startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v6
 
+      - name: Prepare verified release download
+        id: release_archive
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          ARCHIVE_NAME: ${{ needs.test.outputs.archiveName }}
+          ARCHIVE_HASH: ${{ needs.test.outputs.archiveHash }}
+        run: |
+          if [[ "$ARCHIVE_NAME" != "luci-app-podkop-tweaker-${RELEASE_TAG}.tar.gz" || ! "$ARCHIVE_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+            echo '::error::Verified archive identity or SHA256 output is invalid for this tag'
+            exit 1
+          fi
+          mkdir -p -- "$GITHUB_WORKSPACE/.test_tmp"
+          DOWNLOAD_DIR="$(mktemp -d "$GITHUB_WORKSPACE/.test_tmp/ci-release-download.XXXXXXXX")"
+          printf 'downloadPath=%s\narchivePath=%s/%s\n' \
+            "$DOWNLOAD_DIR" "$DOWNLOAD_DIR" "$ARCHIVE_NAME" >> "$GITHUB_OUTPUT"
+
       - name: Download verified release bytes
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.2
         with:
           name: verified-release-archive
+          path: ${{ steps.release_archive.outputs.downloadPath }}
+          digest-mismatch: error
+
+      - name: Verify exact archive before publishing
+        shell: bash
+        env:
+          ARCHIVE_NAME: ${{ needs.test.outputs.archiveName }}
+          ARCHIVE_HASH: ${{ needs.test.outputs.archiveHash }}
+          DOWNLOAD_DIR: ${{ steps.release_archive.outputs.downloadPath }}
+        run: |
+          shopt -s nullglob dotglob
+          entries=("$DOWNLOAD_DIR"/*)
+          if (( ${#entries[@]} != 1 )); then
+            echo '::error::Expected exactly one downloaded release archive'
+            exit 1
+          fi
+          if [[ "${entries[0]}" != "$DOWNLOAD_DIR/$ARCHIVE_NAME" || ! -f "${entries[0]}" || -L "${entries[0]}" ]]; then
+            echo '::error::Downloaded release archive name or file type mismatch'
+            exit 1
+          fi
+          printf '%s  %s\n' "$ARCHIVE_HASH" "$DOWNLOAD_DIR/$ARCHIVE_NAME" | sha256sum --check --strict -
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
-          files: luci-app-podkop-tweaker-*.tar.gz
+          files: ${{ steps.release_archive.outputs.archivePath }}
 
       - name: Keep only last 2 releases
         env:
