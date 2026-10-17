@@ -141,16 +141,64 @@ window.PT = {
     var currentSection = null;
     var currentIndex = -1;
     var fetchedProxies = [];
+    // Only presentation expires on hide; sent mutations and slot watchers keep
+    // their own operation gates until completion or an explicit unknown result.
+    var modalGeneration = 0;
     var busySlots = {};
+    var slotNotices = {};
     var allPending = false;
     var optionsLoaded = false;
+    var lastGlobalOutcome = null;
+
+    function showNotice(el, text, role, details) {
+        if (!el) return;
+        if (details) PT.setErr(el, text, text + '\n\n' + details); else el.textContent = text;
+        el.style.color = PT.color(role);
+    }
+
+    // postJson intentionally routes application failures to error. Retain the
+    // typed body as well: counters/applied/outcomes are still authoritative.
+    function mutationPayload(resp, error) {
+        var data = resp || error && error.data;
+        return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+    }
+
+    function mutationUncertain(data, error, xhr) {
+        if (data && (data.unknown === true || data.error === 'Internal error')) return true;
+        if (error && error.kind === 'http' && xhr && xhr.status >= 500 &&
+            (!data || typeof data.success !== 'boolean' && typeof data.applied !== 'boolean')) return true;
+        if (error && error.kind === 'http' && xhr && xhr.status >= 400 && xhr.status < 500) return false;
+        return !data || (typeof data.success !== 'boolean' && typeof data.error !== 'string');
+    }
+
+    function mutationDetails(data, error) {
+        var lines = [];
+        if (data && typeof data.error === 'string') lines.push(data.error);
+        else if (error && error.message) lines.push(error.message);
+        if (data && typeof data.details === 'string') lines.push(data.details);
+        else if (error && error.details) lines.push(String(error.details));
+        if (data && data.outcomes !== undefined) lines.push('Slot outcomes:\n' + JSON.stringify(data.outcomes, null, 2));
+        return lines.join('\n\n');
+    }
+
+    function globalOutcome(text, role, details) {
+        lastGlobalOutcome = { text: text, role: role, details: details };
+        showNotice(globalStatus, text, role, details);
+    }
+
+    function renderSlotNotices() {
+        Object.keys(slotNotices).forEach(function(key) {
+            var notice = slotNotices[key];
+            showNotice(document.getElementById('ps-slot-status-' + notice.section + '-' + notice.index), notice.text, notice.role, notice.details);
+        });
+    }
 
     function requestError(el, error) {
         PT.setErr(el, error && error.message || 'Invalid response', error && error.details);
     }
 
     function slotError(section, index, error) {
-        requestError(document.getElementById('ps-slot-status-' + section + '-' + index), error);
+        setSlotStatus(section, index, error && error.message || 'Invalid response', 'error', error && error.details);
     }
 
     function slotBusy(section, index, busy) {
@@ -180,6 +228,7 @@ window.PT = {
     }
 
     function setGlobalStatus(text, color) {
+        lastGlobalOutcome = null;
         globalStatus.textContent = text;
         globalStatus.style.color = PT.color(color);
     }
@@ -201,6 +250,7 @@ window.PT = {
 
         contentEl.innerHTML = html;
         slotBusy('', -1, false);
+        renderSlotNotices();
     }
 
     function renderError(msg) {
@@ -239,8 +289,15 @@ window.PT = {
 
     function loadStateSilent() {
         fetchState(function(data, status) {
-            if (data) renderSections(data);
-            else setGlobalStatus(status ? 'Cannot refresh sections (HTTP ' + status + ')' : 'Cannot refresh sections: network error', 'error');
+            if (data) {
+                renderSections(data);
+                if (lastGlobalOutcome) showNotice(globalStatus, lastGlobalOutcome.text, lastGlobalOutcome.role, lastGlobalOutcome.details);
+            }
+            else {
+                var message = status ? 'Cannot refresh sections (HTTP ' + status + ')' : 'Cannot refresh sections: network error';
+                if (lastGlobalOutcome) showNotice(globalStatus, lastGlobalOutcome.text + ' ' + message, 'error', lastGlobalOutcome.details);
+                else setGlobalStatus(message, 'error');
+            }
         });
     }
 
@@ -311,14 +368,15 @@ window.PT = {
                 temp.innerHTML = buildSectionHTML(sec);
                 sections[i].parentNode.replaceChild(temp.firstChild, sections[i]);
                 slotBusy('', -1, false);
+                renderSlotNotices();
                 return;
             }
         }
     }
 
-    function setSlotStatus(section, index, text, color) {
-        var el = document.getElementById('ps-slot-status-' + section + '-' + index);
-        if (el) { el.textContent = text; el.style.color = PT.color(color); }
+    function setSlotStatus(section, index, text, color, details) {
+        slotNotices[section + ':' + index] = { section: section, index: index, text: text, role: color, details: details };
+        showNotice(document.getElementById('ps-slot-status-' + section + '-' + index), text, color, details);
     }
 
     // Event delegation: a single listener on the container survives per-section
@@ -342,9 +400,12 @@ window.PT = {
     });
 
     function openModal(section, index, prefillUrl) {
+        ++modalGeneration;
         currentSection = section;
         currentIndex = index;
         fetchedProxies = [];
+        subFetchBtn.disabled = false;
+        subFetchBtn.textContent = 'Fetch';
         subModalTitle.textContent = prefillUrl ? 'Change Proxy' : 'Attach Subscription';
         subUrlInput.value = prefillUrl || '';
         subProxiesEl.style.display = 'none';
@@ -354,8 +415,14 @@ window.PT = {
     }
 
     var closeModal = PT.bindModal(subModal, subCancelBtn, function() {
+        ++modalGeneration;
         currentSection = null;
         currentIndex = -1;
+        fetchedProxies = [];
+        subProxiesEl.style.display = 'none';
+        subProxyList.innerHTML = '';
+        subFetchBtn.disabled = false;
+        subFetchBtn.textContent = 'Fetch';
     });
 
     function doFetch() {
@@ -363,12 +430,16 @@ window.PT = {
         var url = subUrlInput.value.trim();
         if (!url) { setFetchStatus('Enter a URL', '#f44336'); return; }
 
+        var generation = modalGeneration;
         subFetchBtn.disabled = true;
         subFetchBtn.textContent = 'Fetching...';
         setFetchStatus('Downloading...', '#2196f3');
+        fetchedProxies = [];
         subProxiesEl.style.display = 'none';
+        subProxyList.innerHTML = '';
 
         PT.postJson(PT.urls.fetch, 'url=' + encodeURIComponent(url), function(resp, error) {
+            if (generation !== modalGeneration) return;
             subFetchBtn.disabled = false;
             subFetchBtn.textContent = 'Fetch';
             if (!error && validProxies(resp)) {
@@ -388,6 +459,7 @@ window.PT = {
 
     function renderProxyList() {
         if (fetchedProxies.length === 0) { subProxiesEl.style.display = 'none'; return; }
+        var generation = modalGeneration;
         var html = '';
         for (var i = 0; i < fetchedProxies.length; i++) {
             var p = fetchedProxies[i];
@@ -403,6 +475,7 @@ window.PT = {
         for (var j = 0; j < items.length; j++) {
             (function(item) {
                 item.addEventListener('click', function() {
+                    if (generation !== modalGeneration) return;
                     var idx = parseInt(item.getAttribute('data-idx'), 10);
                     doAttach(currentSection, currentIndex, subUrlInput.value.trim(), fetchedProxies[idx]);
                 });
@@ -410,15 +483,63 @@ window.PT = {
         }
     }
 
-    function waitForRestart(callback) {
-        PT.statusWatcher(PT.urls.service_status).poll(function() { callback(true); }, function() { callback(false); });
+    function waitForRestart(ack, callback) {
+        PT.statusWatcher(PT.urls.service_status).poll(callback, callback, ack);
+    }
+
+    function processMessage(result) {
+        if (result && result.confirmed === true) return 'A new service process instance is running.';
+        if (result && result.known === true && result.running === false) return 'Service is not running at the latest check; restart is unconfirmed.';
+        if (result && result.known === true && result.running === true) return 'Service is running, but restart is unconfirmed.';
+        return 'Service status is unknown; restart is unconfirmed.';
+    }
+
+    function finishAttachment(section, index, resp, error, xhr, generation) {
+        var modal = typeof generation === 'number';
+        var data = mutationPayload(resp, error);
+        var unknown = mutationUncertain(data, error, xhr);
+        var success = !error && data && data.success === true && !('error' in data) && !unknown;
+        var applied = data && data.applied === true;
+        var details = mutationDetails(data, error);
+
+        function finish(result) {
+            slotBusy(section, index, false);
+            var text = data.unchanged === true ? 'Association saved; proxy link unchanged. No service restart requested.' :
+                'Changes saved. ' + processMessage(result);
+            var role = data.unchanged === true || result && result.confirmed === true ? 'success' : 'warning';
+            setSlotStatus(section, index, text, role);
+            if (modal) globalOutcome(text, role);
+            loadSectionState(section);
+            loadUpdateLog();
+        }
+
+        if (success) {
+            if (modal && generation === modalGeneration) closeModal();
+            if (data.restarting === true || data.restarted === true) {
+                setSlotStatus(section, index, 'Changes saved. Verifying service process transition...', 'info');
+                if (modal) setGlobalStatus('Changes saved. Verifying service process transition...', 'info');
+                waitForRestart(data, finish);
+            } else finish(null);
+            return;
+        }
+
+        if (!unknown) slotBusy(section, index, false);
+        var text = unknown ? (applied ? 'Changes saved, but finishing result unknown. ' : 'Result unknown. ') + 'Inspect refreshed sections/logs and reload before another change; no request was retried.' :
+            applied ? 'Partially applied: changes were saved, but finishing failed.' : 'Change failed: ' + (data && data.error || error && error.message || 'Invalid response');
+        if (data && data.restart_required === true) text += ' A service restart is still required; no process transition was confirmed.';
+        if (applied || unknown) globalOutcome(text, 'error', details);
+        setSlotStatus(section, index, text, 'error', details);
+        if (modal && generation === modalGeneration) showNotice(subFetchStatus, text, 'error', details);
+        if (applied || unknown) { loadSectionState(section); loadUpdateLog(); }
     }
 
     function doAttach(section, index, subUrl, proxy) {
         if (!confirm('Apply proxy "' + (proxy.name || 'unknown') + '" to section "' + section + '" slot ' + (index + 1) + '?')) return;
         if (!beginSlot(section, index)) return;
 
+        var generation = modalGeneration;
         setFetchStatus('Applying...', '#2196f3');
+        setSlotStatus(section, index, 'Applying...', 'info');
 
         PT.postJson(PT.urls.attach,
             'section=' + encodeURIComponent(section)
@@ -426,23 +547,12 @@ window.PT = {
             + '&subscription_url=' + encodeURIComponent(subUrl)
             + '&proxy_name=' + encodeURIComponent(proxy.name || '')
             + '&link=' + encodeURIComponent(proxy.link || ''),
-            function(resp, error) {
-                if (!error && resp.success === true) {
-                    closeModal();
-                    setGlobalStatus('Restarting service...', '#2196f3');
-                    function finish(running) {
-                        slotBusy(section, index, false);
-                        setGlobalStatus(running ? 'Updated successfully' : 'Applied; service restart not confirmed', running ? 'success' : 'warning');
-                        loadSectionState(section);
-                        loadUpdateLog();
-                    }
-                    if (resp.restarting) waitForRestart(finish); else finish(true);
-                } else { slotBusy(section, index, false); requestError(subFetchStatus, error); }
-            });
+            function(resp, error, xhr) { finishAttachment(section, index, resp, error, xhr, generation); });
     }
 
     function doUpdate(section, index, subUrl, proxyName) {
         if (!beginSlot(section, index)) return;
+        var generation = modalGeneration;
         setSlotStatus(section, index, 'Updating...', '#2196f3');
 
         PT.postJson(PT.urls.fetch, 'url=' + encodeURIComponent(subUrl), function(resp, error) {
@@ -459,6 +569,10 @@ window.PT = {
                     doAttachDirect(section, index, subUrl, found, true);
                 } else {
                     slotBusy(section, index, false);
+                    if (generation !== modalGeneration) {
+                        setSlotStatus(section, index, 'Previous proxy not found. Use Change to select a new one.', 'warning');
+                        return;
+                    }
                     openModal(section, index, subUrl);
                     fetchedProxies = resp.proxies;
                     renderProxyList();
@@ -479,31 +593,31 @@ window.PT = {
             + '&subscription_url=' + encodeURIComponent(subUrl)
             + '&proxy_name=' + encodeURIComponent(proxy.name || '')
             + '&link=' + encodeURIComponent(proxy.link || ''),
-            function(resp, error) {
-                if (!error && resp.success === true) {
-                    setSlotStatus(section, index, 'Restarting...', '#2196f3');
-                    function finish(running) {
-                        slotBusy(section, index, false);
-                        if (!running) setSlotStatus(section, index, 'Applied; service restart not confirmed', 'warning');
-                        else setSlotStatus(section, index, resp.unchanged ? 'Up to date' : 'Updated', 'success');
-                        loadSectionState(section);
-                        loadUpdateLog();
-                    }
-                    if (resp.restarting) waitForRestart(finish); else finish(true);
-                } else { slotBusy(section, index, false); slotError(section, index, error); }
-            });
+            function(resp, error, xhr) { finishAttachment(section, index, resp, error, xhr); });
     }
 
     function doDetach(section, index) {
         if (!confirm('Remove subscription association from slot ' + (index + 1) + '?\nThe proxy link will remain in the config.')) return;
         if (!beginSlot(section, index)) return;
+        setSlotStatus(section, index, 'Detaching association...', 'info');
 
         PT.postJson(PT.urls.detach,
             'section=' + encodeURIComponent(section) + '&index=' + index,
-            function(resp, error) {
-                slotBusy(section, index, false);
-                if (!error && resp.success === true) loadSectionState(section);
-                else slotError(section, index, error);
+            function(resp, error, xhr) {
+                var data = mutationPayload(resp, error), unknown = mutationUncertain(data, error, xhr);
+                if (!unknown) slotBusy(section, index, false);
+                if (!error && data && data.success === true && !unknown) {
+                    setSlotStatus(section, index, 'Subscription association removed; proxy link retained.', 'success');
+                    loadSectionState(section);
+                } else {
+                    var message = unknown ? (data && data.applied === true ? 'Detach applied; finishing result unknown. ' : 'Detach result unknown. ') + 'Inspect sections and reload before another change.' :
+                        data && data.applied === true ? 'Detach was applied, but finishing failed.' : data && data.error || error && error.message || 'Invalid response';
+                    setSlotStatus(section, index, message, 'error', mutationDetails(data, error));
+                    if (unknown || data && data.applied === true) {
+                        globalOutcome(message, 'error', mutationDetails(data, error));
+                        loadSectionState(section); loadUpdateLog();
+                    }
+                }
             });
     }
 
@@ -662,33 +776,55 @@ window.PT = {
         slotBusy('', -1, false);
         setGlobalStatus('Updating subscriptions...', '#2196f3');
 
-        PT.postJson(PT.urls.update_all, '', function(resp, error) {
-            if (error || resp.success !== true || !['updated', 'unchanged', 'failed'].every(function(key) {
-                return typeof resp[key] === 'number' && isFinite(resp[key]) && resp[key] >= 0;
-            })) {
+        PT.postJson(PT.urls.update_all, '', function(resp, error, xhr) {
+            var data = mutationPayload(resp, error);
+            var counters = data && ['updated', 'unchanged', 'failed'].every(function(key) {
+                return typeof data[key] === 'number' && isFinite(data[key]) && data[key] >= 0 && Math.floor(data[key]) === data[key];
+            }) && (data.skipped === undefined || typeof data.skipped === 'number' && isFinite(data.skipped) && data.skipped >= 0 && Math.floor(data.skipped) === data.skipped);
+            var unknown = mutationUncertain(data, error, xhr) || !error && !counters;
+            var countSummary = counters ? data.updated + ' updated, ' + data.unchanged + ' unchanged, ' + data.failed + ' failed, '
+                + (data.skipped === undefined ? 0 : data.skipped) + ' skipped.' : '';
+            var details = mutationDetails(data, error);
+            var partial = data && (data.applied === true || counters && data.updated > 0);
+            var refreshed = false;
+            function refreshResult() {
+                if (refreshed) return;
+                refreshed = true;
+                loadStateSilent(); loadUpdateLog();
+            }
+
+            function finish(result) {
+                var failed = !!error || data.success !== true || data.failed > 0 || data.partial === true;
+                var text = (failed ? partial ? 'Partial result: ' : 'Update failed: ' : 'Update results: ') + countSummary;
+                var requested = data.restarting === true || data.restarted === true;
+                if (data.restart_required === true) text += ' A service restart is still required; no process transition was confirmed.';
+                else if (requested || data.updated > 0) text += ' ' + processMessage(result);
+                else text += ' No service restart requested.';
+                if (data.error) text += ' ' + data.error;
+                var unverified = (requested || data.updated > 0 || data.restart_required === true) && (!result || result.confirmed !== true);
+                var role = failed ? 'error' : unverified || data.skipped > 0 ? 'warning' : 'success';
                 allPending = false;
                 slotBusy('', -1, false);
-                requestError(globalStatus, error);
+                globalOutcome(text, role, details);
+                refreshResult();
+            }
+
+            if (unknown || !counters) {
+                if (!unknown) { allPending = false; slotBusy('', -1, false); }
+                var text = unknown ? (partial ? 'Partial result; finishing unknown: ' : 'Update result unknown: ') + countSummary +
+                    ' Inspect refreshed sections/logs and reload before another update; no request was retried.' :
+                    partial ? 'Partial result: changes were saved, but the update failed.' : 'Update failed: ' + (data && data.error || error && error.message || 'Invalid response');
+                if (data && data.restart_required === true) text += ' A service restart is still required.';
+                globalOutcome(text, 'error', details);
+                if (unknown || partial) refreshResult();
                 return;
             }
-            var msg = (resp.updated || 0) + ' updated, ' + (resp.unchanged || 0) + ' unchanged'
-                + ((resp.failed || 0) > 0 ? ', ' + resp.failed + ' failed' : '');
-            if (resp.restarted) {
-                setGlobalStatus('Restarting service...', '#2196f3');
-                waitForRestart(function(running) {
-                    setGlobalStatus((running ? 'Done: ' : 'Applied; service restart not confirmed: ') + msg, !running || resp.failed > 0 ? 'warning' : 'success');
-                    allPending = false;
-                    slotBusy('', -1, false);
-                    loadStateSilent();
-                    loadUpdateLog();
-                });
-            } else {
-                setGlobalStatus('Done: ' + msg, (resp.failed || 0) > 0 ? '#ff9800' : '#4caf50');
-                allPending = false;
-                slotBusy('', -1, false);
-                loadStateSilent();
-                loadUpdateLog();
-            }
+            if (!error && data.success === true && (data.restarting === true || data.restarted === true)) {
+                globalOutcome((data.failed > 0 || data.partial === true ? 'Partial result: ' : 'Update results: ') + countSummary + ' Changes saved; verifying service process transition...',
+                    data.failed > 0 ? 'error' : 'info', details);
+                refreshResult();
+                waitForRestart(data, finish);
+            } else finish(null);
         }, 300000);
     });
 
@@ -748,7 +884,7 @@ window.PT = {
             html += '<div class="ps-log-summary">' + num + ' ' +
                 '<span class="ps-log-ts">' + PT.escapeHtml(e.ts) + '</span> ' +
                 '<span class="' + modeClass + '">' + PT.escapeHtml(e.mode) + '</span> ' +
-                '<span class="ps-log-stats">updated=' + e.updated + ' unchanged=' + e.unchanged + ' failed=' + e.failed + '</span></div>';
+                '<span class="ps-log-stats">updated=' + PT.escapeHtml(e.updated) + ' unchanged=' + PT.escapeHtml(e.unchanged) + ' failed=' + PT.escapeHtml(e.failed) + '</span></div>';
             if (e.detailLines.length > 0) {
                 html += '<div class="ps-log-details">';
                 for (var j = 0; j < e.detailLines.length; j++) {

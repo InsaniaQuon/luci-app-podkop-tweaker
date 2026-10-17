@@ -98,35 +98,58 @@ function M.file_upload(field_name, max_size, label)
     end
 end
 
--- Transport helper: stream a file as text/plain (empty string when missing)
-function M.send_text_file(path)
+-- Legacy callers retain empty/missing responses; strict editors reject them.
+-- IO errors always have an explicit status instead of becoming an empty 200.
+function M.send_text_file(path, options)
     local http = require("luci.http")
-    http.prepare_content("text/plain")
+    local SRV = require("podkop-tweaker.services")
+    options = options or {}
     M.no_cache()
-    local fd = io.open(path, "r")
-    if fd then
-        local content = fd:read("*a")
-        fd:close()
-        http.write(content)
-    else
-        http.write("")
-    end
-end
-
--- Transport helper: download a file as octet-stream (404 + JSON error when missing)
-function M.send_download(path, filename, not_found_msg)
-    local http = require("luci.http")
-    local fd = io.open(path, "r")
-    if not fd then
+    local function fail(code, message, details)
+        http.status(code, message)
         http.prepare_content("application/json")
-        http.status(404, not_found_msg or "Not Found")
-        http.write_json({ error = not_found_msg or "File not found" })
+        http.write_json({ error = message, details = details })
+    end
+    local fd, open_err, errno = io.open(path, "rb")
+    if not fd then
+        if errno ~= 2 then return fail(500, "Cannot read configuration file", open_err) end
+        if options.require_nonempty then return fail(404, "Configuration file not found", path) end
+        http.prepare_content("text/plain")
+        http.write("")
         return
     end
-    local content = fd:read("*a")
-    fd:close()
-    http.prepare_content("application/octet-stream")
+    local content, read_err = SRV.read_stream(fd, options.limit or 8388608)
+    local closed, close_err = fd:close()
+    if not content then return fail(500, "Cannot read configuration file", read_err) end
+    if not closed then return fail(500, "Cannot close configuration file", close_err) end
+    if options.require_nonempty and not content:match("%S") then
+        return fail(409, "Configuration file is empty", path .. ": restore or regenerate the configuration before restarting sing-box.")
+    end
+    http.prepare_content("text/plain")
+    http.write(content)
+end
+
+-- Finish the bounded read and close before committing an attachment response.
+-- Missing files are distinct from IO/size failures; neither may write raw bytes.
+function M.send_download(path, filename, not_found_msg)
+    local http = require("luci.http")
+    local SRV = require("podkop-tweaker.services")
     M.no_cache()
+    local function fail(code, message, details)
+        http.status(code, message)
+        http.prepare_content("application/json")
+        http.write_json({ error = message, details = details })
+    end
+    local fd, open_err, errno = io.open(path, "rb")
+    if not fd then
+        if errno == 2 then return fail(404, not_found_msg or "File not found", path) end
+        return fail(500, "Cannot read download file", open_err or path)
+    end
+    local content, read_err = SRV.read_stream(fd, 8388608)
+    local closed, close_err = fd:close()
+    if not content then return fail(500, "Cannot read download file", read_err or path) end
+    if not closed then return fail(500, "Cannot close download file", close_err or path) end
+    http.prepare_content("application/octet-stream")
     http.header("Content-Disposition", 'attachment; filename="' .. filename .. '"')
     http.write(content)
 end

@@ -206,11 +206,24 @@ window.PT = window.PT || {};
 	PT.postJson = function (url, params, cb, timeout) {
 		PT.xhrPost(url, params, function (xhr, reason) {
 			var data = null, error = null;
-			if (xhr) { try { data = JSON.parse(xhr.responseText); } catch (e) {} }
+			if (xhr) {
+				try {
+					var parsed = JSON.parse(xhr.responseText);
+					if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed;
+				} catch (e) {}
+			}
 			if (!xhr) error = { kind: 'transport', message: reason || 'Network error' };
 			else if (xhr.status !== 200) error = { kind: 'http', message: data && data.error || 'HTTP error: ' + xhr.status, details: data && data.details || xhr.responseText };
-			else if (!data || typeof data !== 'object' || Array.isArray(data)) error = { kind: 'parse', message: 'Invalid response', details: xhr.responseText };
-			else if (data.error || data.success === false) error = { kind: 'application', message: data.error || 'Operation failed', details: data.details, applied: data.applied === true };
+			else if (!data) error = { kind: 'parse', message: 'Invalid response', details: xhr.responseText };
+			else if (data.error || data.success === false) error = { kind: 'application', message: data.error || 'Operation failed', details: data.details, applied: data.applied === true,
+				phase: data.phase, resume_available: data.resume_available === true, partial: data.partial === true };
+			if (error && data) {
+				// Retain the whole parsed result, including nested item/restart facts.
+				// Callers must not parse the response again or mistake it for success.
+				error.data = data;
+				if (data.unknown === true) error.unknown = true;
+				if (data.applied === true) error.applied = true;
+			}
 			cb(error ? null : data, error, xhr);
 		}, timeout || 120000);
 	};
@@ -222,12 +235,12 @@ window.PT = window.PT || {};
 		return form;
 	};
 
-	PT.getJson = function (url, cb) {
+	PT.getJson = function (url, cb, timeout) {
 		var xhr = new XMLHttpRequest();
 		var finished = false;
 		function finish(data, status, reason) { if (!finished) { finished = true; cb(data, status, reason); } }
 		xhr.open('GET', url);
-		xhr.timeout = 30000;
+		xhr.timeout = timeout || 30000;
 		xhr.onload = function () {
 			var data = null;
 			if (xhr.status === 200) {
@@ -239,6 +252,13 @@ window.PT = window.PT || {};
 		xhr.ontimeout = function () { finish(null, 0, 'Request timed out'); };
 		xhr.onabort = function () { finish(null, 0, 'Request aborted'); };
 		xhr.send();
+	};
+
+	// Keep the original facts, or reject them. A missing/error enabled field is
+	// unknown, never a false (disabled) autostart observation.
+	PT.typedAutostart = function (r) {
+		return r && typeof r === 'object' && !Array.isArray(r) && !('error' in r) && r.unknown !== true &&
+			(r.success === undefined || r.success === true) && typeof r.enabled === 'boolean' ? r : null;
 	};
 
 	PT.newOperationId = function () {
@@ -495,8 +515,9 @@ window.PT = window.PT || {};
 	};
 
 	// One source of truth for the app palette. Configuration is supplied by
-	// tabs.htm; DOM/CSS detection also supports older Argon headers and themes
-	// whose assets have cache-busting query strings. Never sample an app panel:
+	// tabs.htm; Argon 3's live mode takes precedence over that render-time snapshot.
+	// DOM/CSS detection also supports older Argon headers and versioned assets.
+	// Never sample an app panel:
 	// its color depends on this detector and would introduce a feedback loop.
 	var schemeRefresh = null;
 	PT.detectScheme = function () {
@@ -528,11 +549,15 @@ window.PT = window.PT || {};
 			var theme = context ? context.getAttribute('data-theme') : '';
 			var mode = context ? context.getAttribute('data-mode') : '';
 			var bootstrap = root.getAttribute('data-darkmode');
+			var argonMode = root.getAttribute('data-argon-mode');
 			var dark = null, source = '';
 
 			if (bootstrap === 'true' || bootstrap === 'false') {
 				dark = bootstrap === 'true';
 				source = 'bootstrap';
+			} else if (argonMode === 'dark' || argonMode === 'light' || argonMode === 'normal') {
+				dark = argonMode === 'dark' || argonMode === 'normal' && mediaMatches('(prefers-color-scheme: dark)');
+				source = 'argon-mode';
 			} else if (theme === 'argon' && (mode === 'dark' || mode === 'light')) {
 				dark = mode === 'dark';
 				source = 'argon-config';
@@ -579,7 +604,7 @@ window.PT = window.PT || {};
 		}
 		if (window.MutationObserver) {
 			var observer = new MutationObserver(apply);
-			observer.observe(root, { attributes: true, attributeFilter: ['data-darkmode'] });
+			observer.observe(root, { attributes: true, attributeFilter: ['data-darkmode', 'data-argon-mode'] });
 			if (document.head) observer.observe(document.head, {
 				childList: true, subtree: true, attributes: true,
 				attributeFilter: ['href', 'media', 'disabled', 'rel']
@@ -658,44 +683,112 @@ window.PT = window.PT || {};
 	};
 
 	PT.statusWatcher = function (statusUrl, dotEl, textEl, toggleBtn) {
-		var pollTimer = null;
+		var pollTimer = null, deadline = null, generation = 0, readSequence = 0;
+		var busy = false, polling = false, current = { known: false, running: null };
 
-		function update(running, pid) {
-			if (dotEl) dotEl.className = 'ps-status-dot ' + (running ? 'running' : 'stopped');
+		function instance(value) {
+			return typeof value === 'string' && /^[1-9]\d*:\d+$/.test(value) ? value : null;
+		}
+
+		function render() {
+			if (dotEl) dotEl.className = 'ps-status-dot ' + (!current.known ? 'checking' : current.running ? 'running' : 'stopped');
 			if (textEl) {
-				textEl.textContent = running ? ('Running' + (pid ? ' (PID ' + pid + ')' : '')) : 'Stopped';
-				textEl.style.color = PT.color(running ? 'success' : 'error');
+				textEl.textContent = !current.known ? 'Unknown' : current.running ? ('Running' + (current.pid ? ' (PID ' + current.pid + ')' : '')) : 'Stopped';
+				textEl.title = current.error || (current.running && !current.instance ? 'Process identity unavailable; running alone does not confirm a restart.' : '');
+				textEl.style.color = PT.color(!current.known ? 'warning' : current.running ? 'success' : 'error');
 			}
 			if (toggleBtn) {
-				toggleBtn.textContent = running ? 'Stop' : 'Start';
+				toggleBtn.textContent = !current.known ? 'Start / Stop' : current.running ? 'Stop' : 'Start';
 				toggleBtn.style.display = 'inline-block';
-				toggleBtn.disabled = false;
+				toggleBtn.disabled = busy || polling || !current.known;
 			}
+		}
+
+		function update(running, pid, identity) {
+			++readSequence;
+			current = { known: typeof running === 'boolean', running: typeof running === 'boolean' ? running : null,
+				pid: pid || null, instance: instance(identity) };
+			render();
 		}
 
 		function fetchStatus(cb) {
-			PT.getJson(statusUrl, function (r) {
-				cb(r ? !!r.running : false, r && r.pid ? r.pid : null);
-			});
+			var sequence = ++readSequence;
+			PT.getJson(statusUrl, function (r, status, reason) {
+				var valid = r && typeof r === 'object' && !Array.isArray(r) && !('error' in r) && r.unknown !== true && (r.success === undefined || r.success === true) && typeof r.running === 'boolean';
+				var pid = valid && r.pid != null ? String(r.pid) : null;
+				if (pid !== null && !/^[1-9]\d*$/.test(pid)) valid = false;
+				var identity = valid ? instance(r.instance) : null;
+				if (valid && r.instance != null && (!identity || pid && identity.split(':')[0] !== pid)) valid = false;
+				if (valid && !r.running && (pid || identity)) valid = false;
+				var state = valid ? { known: true, running: r.running, pid: pid, instance: r.identity_error ? null : identity,
+					error: typeof r.identity_error === 'string' ? r.identity_error : null } : {
+					known: false, running: null, error: r && typeof r.error === 'string' && r.error || (status && status !== 200 ? 'Service status HTTP error: ' + status : reason || 'Invalid service status response'),
+					details: r && typeof r.details === 'string' ? r.details : null
+				};
+				cb(state, sequence === readSequence);
+			}, 4000);
 		}
 
-		function poll(onSuccess, onTimeout, attempts) {
-			if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-			attempts = attempts || 0;
-			if (attempts >= 8) { onTimeout(); return; }
-			pollTimer = setTimeout(function () {
-				fetchStatus(function (running, pid) {
-					update(running, pid);
-					if (running) onSuccess();
-					else poll(onSuccess, onTimeout, attempts + 1);
-				});
-			}, 2000);
+		// The first two callbacks retain their old signature. The optional third
+		// argument is the restart ACK, not a status cached before the mutation.
+		// Old callers without that evidence finish unverified through onTimeout.
+		// Both callbacks receive {confirmed,known,running,instance,reason,message}.
+		// Known absence needs previous_running=false, previous_identity_known=true
+		// and no previous_instance; unknown-before is never promoted to absence.
+		function poll(onSuccess, onTimeout, context) {
+			clearTimeout(pollTimer); clearTimeout(deadline);
+			var ownGeneration = ++generation, attempts = typeof context === 'number' ? context : 0;
+			var meta = context && typeof context === 'object' ? context : {};
+			var previous = instance(meta.previous_instance);
+			var previousKnown = meta.verification_required === true && meta.previous_identity_known === true && meta.unknown !== true && meta.success !== false && !('error' in meta);
+			var absentBefore = previousKnown && meta.previous_running === false && !meta.previous_instance;
+			var runningBefore = previousKnown && meta.previous_running === true && previous;
+			polling = true;
+			++readSequence; // A pre-mutation refresh cannot replace this observation.
+			current = { known: false, running: null };
+			render();
+
+			function finish(confirmed) {
+				if (ownGeneration !== generation || !polling) return;
+				clearTimeout(pollTimer); clearTimeout(deadline);
+				pollTimer = deadline = null;
+				polling = false;
+				++readSequence;
+				var result = { confirmed: confirmed, known: current.known, running: current.running,
+					pid: current.pid, instance: current.instance, error: current.error, details: current.details };
+				result.reason = confirmed ? 'new_instance' : !current.known ? 'status_unknown' : !current.running ? 'not_running' :
+					!previousKnown || !absentBefore && !runningBefore ? 'previous_unknown' : !current.instance ? 'identity_unknown' : 'same_instance';
+				result.message = confirmed ? 'A new service instance is running.' : !current.known ? 'Service status is unknown; restart is unconfirmed.' :
+					!current.running ? 'The service is not running at the latest check; restart is unconfirmed.' : 'Service is running, but restart is unconfirmed.';
+				render();
+				if (confirmed) { if (onSuccess) onSuccess(result); }
+				else if (onTimeout) onTimeout(result);
+			}
+
+			function next() {
+				if (attempts >= 8) { finish(false); return; }
+				pollTimer = setTimeout(function () {
+					fetchStatus(function (state, latest) {
+						if (ownGeneration !== generation || !polling || !latest) return;
+						current = state; render();
+						if (state.known && state.running && state.instance && (absentBefore || runningBefore && state.instance !== previous)) { finish(true); return; }
+						attempts++; next();
+					});
+				}, 2000);
+			}
+			deadline = setTimeout(function () { finish(false); }, 30000);
+			next();
 		}
 
 		return {
 			update: update,
-			refresh: function () { fetchStatus(update); },
-			poll: poll
+			refresh: function () {
+				if (polling) return;
+				fetchStatus(function (state, latest) { if (latest) { current = state; render(); } });
+			},
+			poll: poll,
+			action: function () { return !busy && !polling && current.known ? current.running ? 'stop' : 'start' : null; },
+			setBusy: function (value) { busy = !!value; render(); }
 		};
 	};
 
@@ -840,6 +933,12 @@ window.PT = window.PT || {};
 		var t = cfg.texts;
 		var originalContent = '';
 		var isDirty = false;
+		var readReady = false;
+		var readSequence = 0;
+		var savePending = false;
+		var togglePending = false;
+		var mutationUnknown = false;
+		var serviceNotice = null;
 		var errorLineNo = -1;
 
 		function setStatus(text, color) {
@@ -888,13 +987,35 @@ window.PT = window.PT || {};
 		var watcher = PT.statusWatcher(cfg.urls.status, statusDot, statusText,
 			cfg.urls.toggle ? toggleBtn : null);
 
+		function serviceBusy(value) {
+			if (watcher.setBusy) watcher.setBusy(value || mutationUnknown);
+			if (value && watcher.update) watcher.update(null);
+		}
+
 		if (cfg.urls.toggle && toggleBtn) {
 			toggleBtn.addEventListener('click', function () {
-				var action = toggleBtn.textContent.toLowerCase();
+				var action = watcher.action ? watcher.action() : null;
+				if (savePending || togglePending || mutationUnknown || !action) return;
+				togglePending = true;
+				serviceBusy(true);
 				toggleBtn.disabled = true;
 				toggleBtn.textContent = action === 'stop' ? 'Stopping...' : 'Starting...';
-				PT.xhrPost(cfg.urls.toggle, 'action=' + action, function (xhr) {
-					if (!xhr) { watcher.refresh(); return; }
+				PT.postJson(cfg.urls.toggle, 'action=' + action, function (resp, error, xhr) {
+					togglePending = false;
+					if (error && (error.unknown || error.kind === 'transport' || error.kind === 'parse' || error.kind === 'http' && xhr && xhr.status >= 500 || error.message === 'Internal error') || !error && (resp.success !== true || resp.unknown === true)) {
+						mutationUnknown = true;
+						++readSequence;
+						editor.disabled = false;
+						readReady = false;
+						restoreDirtyButtons();
+					}
+					serviceBusy(false);
+					if (error || resp.success !== true || mutationUnknown) {
+						pushError('Service command failed', error ? error.message + (error.details ? '\n\n' + error.details : '') : 'Invalid service command response');
+						serviceNotice = { message: mutationUnknown ? 'Service command result unknown. Reload the config before another mutation.' : 'Service command failed or is unverified. Check service status.', role: 'error' };
+						setStatus(serviceNotice.message, serviceNotice.role);
+						watcher.refresh(); return;
+					}
 					setTimeout(watcher.refresh, cfg.toggleDelay || 1000);
 				});
 			});
@@ -902,66 +1023,142 @@ window.PT = window.PT || {};
 
 		if (cfg.urls.autostart) {
 			var autostartBtn = g('ps-autostart-btn');
+			var autostartEnabled = null, autostartBusy = false, autostartSequence = 0;
 
-			function setAutostart(enabled) {
-				autostartBtn.textContent = enabled ? 'Autostart: ON' : 'Autostart: OFF';
+			function renderAutostart() {
+				autostartBtn.textContent = autostartEnabled === null ? 'Autostart: Unknown' : autostartEnabled ? 'Autostart: ON' : 'Autostart: OFF';
 				autostartBtn.style.display = 'inline-block';
+				autostartBtn.disabled = autostartBusy || autostartEnabled === null;
 			}
 
-			function checkAutostart() {
-				PT.getJson(cfg.urls.autostart, function (r) {
-					if (r) setAutostart(!!r.enabled);
-				});
+			function autostartErrorText(error) {
+				return error.message + (error.details ? '\n\n' + error.details : '');
+			}
+
+			function checkAutostart(operation) {
+				var sequence = ++autostartSequence;
+				autostartBusy = true;
+				autostartEnabled = null;
+				autostartBtn.title = 'Checking autostart state...';
+				renderAutostart();
+				PT.getJson(cfg.urls.autostart, function (r, status, reason) {
+					if (sequence !== autostartSequence) return;
+					var valid = status === 200 && PT.typedAutostart(r), problems = [], summary = '';
+					autostartBusy = false;
+					autostartEnabled = valid ? r.enabled : null;
+					renderAutostart();
+					if (operation && operation.error) {
+						summary = operation.unknown ? 'Autostart update result unknown' : 'Autostart update failed';
+						problems.push('Update: ' + autostartErrorText(operation.error));
+					}
+					if (!valid) {
+						var message = r && typeof r.error === 'string' && r.error || (status && status !== 200 ? 'HTTP error: ' + status : reason || 'Invalid autostart response');
+						var details = r && typeof r.details === 'string' ? r.details : '';
+						problems.push((operation ? 'Readback: ' : 'Read: ') + message + (details ? '\n\n' + details : ''));
+						summary = summary ? summary + '; readback failed' : operation ? 'Autostart update acknowledged; readback failed' : 'Autostart read failed';
+					} else if (operation && !operation.error && r.enabled !== operation.expected) {
+						summary = 'Autostart readback did not match the requested state';
+						problems.push('Expected autostart ' + (operation.expected ? 'ON' : 'OFF') + ', but read back ' + (r.enabled ? 'ON' : 'OFF') + '.');
+					}
+					autostartBtn.title = summary || (valid ? (r.enabled ? 'Enabled at boot' : 'Disabled at boot') : 'Autostart state unknown');
+					if (!valid) autostartBtn.title += '. Reload the page to retry the read.';
+					if (problems.length) {
+						pushError(summary, summary + '\n\n' + problems.join('\n\n'));
+						setStatus(summary, 'error');
+					}
+				}, 30000);
 			}
 
 			autostartBtn.addEventListener('click', function () {
-				var action = autostartBtn.textContent.indexOf('ON') >= 0 ? 'disable' : 'enable';
-				autostartBtn.disabled = true;
-				PT.xhrPost(cfg.urls.autostartToggle, 'action=' + action, function (xhr) {
-					autostartBtn.disabled = false;
-					if (xhr) {
-						try { setAutostart(!!JSON.parse(xhr.responseText).enabled); } catch (e) {}
+				if (autostartBusy || typeof autostartEnabled !== 'boolean' || !cfg.urls.autostartToggle) return;
+				var expected = !autostartEnabled, sequence = ++autostartSequence;
+				autostartBusy = true;
+				autostartEnabled = null;
+				autostartBtn.title = 'Updating autostart...';
+				renderAutostart();
+				PT.postJson(cfg.urls.autostartToggle, 'action=' + (expected ? 'enable' : 'disable'), function (resp, error, xhr) {
+					if (sequence !== autostartSequence) return;
+					if (!error && (!PT.typedAutostart(resp) || resp.success !== true || resp.enabled !== expected)) {
+						error = { message: 'Invalid autostart update response', details: xhr && xhr.responseText, unknown: true };
 					}
-				});
+					// A failed command can still have changed the boot links. Read facts
+					// separately, retaining the POST error and never replaying the POST.
+					checkAutostart({ expected: expected, error: error, unknown: error && (error.unknown === true || error.kind === 'transport' || error.kind === 'parse' ||
+						error.kind === 'http' && xhr && xhr.status >= 500 || error.message === 'Internal error') });
+				}, 30000);
 			});
 
 			checkAutostart();
 		}
 
-		function loadConfig() {
+		function loadConfig(options) {
+			if (savePending) return;
+			var sequence = ++readSequence;
+			readReady = false;
+			restoreDirtyButtons();
 			setStatus('Loading...', '#888');
 			editor.disabled = true;
 			var xhr = new XMLHttpRequest();
-			xhr.open('GET', cfg.urls.read);
-			xhr.onload = function () {
+			var finished = false;
+			function finish(error, details) {
+				if (finished) return;
+				finished = true;
+				if (sequence !== readSequence) return;
 				editor.disabled = false;
-				if (xhr.status === 200) {
-					originalContent = xhr.responseText;
-					editor.value = originalContent;
-					isDirty = false;
-					saveBtn.disabled = true;
-					diffBtn.disabled = true;
-					updateLineNumbers();
-					setStatus('Loaded', '#4caf50');
+				if (error) {
+					restoreDirtyButtons();
+					pushError('Failed to load config', 'Failed to load config: ' + error + (details ? '\n\n' + details : ''));
+					setStatus('Failed to load: ' + error, '#f44336');
+					if (options && options.onComplete) options.onComplete(error);
+					return;
+				}
+				originalContent = xhr.responseText;
+				if (!options || !options.preserveDraft) editor.value = originalContent;
+				isDirty = editor.value !== originalContent;
+				readReady = true;
+				mutationUnknown = false;
+				serviceBusy(togglePending || savePending);
+				serviceNotice = null;
+				restoreDirtyButtons();
+				updateLineNumbers();
+				setStatus(isDirty ? 'Loaded — unsaved changes remain' : 'Loaded', isDirty ? 'warning' : 'success');
+				if (options && options.onComplete) options.onComplete(null);
+			}
+			xhr.open('GET', cfg.urls.read);
+			xhr.timeout = 30000;
+			xhr.onload = function () {
+				var content = xhr.responseText || '';
+				var contentType = xhr.getResponseHeader ? xhr.getResponseHeader('Content-Type') || '' : '';
+				var html = /^\s*(?:<!doctype\s+html\b|<(?:html|head|body|form)\b)/i.test(content) || /^\s*(?:text\/html|application\/xhtml\+xml)(?:\s*;|\s*$)/i.test(contentType);
+				var loginError = 'LuCI returned an HTML login/error page. Sign in if needed, then reload the config.';
+				if (xhr.status !== 200) {
+					var data = null;
+					try { data = JSON.parse(content); } catch (e) {}
+					var message = data && typeof data.error === 'string' && data.error;
+					if (!message) message = html ? loginError : (xhr.status === 401 || xhr.status === 403) ? 'LuCI session expired or access denied. Sign in, then reload the config.' : 'HTTP error: ' + xhr.status;
+					var details = data && typeof data.details === 'string' ? data.details : content;
+					finish(message, 'HTTP ' + xhr.status + (details ? '\n' + details : ''));
+				} else if (html) {
+					finish(loginError, 'HTTP 200\n' + content);
+				} else if (!/\S/.test(content)) {
+					finish('Config response is empty or whitespace-only', 'HTTP 200');
 				} else {
-					setStatus('Failed to load', '#f44336');
-					pushError('Failed to load config', 'HTTP ' + xhr.status);
+					finish();
 				}
 			};
-			xhr.onerror = function () {
-				editor.disabled = false;
-				setStatus('Network error', '#f44336');
-			};
+			xhr.onerror = function () { finish('Network error', 'Failed to connect to server'); };
+			xhr.ontimeout = function () { finish('Request timed out', 'Config read did not complete within 30 seconds.'); };
+			xhr.onabort = function () { finish('Request aborted'); };
 			xhr.send();
 		}
 
 		function restoreDirtyButtons() {
-			saveBtn.disabled = savePending || !isDirty;
-			diffBtn.disabled = savePending || !isDirty;
-			undoBtn.disabled = savePending;
+			saveBtn.disabled = savePending || !readReady || !isDirty;
+			diffBtn.disabled = savePending || !readReady || !isDirty;
+			undoBtn.disabled = savePending || !readReady;
+			rollbackBtn.disabled = savePending || togglePending || mutationUnknown;
 		}
 
-		var savePending = false;
 		function markSaved(snapshot) {
 			originalContent = snapshot;
 			isDirty = editor.value !== originalContent;
@@ -970,14 +1167,43 @@ window.PT = window.PT || {};
 
 		function finishSave(message, role) {
 			savePending = false;
+			serviceBusy(false);
+			serviceNotice = role === 'success' ? null : { message: message, role: role };
 			restoreDirtyButtons();
-			setStatus(isDirty ? message + ' — unsaved changes remain' : message, PT.color(isDirty ? 'warning' : role));
+			setStatus(isDirty ? message + ' — unsaved changes remain' : message, role === 'error' ? 'error' : isDirty ? 'warning' : role);
+		}
+
+		function responseDetails(resp) {
+			return (typeof resp.error === 'string' ? resp.error : 'Operation failed') + (typeof resp.details === 'string' ? '\n\n' + resp.details : '');
+		}
+
+		function unknownResponse(resp, xhr) {
+			return resp.unknown === true || resp.error === 'Internal error' || xhr.status >= 500 && typeof resp.success !== 'boolean' && typeof resp.applied !== 'boolean';
+		}
+
+		function unverified(result, prefix) {
+			var state = result && result.known === true;
+			var message = state && result.running === false ? 'The service is not running at the latest check; restart is unconfirmed.' :
+				state && result.running === true ? 'Service is running, but restart is unconfirmed.' : 'Service status is unknown; restart is unconfirmed.';
+			return prefix + ' ' + message;
+		}
+
+		function restartDetails(result, meta) {
+			var details = unverified(result, 'Disk changes were applied.');
+			if (result && result.instance) details += '\nCurrent instance: ' + result.instance;
+			if (meta && meta.previous_instance) details += '\nPrevious instance: ' + meta.previous_instance;
+			if (!meta || meta.verification_required !== true || meta.previous_identity_known !== true) details += '\nPrevious service identity/absence was not established. A running process alone cannot confirm this restart.';
+			if (result && result.error) details += '\n' + result.error;
+			if (result && result.details) details += '\n\n' + result.details;
+			return details + '\nCheck service status and logs. No mutation was retried automatically.';
 		}
 
 		function doSave() {
-			if (savePending) return;
+			if (savePending || togglePending || mutationUnknown || !readReady || !isDirty) return;
 			var snapshot = editor.value;
 			savePending = true;
+			serviceNotice = null;
+			serviceBusy(true);
 			undoBtn.disabled = true;
 			saveBtn.disabled = true;
 			diffBtn.disabled = true;
@@ -986,49 +1212,74 @@ window.PT = window.PT || {};
 			editor.disabled = true;
 			setStatus(t.saving, '#2196f3');
 
-			PT.xhrPost(cfg.urls.save, PT.contentForm(snapshot), function (xhr) {
+			PT.xhrPost(cfg.urls.save, PT.contentForm(snapshot), function (xhr, reason) {
+				var resp = null;
+				function failedVerification(result) {
+					pushError('Restart unconfirmed', restartDetails(result, resp));
+					finishSave(unverified(result, 'Config saved to disk.'), result && result.known && result.running === false ? 'error' : 'warning');
+					rollbackBtn.style.display = 'inline-block';
+				}
 				editor.disabled = false;
 				saveBtn.textContent = 'Save Changes';
 				if (!xhr) {
-					savePending = false;
-					restoreDirtyButtons();
-					setStatus('Network error', '#f44336');
-					pushError('Network error', 'Failed to connect to server');
+					mutationUnknown = true;
+					readReady = false;
+					pushError('Save result unknown', (reason || 'Network error') + '. Reload the config to verify the disk state before saving again.');
+					finishSave('Save result unknown. Reload the config to verify before saving again.', 'error');
+					watcher.refresh();
 					return;
 				}
 				try {
-					var resp = JSON.parse(xhr.responseText);
-					if (resp.success && resp.restarting) {
+					resp = JSON.parse(xhr.responseText);
+					if (!resp || typeof resp !== 'object' || Array.isArray(resp)) throw new Error('Invalid save response');
+					if (unknownResponse(resp, xhr)) {
+						if (resp.applied === true) markSaved(snapshot);
+						mutationUnknown = true;
+						readReady = false;
+						pushError('Save finishing unknown', responseDetails(resp));
+						finishSave(resp.applied === true ? 'Config saved to disk; finishing result unknown. Reload the config to verify before another mutation.' :
+							'Save result unknown. Reload the config to verify before another mutation.', 'error');
+						watcher.refresh();
+					} else if (resp.applied === true && (xhr.status !== 200 || resp.error || resp.success !== true)) {
+						markSaved(snapshot);
+						pushError('Config saved; service unverified', responseDetails(resp));
+						finishSave('Config saved to disk, but restart failed or is unverified. Check service status and logs.', 'error');
+						rollbackBtn.style.display = 'inline-block';
+						watcher.refresh();
+					} else if (xhr.status === 200 && !resp.error && resp.success === true && resp.restarting === true) {
 						markSaved(snapshot);
 						setStatus(t.restarting, '#2196f3');
 						watcher.poll(
-							function () {
-								finishSave(t.saved, 'success');
+							function (result) {
+								if (result && result.confirmed === true) finishSave(t.saved, 'success');
+								else failedVerification(result);
 							},
-							function () {
-								finishSave(t.notStarted, 'error');
-								rollbackBtn.style.display = 'inline-block';
-								pushError('Restart failed', t.notStartedDetail);
-							}
+							failedVerification,
+							resp
 						);
-					} else if (resp.success && resp.unchanged) {
+					} else if (xhr.status === 200 && !resp.error && resp.success === true && resp.unchanged === true) {
 						markSaved(snapshot);
 						finishSave(t.unchanged, 'success');
+						watcher.refresh();
+					} else if (xhr.status === 200 && !resp.error && resp.success === true) {
+						markSaved(snapshot);
+						failedVerification(null);
 					} else {
-						savePending = false;
-						restoreDirtyButtons();
-						setStatus('Save failed', '#f44336');
-						var err = cfg.extractError(resp);
+						if (!resp.error && resp.success !== false) throw new Error('Invalid save response');
+						var err = cfg.extractError ? cfg.extractError(resp) : null;
 						if (err && err.line) highlightErrorLine(err.line);
-						pushError('Save failed', (err && err.msg) || 'Unknown error');
+						pushError('Save failed', responseDetails(resp));
+						finishSave('Save failed: ' + (resp.error || 'Operation failed'), 'error');
+						watcher.refresh();
 					}
 				} catch (e) {
-					savePending = false;
-					restoreDirtyButtons();
-					setStatus('Save failed', '#f44336');
-					pushError('Save failed', 'Invalid response: ' + (xhr.responseText || '').substring(0, 300));
+					mutationUnknown = true;
+					readReady = false;
+					pushError('Save result unknown', 'Invalid response (HTTP ' + xhr.status + '):\n' + (xhr.responseText || '') + '\nReload the config to verify the disk state before saving again.');
+					finishSave('Save result unknown. Reload the config to verify before saving again.', 'error');
+					watcher.refresh();
 				}
-			});
+			}, 120000);
 		}
 
 		saveBtn.addEventListener('click', function () {
@@ -1038,7 +1289,7 @@ window.PT = window.PT || {};
 		document.addEventListener('keydown', function (e) {
 			if ((e.ctrlKey || e.metaKey) && e.key === 's') {
 				e.preventDefault();
-				if (isDirty && !saveBtn.disabled) doSave();
+				if (readReady && isDirty && !saveBtn.disabled) doSave();
 			}
 		});
 
@@ -1047,6 +1298,11 @@ window.PT = window.PT || {};
 			restoreDirtyButtons();
 			clearErrorLine();
 			updateLineNumbers();
+			if (!readReady || savePending) return;
+			if (serviceNotice) {
+				setStatus(serviceNotice.message + (isDirty ? ' — unsaved changes remain' : ''), serviceNotice.role);
+				return;
+			}
 			setStatus(isDirty ? 'Unsaved changes' : 'Loaded', isDirty ? '#ff9800' : '#4caf50');
 		});
 
@@ -1061,46 +1317,93 @@ window.PT = window.PT || {};
 		});
 
 		undoBtn.addEventListener('click', function () {
-			if (!isDirty) return;
+			if (savePending || !readReady || !isDirty) return;
 			if (!confirm('Discard unsaved changes?')) return;
 			editor.value = originalContent;
 			isDirty = false;
 			saveBtn.disabled = true;
 			diffBtn.disabled = true;
 			updateLineNumbers();
-			setStatus('Loaded', '#4caf50');
+			setStatus(serviceNotice ? serviceNotice.message : 'Loaded', serviceNotice ? serviceNotice.role : 'success');
 		});
 
 		rollbackBtn.addEventListener('click', function () {
+			if (savePending || togglePending || mutationUnknown || !cfg.urls.rollback) return;
+			var draft = editor.value, preserveDraft = isDirty;
+			savePending = true;
+			++readSequence;
+			editor.disabled = false;
+			serviceBusy(true);
+			restoreDirtyButtons();
 			rollbackBtn.style.display = 'none';
 			setStatus('Rolling back...', '#2196f3');
 
-			PT.xhrPost(cfg.urls.rollback, '', function (xhr) {
+			function finishRollback(message, role, applied) {
+				savePending = false;
+				serviceBusy(false);
+				if (applied) {
+					loadConfig({ preserveDraft: preserveDraft || editor.value !== draft, onComplete: function (error) {
+						if (!error) finishSave(message, role);
+						else {
+							serviceNotice = { message: message + ' Config read failed: ' + error + '. Reload the config to verify the disk baseline.', role: 'error' };
+							setStatus(serviceNotice.message, serviceNotice.role);
+						}
+					} });
+				} else finishSave(message, role);
+			}
+
+			PT.xhrPost(cfg.urls.rollback, '', function (xhr, reason) {
+				var resp = null;
+				function failedVerification(result) {
+					pushError('Rollback restart unconfirmed', restartDetails(result, resp));
+					finishRollback(unverified(result, 'Config restored to disk.'), result && result.known && result.running === false ? 'error' : 'warning', true);
+				}
 				if (!xhr) {
-					setStatus('Rollback network error', '#f44336');
+					mutationUnknown = true;
+					readReady = false;
+					pushError('Rollback result unknown', (reason || 'Network error') + '. Reload the config to verify the disk state.');
+					finishRollback('Rollback result unknown. Reload the config to verify.', 'error', false);
+					watcher.refresh();
 					return;
 				}
 				try {
-					var resp = JSON.parse(xhr.responseText);
-					if (resp.success) {
+					resp = JSON.parse(xhr.responseText);
+					if (!resp || typeof resp !== 'object' || Array.isArray(resp)) throw new Error('Invalid rollback response');
+					if (unknownResponse(resp, xhr)) {
+						mutationUnknown = true;
+						readReady = false;
+						pushError('Rollback finishing unknown', responseDetails(resp));
+						finishRollback(resp.applied === true ? 'Config restored to disk; finishing result unknown. Reload the config to verify the baseline.' :
+							'Rollback result unknown. Reload the config to verify the disk state.', 'error', false);
+						watcher.refresh();
+					} else if (resp.applied === true && (xhr.status !== 200 || resp.error || resp.success !== true)) {
+						pushError('Rollback applied; service unverified', responseDetails(resp));
+						finishRollback('Config restored to disk, but restart failed or is unverified. Check service status and logs.', 'error', true);
+						watcher.refresh();
+					} else if (xhr.status === 200 && !resp.error && resp.success === true) {
 						setStatus('Rolled back. Restarting...', '#2196f3');
 						watcher.poll(
-							function () {
-								setStatus('Rolled back successfully.', '#4caf50');
-								loadConfig();
+							function (result) {
+								if (result && result.confirmed === true) finishRollback('Config restored. A new service instance is running.', 'success', true);
+								else failedVerification(result);
 							},
-							function () {
-								setStatus(t.rollbackStillDown, '#ff9800');
-								loadConfig();
-							}
+							failedVerification,
+							resp
 						);
 					} else {
-						setStatus('Rollback failed: ' + (resp.error || ''), '#f44336');
+						if (!resp.error && resp.success !== false) throw new Error('Invalid rollback response');
+						pushError('Rollback failed', responseDetails(resp));
+						finishRollback('Rollback failed: ' + (resp.error || 'Operation failed'), 'error', false);
+						watcher.refresh();
 					}
 				} catch (e) {
-					setStatus('Rollback failed', '#f44336');
+					mutationUnknown = true;
+					readReady = false;
+					pushError('Rollback result unknown', 'Invalid response (HTTP ' + xhr.status + '):\n' + (xhr.responseText || ''));
+					finishRollback('Rollback result unknown. Reload the config to verify.', 'error', false);
+					watcher.refresh();
 				}
-			});
+			}, 120000);
 		});
 
 		var diffToggleWrap = document.createElement('label');
@@ -1121,7 +1424,7 @@ window.PT = window.PT || {};
 		}
 
 		diffBtn.addEventListener('click', function () {
-			if (!isDirty) return;
+			if (savePending || !readReady || !isDirty) return;
 			renderDiffPreview();
 			g('ps-diff-modal').style.display = 'flex';
 		});
@@ -1141,9 +1444,7 @@ window.PT = window.PT || {};
 
 		return {
 			loadConfig: loadConfig,
-			refreshStatus: watcher.refresh,
-			setStatus: setStatus,
-			pushError: pushError
+			refreshStatus: watcher.refresh
 		};
 	};
 })();

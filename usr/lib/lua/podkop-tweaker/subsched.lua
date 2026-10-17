@@ -38,70 +38,126 @@ local function read_optional(path)
         return nil, err or "Cannot read " .. path
     end
     local data, read_err = SRV.read_stream(fd, READ_LIMIT)
-    local closed = fd:close()
-    if not data or not closed then return nil, read_err or "Cannot close " .. path end
+    local closed, close_err = fd:close()
+    if not data then return nil, read_err end
+    if not closed then return nil, "Cannot close " .. path .. ": " .. tostring(close_err or "Unknown close failure") end
     return data, nil, true
 end
 
-function M.setup_cron(interval, start_time)
+local function pack(...) return { n = select("#", ...), ... } end
+
+local function with_subscriptions(fn)
+    local completed
+    local result = pack(SRV.with_lock("subscriptions", function()
+        completed = pack(fn())
+        return unpack(completed, 1, completed.n)
+    end))
+    if result[1] ~= nil then return unpack(result, 1, result.n) end
+    -- The lock's third result means uncertainty; the callback's third result
+    -- records an actual publication/installation. Keep those facts separate.
+    completed = completed or { n = 0 }
+    local primary, lock_err = completed[2], tostring(result[2] or "Cannot coordinate subscription scheduling")
+    completed[1] = false
+    completed[2] = primary and (primary .. "\n" .. lock_err) or lock_err
+    completed[3] = completed[3] == true
+    completed[4] = completed[4] == true or result[3] == true
+    completed.n = math.max(completed.n, 4)
+    return unpack(completed, 1, completed.n)
+end
+
+local function own_cron_job(line)
+    if line:match("^%s*#") then return false end
+    local command = line:match("^%s*%S+%s+%S+%s+%S+%s+%S+%s+%S+%s+(.-)%s*$")
+    return command == LAUNCHER
+end
+
+local function setup_cron(interval, start_time)
     local expected = M.cron_line(interval, start_time)
     if tonumber(interval) and tonumber(interval) > 0 and not expected then return false, "Invalid schedule" end
     local current, err = read_optional(CRONTAB)
     if not current then return false, err end
-    local lines = {}
-    for line in current:gmatch("[^\r\n]+") do
-        if not line:find(LAUNCHER, 1, true) then lines[#lines + 1] = line end
+    local lines, offset = {}, 1
+    while offset <= #current do
+        local newline = current:find("\n", offset, true)
+        local last = newline or #current
+        local line = current:sub(offset, newline and newline - 1 or last)
+        if not own_cron_job(line) then lines[#lines + 1] = current:sub(offset, last) end
+        offset = last + 1
     end
-    if expected then lines[#lines + 1] = expected end
-    local content = #lines > 0 and table.concat(lines, "\n") .. "\n" or ""
+    local content = table.concat(lines)
+    if expected then
+        if content ~= "" and content:sub(-1) ~= "\n" then content = content .. "\n" end
+        content = content .. expected .. "\n"
+    end
     if content == current then return true end
-    local ok, write_err = SRV.write_file_atomic(CRON_INPUT, content, { mode = "600" })
-    if not ok then return false, write_err end
+    -- This input is never published at CRON_INPUT. Only the exclusively allocated
+    -- private stage is passed to crontab and cleaned by its registered owner.
+    local stage, stage_err = SRV.stage_file(CRON_INPUT, content, { mode = "600" })
+    if not stage then return false, stage_err end
     -- crontab installs with the correct owner/mode and notifies BusyBox crond.
-    local raw = sys.exec("crontab " .. LIB.shell_escape(CRON_INPUT) .. " 2>&1; printf '\\nPT_EXIT:%s\\n' \"$?\"") or ""
-    os.remove(CRON_INPUT)
-    local details, status = raw:match("^(.*)\nPT_EXIT:(%d+)\n$")
-    if status ~= "0" then return false, "Cannot install crontab: " .. (details or raw) end
-    return true
+    local installed, details, exit_code = SRV.exec_checked("crontab " .. LIB.shell_escape(stage))
+    local cleaned, cleanup_err = SRV.discard_stage(stage)
+    if not installed or not cleaned then
+        local errors = {}
+        if not installed then errors[#errors + 1] = "Cannot install crontab: " .. tostring(details or "Missing command result") end
+        if not cleaned then errors[#errors + 1] = "Cannot remove private crontab input: " .. tostring(cleanup_err or "Unknown cleanup failure") end
+        return false, table.concat(errors, "\n"), installed == true, exit_code == nil
+    end
+    return true, nil, true
+end
+
+function M.setup_cron(interval, start_time)
+    return with_subscriptions(function() return setup_cron(interval, start_time) end)
+end
+
+local function setup_hotplug(enabled)
+    if enabled then
+        local made, details = SRV.exec_checked("mkdir -p /etc/hotplug.d/iface")
+        if not made then return false, "Cannot create hotplug directory: " .. tostring(details or "Missing command result") end
+        local written, err = SRV.write_file_atomic(HOTPLUG, HOOK, { executable = true })
+        return written, err, written == true
+    end
+    local content, err, present = read_optional(HOTPLUG)
+    if not content then return false, err end
+    if not present then return true end
+    local removed, remove_err = os.remove(HOTPLUG)
+    if not removed then return false, remove_err or "Cannot remove hotplug hook" end
+    return true, nil, true
 end
 
 function M.setup_hotplug(enabled)
-    if enabled then
-        if not LIB.exit_ok(os.execute("mkdir -p /etc/hotplug.d/iface 2>/dev/null")) then
-            return false, "Cannot create hotplug directory"
-        end
-        return SRV.write_file_atomic(HOTPLUG, HOOK, { executable = true })
-    end
-    local content, err = read_optional(HOTPLUG)
-    if not content then return false, err end
-    if content == "" then
-        local fd = io.open(HOTPLUG, "rb")
-        if not fd then return true end
-        fd:close()
-    end
-    local removed, remove_err = os.remove(HOTPLUG)
-    if not removed then return false, remove_err or "Cannot remove hotplug hook" end
-    return true
+    return with_subscriptions(function() return setup_hotplug(enabled) end)
 end
 
 function M.create_auto_update_script()
-    return SRV.write_file_atomic(LAUNCHER, SCRIPT, { executable = true })
+    return with_subscriptions(function()
+        local written, err = SRV.write_file_atomic(LAUNCHER, SCRIPT, { executable = true })
+        return written, err, written == true
+    end)
 end
 
-function M.apply(interval, start_time, on_restart)
+local function apply(interval, start_time, on_restart)
+    local launcher_written = false
     if (tonumber(interval) or 0) > 0 or on_restart then
-        local ok, err = M.create_auto_update_script()
-        if not ok then return false, err end
+        local ok, err, applied, unknown = M.create_auto_update_script()
+        if not ok then return false, err, applied, unknown end
+        launcher_written = true
     end
-    local cron_ok, cron_err = M.setup_cron(interval, start_time)
-    local hook_ok, hook_err = M.setup_hotplug(on_restart)
+    local cron_ok, cron_err, cron_applied, cron_unknown = M.setup_cron(interval, start_time)
+    local hook_ok, hook_err, hook_applied, hook_unknown = M.setup_hotplug(on_restart)
+    local applied = launcher_written or cron_applied == true or hook_applied == true
+    local unknown = cron_unknown == true or hook_unknown == true
     if not cron_ok or not hook_ok then
         local errors = {}
         if not cron_ok then errors[#errors + 1] = cron_err end
         if not hook_ok then errors[#errors + 1] = hook_err end
-        return false, table.concat(errors, "\n")
+        return false, table.concat(errors, "\n"), applied, unknown
     end
-    return true
+    return true, nil, applied, unknown
+end
+
+function M.apply(interval, start_time, on_restart)
+    return with_subscriptions(function() return apply(interval, start_time, on_restart) end)
 end
 
 local function script_status(path, expected)
@@ -138,7 +194,7 @@ function M.status(settings, log_file)
     local cron, cron_err = read_optional(CRONTAB)
     local actual = {}
     for line in (cron or ""):gmatch("[^\r\n]+") do
-        if not line:match("^%s*#") and line:find(LAUNCHER, 1, true) then
+        if own_cron_job(line) then
             actual[#actual + 1] = line:match("^%s*(.-)%s*$")
         end
     end

@@ -20,7 +20,7 @@ Author: InsaniaQuon
         </div>
         <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <button class="btn cbi-button" id="ps-patch-btn">Patch Fragment</button>
-            <button class="btn cbi-button" id="ps-wrapper-btn">Enable Wrapper</button>
+            <button class="btn cbi-button" id="ps-wrapper-btn" disabled>Checking Wrapper...</button>
             <span id="ps-wrapper-status" style="font-size:12px;font-weight:600;"></span>
         </div>
 
@@ -132,9 +132,10 @@ Author: InsaniaQuon
             </div>
         </div>
         <div class="ps-modal-footer" style="margin-top:12px;display:flex;align-items:center;gap:8px;">
-            <button class="btn cbi-button" id="ps-patch-select-all">Select All</button>
-            <button class="btn cbi-button cbi-button-apply" id="ps-patch-apply">Apply Patch</button>
-            <button class="btn cbi-button" id="ps-patch-remove">Remove Patch</button>
+            <button class="btn cbi-button" id="ps-patch-select-all" disabled>Select All</button>
+            <button class="btn cbi-button cbi-button-apply" id="ps-patch-apply" disabled>Apply Patch</button>
+            <button class="btn cbi-button" id="ps-patch-remove" disabled>Remove Patch</button>
+            <button class="btn cbi-button" id="ps-patch-retry">Retry outbounds read</button>
             <span id="ps-patch-status" style="font-size:12px;"></span>
             <button class="btn cbi-button" id="ps-patch-close">Close</button>
         </div>
@@ -151,22 +152,23 @@ Author: InsaniaQuon
             <p>The wrapper automatically patches sing-box config after every Podkop restart, using the settings below.</p>
             <div style="margin:10px 0;padding:8px;border:1px solid var(--ps-border);border-radius:4px;">
                 <div style="margin:4px 0;display:flex;align-items:center;gap:6px;">
-                    <input type="checkbox" id="ps-wrap-record-fragment" checked>
+                    <input type="checkbox" id="ps-wrap-record-fragment" checked disabled>
                     <strong>TLS Record Fragment</strong>
                     <span style="color:var(--ps-success);font-size:12px;">recommended</span>
                 </div>
                 <div style="margin:4px 0;display:flex;align-items:center;gap:6px;">
-                    <input type="checkbox" id="ps-wrap-fragment">
+                    <input type="checkbox" id="ps-wrap-fragment" disabled>
                     <strong>TLS Fragment</strong>
                     <span style="color:var(--ps-error);font-size:12px;">use if blocked</span>
                 </div>
                 <div id="ps-wrap-fallback-wrap" style="display:none;margin:6px 0 4px 24px;">
-                    <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;">Fallback delay: <input type="text" id="ps-wrap-fallback-delay" value="500ms" style="width:80px;font-size:12px;"> <span style="color:var(--ps-text-dim);font-size:11px;">(e.g. 500ms, 1s)</span></label>
+                    <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;">Fallback delay: <input type="text" id="ps-wrap-fallback-delay" value="500ms" style="width:80px;font-size:12px;" disabled> <span style="color:var(--ps-text-dim);font-size:11px;">(e.g. 500ms, 1s)</span></label>
                 </div>
             </div>
         </div>
         <div class="ps-modal-footer" style="margin-top:12px;display:flex;align-items:center;gap:8px;">
-            <button class="btn cbi-button cbi-button-apply" id="ps-wrapper-confirm">Enable</button>
+            <button class="btn cbi-button cbi-button-apply" id="ps-wrapper-confirm" disabled>Enable</button>
+            <button class="btn cbi-button" id="ps-wrapper-retry" style="display:none;">Retry settings read</button>
             <span id="ps-wrapper-modal-status" style="font-size:12px;"></span>
             <button class="btn cbi-button" id="ps-wrapper-close">Cancel</button>
         </div>
@@ -231,29 +233,66 @@ window.PT = {
     var patchApply = document.getElementById('ps-patch-apply');
     var patchRemove = document.getElementById('ps-patch-remove');
     var patchSelectAll = document.getElementById('ps-patch-select-all');
+    var patchRetry = document.getElementById('ps-patch-retry');
     var patchStatus = document.getElementById('ps-patch-status');
     var patchClose = document.getElementById('ps-patch-close');
     var patchFragCb = document.getElementById('ps-patch-fragment');
     var patchRecCb = document.getElementById('ps-patch-record-fragment');
     var patchFallbackWrap = document.getElementById('ps-patch-fallback-wrap');
     var patchFallbackInput = document.getElementById('ps-patch-fallback-delay');
+    var patchReady = false, patchBusy = false, patchLoading = false, patchSequence = 0;
+
+    function patchControls() {
+        [patchApply, patchRemove, patchSelectAll].forEach(function(button) { button.disabled = !patchReady || patchBusy || patchLoading; });
+        patchRetry.disabled = patchBusy || patchLoading;
+    }
+
+    function typedOutbounds(r) {
+        if (!r || typeof r !== 'object' || Array.isArray(r) || 'error' in r || r.unknown === true || (r.success !== undefined && r.success !== true) ||
+            typeof r.outbound_count !== 'number' || !isFinite(r.outbound_count) || r.outbound_count < 0 || Math.floor(r.outbound_count) !== r.outbound_count) return null;
+        var outbounds = r.outbounds;
+        // Lua's native JSON may encode an empty table as {}. Only the explicit
+        // count-zero contract permits this one conversion.
+        if (r.outbound_count === 0 && outbounds && typeof outbounds === 'object' && !Array.isArray(outbounds) && Object.keys(outbounds).length === 0) outbounds = [];
+        if (!Array.isArray(outbounds) || outbounds.length !== r.outbound_count) return null;
+        var valid = outbounds.every(function(o) {
+            return o && typeof o === 'object' && !Array.isArray(o) && !('error' in o) && typeof o.type === 'string' && o.type.length > 0 &&
+                typeof o.server === 'string' && typeof o.tls_enabled === 'boolean' && typeof o.has_fragment === 'boolean' &&
+                typeof o.tag === 'string' &&
+                (!o.tls_enabled || /^[a-zA-Z0-9_.-]+$/.test(o.tag));
+        });
+        return valid ? outbounds : null;
+    }
 
     patchFragCb.addEventListener('change', function() {
         patchFallbackWrap.style.display = patchFragCb.checked ? 'block' : 'none';
     });
 
-    patchBtn.addEventListener('click', function() {
+    function loadOutbounds() {
+        if (patchBusy || patchLoading) return;
+        var sequence = ++patchSequence;
+        patchReady = false;
+        patchLoading = true;
+        patchList.textContent = '';
+        [patchApply, patchRemove, patchSelectAll].forEach(function(button) { button.style.display = 'inline-block'; });
+        patchControls();
         patchStatus.textContent = 'Loading outbounds...';
         patchStatus.style.color = PT.color('dim');
-        PT.getJson(PT.urls.outbounds, function(r) {
-            if (!r) {
-                patchList.innerHTML = '<p style="color:var(--ps-error);">Failed to load outbounds.</p>';
-                patchStatus.textContent = '';
+        PT.getJson(PT.urls.outbounds, function(r, status, reason) {
+            if (sequence !== patchSequence) return;
+            patchLoading = false;
+            var outbounds = typedOutbounds(r);
+            if (outbounds === null) {
+                patchList.textContent = 'Outbounds are unavailable. Check the sing-box config and retry the read.';
+                PT.setErr(patchStatus, r && typeof r.error === 'string' && r.error ||
+                    (status && status !== 200 ? 'Cannot read outbounds (HTTP ' + status + ')' : reason || 'Invalid outbounds response. Expected a typed list and matching outbound_count.'),
+                    r && typeof r.details === 'string' ? r.details : null);
+                patchControls();
                 return;
             }
-            var tlsObs = (r.outbounds || []).filter(function(o) { return o.tls_enabled; });
+            var tlsObs = outbounds.filter(function(o) { return o.tls_enabled; });
             if (tlsObs.length === 0) {
-                patchList.innerHTML = '<p style="color:var(--ps-text-dim);">No TLS outbounds found.</p>';
+                patchList.textContent = 'No TLS outbounds found.';
                 patchApply.style.display = 'none';
                 patchRemove.style.display = 'none';
                 patchSelectAll.style.display = 'none';
@@ -276,19 +315,32 @@ window.PT = {
                 patchRemove.style.display = 'inline-block';
                 patchSelectAll.style.display = 'inline-block';
             }
+            patchReady = tlsObs.length > 0;
+            patchControls();
             patchStatus.textContent = '';
         });
+    }
+
+    patchBtn.addEventListener('click', function() {
         patchModal.style.display = 'flex';
+        loadOutbounds();
+    });
+    patchRetry.addEventListener('click', loadOutbounds);
+
+    var hidePatchModal = PT.bindModal(patchModal, patchClose, function() {
+        ++patchSequence;
+        patchReady = patchLoading = false;
+        patchControls();
     });
 
-    PT.bindModal(patchModal, patchClose);
-
     patchSelectAll.addEventListener('click', function() {
+        if (!patchReady || patchBusy || patchLoading) return;
         var cbs = patchList.querySelectorAll('.ps-patch-cb');
         cbs.forEach(function(cb) { cb.checked = true; });
     });
 
     function doPatch(isRemove) {
+        if (!patchReady || patchBusy || patchLoading) return;
         var selected = [];
         patchList.querySelectorAll('.ps-patch-cb:checked').forEach(function(cb) {
             selected.push(cb.getAttribute('data-tag'));
@@ -316,36 +368,31 @@ window.PT = {
                 params += '&fallback_delay=' + encodeURIComponent(patchFallbackInput.value || '500ms');
             }
         }
-        patchApply.disabled = true;
-        patchRemove.disabled = true;
+        patchBusy = true;
+        var sequence = patchSequence;
+        patchControls();
         patchStatus.textContent = isRemove ? 'Removing...' : 'Patching...';
         patchStatus.style.color = PT.color('info');
-        PT.xhrPost(PT.urls.patchFragment, params, function(xhr) {
-            patchApply.disabled = false;
-            patchRemove.disabled = false;
-            if (!xhr) {
-                patchStatus.textContent = 'Network error';
-                patchStatus.style.color = PT.color('error');
+        PT.postJson(PT.urls.patchFragment, params, function(resp, error) {
+            patchBusy = false;
+            if (sequence !== patchSequence) { patchControls(); ctx.refreshStatus(); return; }
+            if (error || resp.success !== true) {
+                patchReady = false;
+                patchControls();
+                PT.setErr(patchStatus, error && error.applied ? 'Patch saved to disk, but service restart failed or is unverified.' : error ? error.message : 'Invalid patch response', error && error.details);
+                ctx.refreshStatus();
                 return;
             }
-            try {
-                var resp = JSON.parse(xhr.responseText);
-                if (resp.success) {
-                    patchStatus.textContent = isRemove ? 'Removed. Restarting...' : 'Patched. Restarting...';
-                    patchStatus.style.color = PT.color('success');
-                    setTimeout(function() {
-                        patchModal.style.display = 'none';
-                        ctx.loadConfig();
-                        ctx.refreshStatus();
-                    }, 2000);
-                } else {
-                    patchStatus.textContent = resp.error || resp.details || 'Failed';
-                    patchStatus.style.color = PT.color('error');
-                }
-            } catch (e) {
-                patchStatus.textContent = 'Failed';
-                patchStatus.style.color = PT.color('error');
-            }
+            patchStatus.textContent = isRemove ? 'Removed from disk. Restart requested; check service status.' : 'Patched on disk. Restart requested; check service status.';
+            patchStatus.style.color = PT.color('info');
+            patchReady = false;
+            patchControls();
+            setTimeout(function() {
+                if (sequence !== patchSequence) return;
+                hidePatchModal();
+                ctx.loadConfig();
+                ctx.refreshStatus();
+            }, 2000);
         });
     }
 
@@ -357,21 +404,79 @@ window.PT = {
     var wrapperStatusEl = document.getElementById('ps-wrapper-status');
     var wrapperModal = document.getElementById('ps-wrapper-modal');
     var wrapperConfirm = document.getElementById('ps-wrapper-confirm');
+    var wrapperRetry = document.getElementById('ps-wrapper-retry');
     var wrapperModalStatus = document.getElementById('ps-wrapper-modal-status');
     var wrapperClose = document.getElementById('ps-wrapper-close');
     var wrapFragCb = document.getElementById('ps-wrap-fragment');
     var wrapRecCb = document.getElementById('ps-wrap-record-fragment');
     var wrapFallbackWrap = document.getElementById('ps-wrap-fallback-wrap');
     var wrapFallbackInput = document.getElementById('ps-wrap-fallback-delay');
+    var wrapperState = null, wrapperBusy = false, wrapperSettingsReady = false, wrapperLoading = false, wrapperSequence = 0;
+
+    function wrapperControls() {
+        [wrapperConfirm, wrapFragCb, wrapRecCb, wrapFallbackInput].forEach(function(el) {
+            el.disabled = !wrapperSettingsReady || wrapperBusy || wrapperLoading;
+        });
+        wrapperRetry.disabled = wrapperBusy || wrapperLoading;
+    }
+
+    function loadWrapperSettings() {
+        if (wrapperBusy || wrapperLoading) return;
+        var sequence = ++wrapperSequence;
+        wrapperSettingsReady = false;
+        wrapperLoading = true;
+        wrapperControls();
+        wrapperModalStatus.textContent = 'Loading Fragment settings...';
+        wrapperModalStatus.style.color = PT.color('dim');
+        PT.getJson(PT.urls.fragmentSettings, function(s, status, reason) {
+            if (sequence !== wrapperSequence) return;
+            wrapperLoading = false;
+            if (!s || typeof s !== 'object' || Array.isArray(s) || 'error' in s || s.unknown === true || (s.success !== undefined && s.success !== true) ||
+                typeof s.fragment !== 'boolean' || typeof s.record_fragment !== 'boolean' || typeof s.fallback_delay !== 'string' || !/^\d+[a-zA-Z]+$/.test(s.fallback_delay)) {
+                wrapperRetry.style.display = 'inline-block';
+                PT.setErr(wrapperModalStatus, (s && typeof s.error === 'string' && s.error ||
+                    (status && status !== 200 ? 'Cannot read Fragment settings (HTTP ' + status + ')' : reason || 'Invalid Fragment settings response')) + '. Retry the settings read before enabling.',
+                    s && typeof s.details === 'string' ? s.details : null);
+                wrapperControls();
+                return;
+            }
+            wrapFragCb.checked = s.fragment;
+            wrapRecCb.checked = s.record_fragment;
+            wrapFallbackInput.value = s.fallback_delay;
+            wrapFallbackWrap.style.display = wrapFragCb.checked ? 'block' : 'none';
+            wrapperSettingsReady = true;
+            wrapperRetry.style.display = 'none';
+            wrapperModalStatus.textContent = '';
+            wrapperControls();
+        });
+    }
+
+    wrapperRetry.addEventListener('click', loadWrapperSettings);
 
     wrapFragCb.addEventListener('change', function() {
         wrapFallbackWrap.style.display = wrapFragCb.checked ? 'block' : 'none';
     });
 
     function checkWrapper() {
-        PT.getJson(PT.urls.wrapperStatus, function(r) {
-            if (!r) return;
-            if (r.installed && r.stale) {
+        wrapperBtn.disabled = true;
+        PT.getJson(PT.urls.wrapperStatus, function(r, status, reason) {
+            if (wrapperBusy) return;
+            wrapperBtn.disabled = false;
+            if (!r || typeof r !== 'object' || Array.isArray(r) || 'error' in r || r.unknown === true || (r.success !== undefined && r.success !== true) ||
+                typeof r.installed !== 'boolean' || typeof r.stale !== 'boolean' || r.duplicate_hooks !== undefined && typeof r.duplicate_hooks !== 'boolean') {
+                wrapperState = null;
+                wrapperBtn.textContent = 'Retry Wrapper Status';
+                PT.setErr(wrapperStatusEl, r && typeof r.error === 'string' && r.error ||
+                    (status && status !== 200 ? 'Wrapper status unknown (HTTP ' + status + ')' : reason || 'Wrapper status unknown'),
+                    r && typeof r.details === 'string' ? r.details : null);
+                return;
+            }
+            wrapperState = r;
+            if (r.duplicate_hooks) {
+                wrapperBtn.textContent = 'Reinstall Wrapper';
+                wrapperStatusEl.textContent = 'Duplicate wrapper hooks detected — needs reinstall';
+                wrapperStatusEl.style.color = PT.color('warning');
+            } else if (r.installed && r.stale) {
                 wrapperBtn.textContent = 'Reinstall Wrapper';
                 wrapperStatusEl.textContent = 'Wrapper lost after Podkop update — needs reinstall';
                 wrapperStatusEl.style.color = PT.color('warning');
@@ -387,60 +492,48 @@ window.PT = {
         });
     }
 
-    wrapperBtn.addEventListener('click', function() {
-        if (wrapperBtn.textContent.indexOf('Reinstall') >= 0) {
-            wrapperBtn.disabled = true;
-            wrapperStatusEl.textContent = 'Reinstalling...';
-            wrapperStatusEl.style.color = PT.color('info');
-            PT.xhrPost(PT.urls.wrapperToggle, 'action=reinstall', function(xhr) {
+    function changeWrapper(action) {
+        wrapperBusy = true;
+        wrapperBtn.disabled = true;
+        wrapperStatusEl.textContent = action === 'reinstall' ? 'Reinstalling...' : 'Disabling...';
+        wrapperStatusEl.style.color = PT.color('info');
+        PT.postJson(PT.urls.wrapperToggle, 'action=' + action, function(r, error) {
+            wrapperBusy = false;
+            if (error || r.success !== true || typeof r.installed !== 'boolean' || r.installed !== (action === 'reinstall') || r.unknown === true) {
+                wrapperState = null;
                 wrapperBtn.disabled = false;
-                if (xhr) {
-                    try {
-                        var r = JSON.parse(xhr.responseText);
-                        if (r.success) {
-                            checkWrapper();
-                        } else {
-                            alert(r.error || 'Failed to reinstall wrapper');
-                            checkWrapper();
-                        }
-                    } catch (e) { checkWrapper(); }
-                }
-            });
+                wrapperBtn.textContent = 'Retry Wrapper Status';
+                PT.setErr(wrapperStatusEl, error ? error.message : 'Invalid wrapper result. Read current wrapper status before another change.', error && error.details);
+                return;
+            }
+            checkWrapper();
+        });
+    }
+
+    wrapperBtn.addEventListener('click', function() {
+        if (wrapperBusy) return;
+        if (!wrapperState) { checkWrapper(); return; }
+        if (wrapperBtn.textContent.indexOf('Reinstall') >= 0) {
+            changeWrapper('reinstall');
             return;
         }
         if (wrapperBtn.textContent.indexOf('Enable') >= 0) {
-            wrapperModalStatus.textContent = '';
             wrapperConfirm.textContent = 'Enable';
             wrapperConfirm.style.display = 'inline-block';
-            PT.getJson(PT.urls.fragmentSettings, function(s) {
-                if (!s) return;
-                wrapFragCb.checked = !!s.fragment;
-                wrapRecCb.checked = s.record_fragment !== false;
-                if (s.fallback_delay) wrapFallbackInput.value = s.fallback_delay;
-                wrapFallbackWrap.style.display = wrapFragCb.checked ? 'block' : 'none';
-            });
             wrapperModal.style.display = 'flex';
+            loadWrapperSettings();
         } else {
-            if (!confirm('Disable wrapper?\n\nThis will restore the original Podkop init script.\nFragment settings are only available when enabling wrapper.')) return;
-            wrapperBtn.disabled = true;
-            PT.xhrPost(PT.urls.wrapperToggle, 'action=disable', function(xhr) {
-                wrapperBtn.disabled = false;
-                if (xhr) {
-                    try {
-                        var r = JSON.parse(xhr.responseText);
-                        if (r.success) {
-                            checkWrapper();
-                        } else {
-                            alert(r.error || 'Failed to disable wrapper');
-                        }
-                    } catch (e) {}
-                }
-            });
+            if (!confirm('Disable wrapper?\n\nThis will remove Tweaker-generated hooks from the current Podkop init script.\nFragment settings are only available when enabling wrapper.')) return;
+            changeWrapper('disable');
         }
     });
 
     wrapperConfirm.addEventListener('click', function() {
-        wrapperConfirm.disabled = true;
+        if (!wrapperSettingsReady || wrapperBusy || wrapperLoading) return;
+        var sequence = wrapperSequence;
+        wrapperBusy = true;
+        wrapperBtn.disabled = true;
+        wrapperControls();
         wrapperModalStatus.textContent = 'Enabling...';
         wrapperModalStatus.style.color = PT.color('info');
         var params = 'action=enable'
@@ -449,35 +542,37 @@ window.PT = {
         if (wrapFragCb.checked) {
             params += '&fallback_delay=' + encodeURIComponent(wrapFallbackInput.value || '500ms');
         }
-        PT.xhrPost(PT.urls.wrapperToggle, params, function(xhr) {
-            wrapperConfirm.disabled = false;
-            if (!xhr) {
-                wrapperModalStatus.textContent = 'Network error';
-                wrapperModalStatus.style.color = PT.color('error');
+        PT.postJson(PT.urls.wrapperToggle, params, function(r, error) {
+            wrapperBusy = false;
+            wrapperBtn.disabled = false;
+            wrapperSettingsReady = false;
+            wrapperControls();
+            if (sequence !== wrapperSequence) { checkWrapper(); return; }
+            if (error || r.success !== true || r.installed !== true || r.unknown === true) {
+                var data = r || error && error.data;
+                wrapperRetry.style.display = 'inline-block';
+                PT.setErr(wrapperModalStatus, (data && data.settings_saved === true ? 'Fragment settings saved; wrapper finishing failed. ' : '') +
+                    (error ? error.message : 'Invalid wrapper response') + '. Read current settings before trying again.', error && error.details);
+                checkWrapper();
                 return;
             }
-            try {
-                var r = JSON.parse(xhr.responseText);
-                if (r.success) {
-                    wrapperModalStatus.textContent = 'Enabled.';
-                    wrapperModalStatus.style.color = PT.color('success');
-                    setTimeout(function() {
-                        wrapperModal.style.display = 'none';
-                        checkWrapper();
-                    }, 1000);
-                } else {
-                    wrapperModalStatus.textContent = r.error || 'Failed';
-                    wrapperModalStatus.style.color = PT.color('error');
-                }
-            } catch (e) {
-                wrapperModalStatus.textContent = 'Failed';
-                wrapperModalStatus.style.color = PT.color('error');
-            }
+            wrapperModalStatus.textContent = 'Wrapper enabled.';
+            wrapperModalStatus.style.color = PT.color('success');
+            checkWrapper();
+            setTimeout(function() {
+                if (sequence === wrapperSequence) hideWrapperModal();
+            }, 1000);
         });
     });
 
-    PT.bindModal(wrapperModal, wrapperClose);
+    var hideWrapperModal = PT.bindModal(wrapperModal, wrapperClose, function() {
+        ++wrapperSequence;
+        wrapperSettingsReady = wrapperLoading = false;
+        wrapperControls();
+    });
 
+    patchControls();
+    wrapperControls();
     checkWrapper();
 })();
 </script>

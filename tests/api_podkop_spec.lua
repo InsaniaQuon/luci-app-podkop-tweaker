@@ -1,4 +1,4 @@
--- api_podkop_spec | v1.0.0 | 23.08.2026 | Max-coverage specs for V2 pure handlers of api_podkop
+-- api_podkop_spec | v1.1.0 | 17.10.2026 | Checked service application, process facts and failure preservation
 
 package.path = "./usr/lib/lua/?.lua;./tests/?.lua;" .. package.path
 
@@ -12,17 +12,58 @@ local URL = "https://raw.githubusercontent.com/itdoginfo/podkop/refs/heads/main/
 
 local VALID = "config podkop 'main'\n\toption enabled '1'\n"
 local OLD = "config podkop 'main'\n\toption enabled '0'\n"
+local SERVICE_COMMANDS = {
+    restart = "/etc/init.d/podkop restart 2>&1",
+    start = "'/etc/init.d/podkop' start", stop = "'/etc/init.d/podkop' stop",
+    enable = "/etc/init.d/podkop enable", disable = "/etc/init.d/podkop disable"
+}
+
+local function service_reply(action, output)
+    local expected = assert(SERVICE_COMMANDS[action])
+    return { match = function(cmd)
+        return cmd == require("podkop-tweaker.services").checked_command(expected)
+    end, out = output }
+end
 
 local INFO_JSON = '{"podkop_version":"1.9.2","podkop_latest_version":"2.0.0",' ..
     '"luci_app_version":"4.1.0","sing_box_version":"1.10.0",' ..
     '"openwrt_version":"25.12.5","device_model":"GL-MT6000"}'
 
+local function pid_reply(output)
+    return { match = function(cmd)
+        return cmd:find("pidof", 1, true) and cmd:find("sing-box", 1, true)
+    end, out = output }
+end
+
 local function begin_podkop(opts)
+    opts = opts or {}
+    opts.sys = opts.sys or {}
+    for _, action in ipairs({ "restart", "start", "stop", "enable", "disable" }) do
+        table.insert(opts.sys, service_reply(action, "\nPT_EXIT:0\n"))
+    end
+    table.insert(opts.sys, pid_reply("\nPT_EXIT:1\n"))
     H.begin(opts)
     local UPD = H.reload("podkop-tweaker.api_update")
     UPD.init("4.1.0")
     local PDK = H.reload("podkop-tweaker.api_podkop")
     return PDK
+end
+
+local function commands_containing(text)
+    local result = {}
+    for _, cmd in ipairs(H.exec_cmds()) do
+        if cmd:find(text, 1, true) then result[#result + 1] = cmd end
+    end
+    return result
+end
+
+local function assert_restart(resp, running, instance)
+    assert.is_true(resp.success)
+    assert.is_true(resp.restarting)
+    assert.is_true(resp.verification_required)
+    assert.equal(running or false, resp.previous_running)
+    assert.is_true(resp.previous_identity_known)
+    assert.equal(instance, resp.previous_instance)
 end
 
 after_each(function()
@@ -35,6 +76,40 @@ describe("api_podkop.system_info", function()
             { match = "podkop get_system_info", out = INFO_JSON },
             { match = "stubby -V", out = stubby_line or "Stubby 0.4.3\n" }
         }
+    end
+
+    -- Real release parsing/cache and live APK inventory, with memory-only curl.
+    local function argon_fixture(opts)
+        opts = opts or {}
+        local state = { current = opts.current or "2.4.8-r2", target = opts.target or "3.0.0-r2",
+            locale = opts.locale, checks = 0 }
+        local PDK = begin_podkop({
+            sys = {
+                { match = "podkop get_system_info", out = opts.podkop or INFO_JSON },
+                { match = "stubby -V", out = "Stubby 0.4.3\n" },
+                { match = "apk list --installed --manifest", out = function()
+                    return "base-files 1666~native-r1\nluci-theme-argon " .. state.current .. "\n" ..
+                        (state.locale and "luci-i18n-argon-config-ru " .. state.locale .. "\n" or "")
+                end },
+                { match = "apk --version", out = "apk-tools 3.0.3\n" },
+                { match = "pidof uhttpd", out = "100\n" },
+                { match = "api.github.com/repos/InsaniaQuon",
+                    out = '{"tag_name":"v4.9.9","assets":[{"browser_download_url":"https://github.com/InsaniaQuon/luci-app-podkop-tweaker/releases/download/v4.9.9/x.tar.gz"}]}' }
+            },
+            popen = function(cmd)
+                assert.truthy(cmd:find("api.github.com/repos/jerrykuku", 1, true))
+                state.checks = state.checks + 1
+                local release = { tag_name = "v" .. state.target:match("^(%d+%.%d+%.%d+)"), assets = {} }
+                for _, name in ipairs({ "luci-theme-argon", "luci-app-argon-config", "luci-i18n-argon-config-ru" }) do
+                    local file = name .. "-" .. state.target .. ".apk"
+                    release.assets[#release.assets + 1] = { name = file, size = 10, digest = "sha256:" .. string.rep("a", 64),
+                        browser_download_url = "https://github.com/jerrykuku/luci-theme-argon/releases/download/" .. release.tag_name .. "/" .. file }
+                end
+                return H.json.stringify(state.bad_metadata and { tag_name = release.tag_name, assets = {} } or release) .. "\nPT_CURL_EXIT:0\n"
+            end
+        })
+        H.vfs_write("/etc/openwrt_release", "DISTRIB_RELEASE='25.12.5'\n")
+        return PDK, state
     end
 
     it("full info: parsers, version compare, stubby line", function()
@@ -114,19 +189,63 @@ describe("api_podkop.system_info", function()
         assert.equal("unknown", PDK.system_info().podkop_version)
     end)
 
-    it("argon theme fields surfaced (installed version + latest from check)", function()
-        local sr = sys_ok()
-        local PDK = begin_podkop({
-            sys = {
-                sr[1], sr[2],
-                { match = "apk list --installed", out = "luci-theme-argon-2.4.6-r1 [installed]\n" },
-                { match = "api.github.com/repos/jerrykuku",
-                    out = '{"tag_name":"v2.4.7","assets":[{"name":"luci-theme-argon-2.4.7-r1.apk","browser_download_url":"https://github.com/jerrykuku/luci-theme-argon/releases/download/v2.4.7/luci-theme-argon-2.4.7-r1.apk"}]}' }
-            }
-        })
+    it("surfaces full installed/target APK versions and the backend decision", function()
+        local PDK = argon_fixture()
         local r = PDK.system_info()
-        assert.equal("2.4.6", r.argon_theme_version)
-        assert.equal("2.4.7", r.argon_theme_latest)
+        assert.equal("2.4.8-r2", r.argon_theme_version)
+        assert.equal("3.0.0-r2", r.argon_theme_latest)
+        assert.is_true(r.argon_theme_update_available)
+        assert.is_false(r.argon_theme_resume_available)
+        assert.is_nil(r.argon_theme_error)
+    end)
+
+    it("keeps an exact r1 to r2 update actionable", function()
+        local PDK = argon_fixture({ current = "3.0.0-r1" })
+        local r = PDK.system_info()
+        assert.equal("3.0.0-r1", r.argon_theme_version)
+        assert.equal("3.0.0-r2", r.argon_theme_latest)
+        assert.is_true(r.argon_theme_update_available)
+    end)
+
+    it("recomputes equal-theme locale updates from live inventory, not cached decisions", function()
+        local PDK, state = argon_fixture({ current = "3.0.0-r2", locale = "3.0.0-r1" })
+        assert.is_true(PDK.system_info().argon_theme_update_available)
+        state.locale = "3.0.0-r2"
+        local r = PDK.system_info()
+        assert.equal(r.argon_theme_version, r.argon_theme_latest)
+        assert.is_false(r.argon_theme_update_available)
+        assert.equal(1, state.checks, "release cache is reused, installed inventory is not")
+    end)
+
+    it("forwards same-version recovery phase even when Podkop info is unavailable", function()
+        local PDK = argon_fixture({ current = "3.0.0-r2", podkop = "" })
+        require("podkop-tweaker.theme").check = function(force)
+            assert.is_false(force)
+            return { current_version = "3.0.0-r2", latest_version = "3.0.0-r2",
+                update_available = true, resume_available = true, phase = "css" }
+        end
+        local r = PDK.system_info()
+        assert.equal("Failed to get system info from podkop", r.error)
+        assert.equal("3.0.0-r2", r.argon_theme_version)
+        assert.equal("3.0.0-r2", r.argon_theme_latest)
+        assert.is_true(r.argon_theme_update_available)
+        assert.is_true(r.argon_theme_resume_available)
+        assert.equal("css", r.argon_theme_phase)
+    end)
+
+    it("preserves unsupported/metadata errors instead of treating them as up to date", function()
+        local PDK, state = argon_fixture()
+        H.vfs_write("/etc/openwrt_release", "DISTRIB_RELEASE='24.10.0'\n")
+        local r = PDK.system_info()
+        assert.is_false(r.argon_theme_update_available)
+        assert.equal("2.4.8-r2", r.argon_theme_version)
+        assert.truthy(r.argon_theme_error)
+        H.vfs_write("/etc/openwrt_release", "DISTRIB_RELEASE='25.12.5'\n")
+        state.bad_metadata = true
+        local forced = PDK.check_updates().theme
+        assert.is_false(forced.update_available)
+        assert.truthy(forced.error)
+        assert.equal("2.4.8-r2", forced.current_version)
     end)
 
     it("no installed theme -> nil version, no network theme check", function()
@@ -135,9 +254,12 @@ describe("api_podkop.system_info", function()
         local r = PDK.system_info()
         assert.is_nil(r.argon_theme_version)
         assert.is_nil(r.argon_theme_latest)
-        for _, c in ipairs(H.exec_cmds()) do
-            assert.falsy(c:find("jerrykuku", 1, true), "theme GitHub check with no theme installed")
-        end
+        assert.is_false(r.argon_theme_update_available)
+        assert.is_false(r.argon_theme_resume_available)
+        -- Even an obsolete check stub cannot invent an installed theme.
+        require("podkop-tweaker.theme").check = function() error("theme check must not run without Argon") end
+        assert.is_false(PDK.check_updates().theme.update_available)
+        assert.equal(0, #H.popen_cmds(), "no release request, including force check")
     end)
 
     it("podkop update snapshot cached for 24h overrides live latest", function()
@@ -150,39 +272,65 @@ describe("api_podkop.system_info", function()
     end)
 
     it("check_updates: forces all three sources", function()
-        local sr = sys_ok()
-        local PDK = begin_podkop({
-            sys = {
-                sr[1], sr[2],
-                { match = "apk list --installed", out = "luci-theme-argon-2.4.6-r1 [installed]\n" },
-                { match = "api.github.com/repos/jerrykuku", out = '{"tag_name":"v2.4.7","assets":[]}' },
-                { match = "api.github.com/repos/InsaniaQuon",
-                    out = '{"tag_name":"v4.9.9","assets":[{"browser_download_url":"https://github.com/InsaniaQuon/luci-app-podkop-tweaker/releases/download/v4.9.9/x.tar.gz"}]}' }
-            }
-        })
+        local PDK, state = argon_fixture()
+        assert.equal("3.0.0-r2", PDK.system_info().argon_theme_latest)
+        state.target = "3.0.0-r3"
         local r = PDK.check_updates()
         assert.equal("2.0.0", r.podkop.latest_version)
         assert.is_true(r.podkop.update_available)
         assert.equal("4.9.9", r.tweaker.latest_version)
         assert.is_true(r.tweaker.update_available)
-        assert.equal("2.4.7", r.theme.latest_version)
+        assert.equal("2.4.8-r2", r.theme.current_version)
+        assert.equal("3.0.0-r3", r.theme.latest_version)
         assert.is_true(r.theme.update_available)
+        assert.is_false(r.theme.resume_available)
+        assert.equal(2, state.checks, "force bypasses the fresh release cache")
         -- tweaker cache was force-refreshed (old cache file gone, new written)
         assert.truthy(H.vfs_read("/tmp/tweaker_check_cache.json"):find("4.9.9", 1, true))
     end)
 
     it("check_updates: podkop info failure -> per-source error", function()
-        local PDK = begin_podkop({
-            sys = {
-                { match = "podkop get_system_info", out = "" },
-                { match = "api.github.com/repos/jerrykuku", out = '{"tag_name":"v2.4.7","assets":[]}' },
-                { match = "api.github.com/repos/InsaniaQuon",
-                    out = '{"tag_name":"v4.1.0","assets":[]}' }
-            }
-        })
+        local PDK = argon_fixture({ podkop = "" })
         local r = PDK.check_updates()
         assert.equal("Failed to get podkop info", r.podkop.error)
-        assert.equal("2.4.7", r.theme.latest_version)
+        assert.equal("3.0.0-r2", r.theme.latest_version)
+        assert.is_true(r.theme.update_available)
+    end)
+
+    it("force check retains the complete pinned recovery decision and diagnostics", function()
+        local PDK = argon_fixture({ current = "3.0.0-r2" })
+        local details = string.rep("complete diagnostic line\n", 100)
+        require("podkop-tweaker.theme").check = function(force)
+            assert.is_true(force)
+            return { current_version = "3.0.0-r2", latest_version = "3.0.0-r2",
+                update_available = false, resume_available = true, phase = "translation",
+                error = "Missing release APK for installed package", details = details }
+        end
+        local r = PDK.check_updates().theme
+        assert.equal("3.0.0-r2", r.current_version)
+        assert.equal("3.0.0-r2", r.latest_version)
+        assert.is_false(r.update_available)
+        assert.is_true(r.resume_available)
+        assert.equal("translation", r.phase)
+        assert.equal("Missing release APK for installed package", r.error)
+        assert.equal(details, r.details)
+    end)
+
+    it("readiness matches the full target revision, not just the theme semver", function()
+        local PDK, state = argon_fixture({ current = "3.0.0-r1" })
+        assert.equal("3.0.0-r2", PDK.system_info().argon_theme_latest)
+        local id = string.rep("b", 32)
+        H.vfs_write("/tmp/pt-web-restart.json", H.json.stringify({ id = id, target = "theme", state = "applied",
+            started = os.time(), previous_instance = "100:1000", expected_version = "3.0.0-r2" }))
+        H.vfs_write("/proc/100/stat", "100 (uhttpd) S " .. string.rep("0 ", 18) .. "2000\n")
+        local UPD = require("podkop-tweaker.api_update")
+        local r = UPD.restart_status(id)
+        assert.is_true(r.restarted)
+        assert.equal("3.0.0-r1", r.installed_version)
+        assert.equal("3.0.0-r2", r.expected_version)
+        assert.is_false(r.ready)
+        state.current = "3.0.0-r2"
+        assert.is_true(UPD.restart_status(id).ready)
     end)
 end)
 
@@ -200,11 +348,10 @@ describe("api_podkop.update_start", function()
         H.vfs_write(CFG, OLD)
         local r = PDK.update_start()
         assert.same({ success = true, url = "http://127.0.0.1:7682" }, r)
-        local cmds = H.exec_cmds()
-        assert.equal(2, #cmds)
-        assert.equal("pkill -f 'ttyd.*7682' 2>/dev/null", cmds[1])
-        assert.truthy(cmds[2]:find("^ttyd %-p 7682 sh %-c 'wget %-O /tmp/podkop%-install%.sh " .. URL:gsub("%.", "%%.") .. " && sh /tmp/podkop%-install%.sh' >/dev/null 2>&1 &$"))
-        assert.falsy(cmds[2]:find("podkop%-fragment enable", 1, true))
+        assert.equal(1, #commands_containing("pkill -f 'ttyd.*7682'"))
+        local cmd = commands_containing("ttyd -p 7682")[1]
+        assert.truthy(cmd:find("^ttyd %-p 7682 sh %-c 'wget %-O /tmp/podkop%-install%.sh " .. URL:gsub("%.", "%%.") .. " && sh /tmp/podkop%-install%.sh' >/dev/null 2>&1 &$"))
+        assert.falsy(cmd:find("podkop-fragment enable", 1, true))
     end)
 
     it("wrapper active: reinstall tail appended", function()
@@ -212,7 +359,7 @@ describe("api_podkop.update_start", function()
         H.vfs_write(CFG, OLD)
         H.vfs_write(ORIG, "wrapper")
         PDK.update_start()
-        local cmd = H.exec_cmds()[2]
+        local cmd = commands_containing("ttyd -p 7682")[1]
         assert.truthy(cmd:find("rm -f /etc/init.d/podkop.orig && /etc/init.d/podkop-fragment enable", 1, true))
     end)
 
@@ -236,24 +383,31 @@ describe("api_podkop.save_config/import_config", function()
         local PDK = begin_podkop({})
         H.vfs_write(CFG, OLD)
         local r = PDK.save_config(VALID)
-        assert.same({ success = true, restarting = true }, r)
+        assert_restart(r)
         assert.equal(OLD, H.vfs_read(BAK))
         assert.equal(VALID, H.vfs_read(CFG))
-        assert.equal("/etc/init.d/podkop restart 2>&1", H.exec_cmds()[1])
+        assert.equal(1, #commands_containing("/etc/init.d/podkop restart"))
     end)
 
-    it("save: missing config file -> backup error", function()
+    it("save: missing config is an explicit first install", function()
         local PDK = begin_podkop({})
-        assert.same({ error = "Cannot create backup" }, PDK.save_config(VALID))
+        assert_restart(PDK.save_config(VALID))
+        assert.equal(VALID, H.vfs_read(CFG))
+        assert.is_nil(H.vfs_read(BAK))
     end)
 
-    it("save: write failure passthrough", function()
+    it("save: failed owned-stage write preserves live config and usable backup", function()
         local PDK = begin_podkop({})
         H.vfs_write(CFG, OLD)
-        local SRV = require("podkop-tweaker.services")
-        local write = SRV.write_file_atomic
-        SRV.write_file_atomic = function(path, ...) if path == CFG then return false, "werr" end; return write(path, ...) end
-        assert.same({ error = "werr" }, PDK.save_config(VALID))
+        H.vfs_write(BAK, VALID)
+        H.state().failures[CFG .. ".*"] = { write = true, partial = 7 }
+        local r = PDK.save_config(VALID)
+        assert.truthy(r.error)
+        assert.falsy(r.success)
+        assert.falsy(r.applied)
+        assert.equal(OLD, H.vfs_read(CFG))
+        assert.equal(VALID, H.vfs_read(BAK))
+        assert.equal(0, #commands_containing("/etc/init.d/podkop restart"))
     end)
 
     it("import via content field", function()
@@ -286,43 +440,114 @@ describe("api_podkop.save_config/import_config", function()
         assert.same({ error = "Invalid UCI format: no 'config' declarations found" },
             PDK.import_config("nope", nil))
     end)
+
+    it("Save alone skips identical content; explicit Import still requests a restart", function()
+        local PDK = begin_podkop({})
+        H.vfs_write(CFG, VALID)
+        assert.is_true(PDK.save_config(VALID).unchanged)
+        assert.equal(0, #commands_containing("/etc/init.d/podkop restart"))
+        assert_restart(PDK.import_config(VALID))
+        assert.equal(1, #commands_containing("/etc/init.d/podkop restart"))
+    end)
+
+    it("forwards the full shared response and Save options without reducing metadata", function()
+        local PDK = begin_podkop({})
+        local SRV = require("podkop-tweaker.services")
+        local result = { success = false, applied = true, verification_required = true,
+            previous_running = true, previous_identity_known = true, previous_instance = "42:101",
+            error = "restart failed", details = string.rep("full diagnostic\n", 100), warning = "backup retained" }
+        local calls = {}
+        SRV.apply_service = function(svc, content, options)
+            assert.equal(SRV.podkop, svc)
+            assert.equal(VALID, content)
+            calls[#calls + 1] = options or {}
+            return result
+        end
+        assert.equal(result, PDK.save_config(VALID))
+        assert.is_true(calls[1].skip_unchanged)
+        assert.equal(result, PDK.import_config(VALID))
+        assert.falsy(calls[2].skip_unchanged)
+    end)
+
+    it("quiet nonzero restart is an applied-disk failure, not a successful save", function()
+        local PDK = begin_podkop({ sys = {
+            service_reply("restart", "\nPT_EXIT:19\n"),
+            pid_reply("42\nPT_EXIT:0\n")
+        } })
+        H.vfs_write("/proc/42/stat", "42 (sing-box) S " .. string.rep("0 ", 18) .. "101\n")
+        H.vfs_write(CFG, OLD)
+        local r = PDK.save_config(VALID)
+        assert.is_false(r.success)
+        assert.is_true(r.applied)
+        assert.is_true(r.verification_required)
+        assert.is_true(r.previous_running)
+        assert.is_true(r.previous_identity_known)
+        assert.equal("42:101", r.previous_instance)
+        assert.truthy(r.error)
+        assert.equal(VALID, H.vfs_read(CFG))
+        assert.equal(OLD, H.vfs_read(BAK))
+        assert.equal(1, #commands_containing("/etc/init.d/podkop restart"), "mutation is never replayed")
+    end)
 end)
 
 describe("api_podkop.service_status/toggle", function()
     it("status via pidof sing-box", function()
-        local PDK = begin_podkop({ sys = { { match = "pidof sing-box", out = "42\n" } } })
-        assert.same({ running = true, pid = "42" }, PDK.service_status())
+        local PDK = begin_podkop({ strict = true, sys = { pid_reply("42\nPT_EXIT:0\n") } })
+        H.vfs_write("/proc/42/stat", "42 (sing-box) S " .. string.rep("0 ", 18) .. "101\n")
+        local r = PDK.service_status()
+        assert.is_true(r.running)
+        assert.equal("42", r.pid)
+        assert.equal("42:101", r.instance)
         H.finish()
-        local PDK2 = begin_podkop({})
-        assert.same({ running = false, pid = nil }, PDK2.service_status())
+        local PDK2 = begin_podkop({ strict = true })
+        assert.is_false(PDK2.service_status().running)
     end)
 
     it("toggle: invalid rejected; start/stop exec + pid echo", function()
-        local PDK = begin_podkop({ sys = { { match = "pidof sing-box", out = "7\n" } } })
-        assert.same({ error = "Invalid action" }, PDK.service_toggle("reload"))
-        assert.same({ success = true, running = true }, PDK.service_toggle("start"))
-        assert.truthy(H.exec_cmds()[1]:find("^/etc/init%.d/podkop start"))
+        local PDK = begin_podkop({ strict = true, sys = { pid_reply("7\nPT_EXIT:0\n") } })
+        H.vfs_write("/proc/7/stat", "7 (sing-box) S " .. string.rep("0 ", 18) .. "102\n")
+        assert.same({ success = false, error = "Invalid action" }, PDK.service_toggle("reload"))
+        local started = PDK.service_toggle("start")
+        assert.is_true(started.success)
+        assert.is_true(started.running)
+        assert.equal(1, #commands_containing(SERVICE_COMMANDS.start))
         H.finish()
 
-        local PDK2 = begin_podkop({})
-        assert.same({ success = true, running = false }, PDK2.service_toggle("stop"))
-        assert.truthy(H.exec_cmds()[1]:find("^/etc/init%.d/podkop stop"))
+        local PDK2 = begin_podkop({ strict = true })
+        local stopped = PDK2.service_toggle("stop")
+        assert.is_true(stopped.success)
+        assert.is_false(stopped.running)
+        assert.equal(1, #commands_containing(SERVICE_COMMANDS.stop))
+    end)
+
+    it("preserves Unknown status and failed service-command diagnostics", function()
+        local details = string.rep("pid query failed\n", 40)
+        local PDK = begin_podkop({ strict = true, sys = {
+            pid_reply(details .. "\nPT_EXIT:2\n"),
+            service_reply("start", "\nPT_EXIT:1\n")
+        } })
+        local status = PDK.service_status()
+        assert.truthy(status.error)
+        assert.is_nil(status.running)
+        local result = PDK.service_toggle("start")
+        assert.is_false(result.success)
+        assert.truthy(result.error)
     end)
 end)
 
 describe("api_podkop.rollback", function()
     it("missing backup -> friendly error", function()
         local PDK = begin_podkop({})
-        assert.same({ error = "Backup file not found" }, PDK.rollback())
+        assert.equal("Backup file not found", PDK.rollback().error)
     end)
 
     it("restores and restarts", function()
         local PDK = begin_podkop({})
         H.vfs_write(BAK, OLD)
         H.vfs_write(CFG, "broken")
-        assert.same({ success = true, restarting = true }, PDK.rollback())
+        assert_restart(PDK.rollback())
         assert.equal(OLD, H.vfs_read(CFG))
-        assert.equal("/etc/init.d/podkop restart 2>&1", H.exec_cmds()[1])
+        assert.equal(1, #commands_containing("/etc/init.d/podkop restart"))
     end)
 end)
 
@@ -348,11 +573,37 @@ describe("api_podkop.autostart", function()
         local PDK = begin_podkop({})
         H.vfs_write(RC, "link")
         assert.same({ success = true, enabled = true }, PDK.autostart_toggle("enable"))
-        assert.truthy(H.exec_cmds()[1]:find("^/etc/init%.d/podkop enable"))
+        assert.equal(1, #commands_containing("/etc/init.d/podkop enable"))
         H.finish()
 
         local PDK2 = begin_podkop({})
         assert.same({ success = true, enabled = false }, PDK2.autostart_toggle("disable"))
-        assert.truthy(H.exec_cmds()[1]:find("^/etc/init%.d/podkop disable"))
+        assert.equal(1, #commands_containing("/etc/init.d/podkop disable"))
+    end)
+
+    it("failed autostart commands never return success or inferred disabled state", function()
+        local details = string.rep("enable failed\n", 100)
+        local PDK = begin_podkop({ sys = { service_reply("enable", details .. "\nPT_EXIT:4\n") } })
+        local r = PDK.autostart_toggle("enable")
+        assert.is_false(r.success)
+        assert.equal(details, r.details)
+        assert.is_nil(r.enabled)
+    end)
+
+    it("autostart open/close failures are read errors, not disabled", function()
+        local PDK = begin_podkop({ failures = { [RC] = { open = true, errno = 13 } } })
+        assert.truthy(PDK.autostart().error)
+        assert.is_nil(PDK.autostart().enabled)
+        H.state().failures[RC] = { close = true }
+        H.vfs_write(RC, "link")
+        assert.truthy(PDK.autostart_toggle("enable").error)
+    end)
+
+    it("successful command with unchanged autostart state is not confirmed", function()
+        local PDK = begin_podkop({})
+        local r = PDK.autostart_toggle("enable")
+        assert.is_false(r.success)
+        assert.is_false(r.enabled)
+        assert.truthy(r.error)
     end)
 end)

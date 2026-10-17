@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.5.0 | 03.09.2026 | system_info: 24h podkop-update snapshot + argon theme fields; check_updates composer
+-- Podkop Tweaker | v4.10.2 | 17.10.2026 | Shared checked service application and restart metadata
 -- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local H = require("podkop-tweaker.http")
@@ -14,22 +14,6 @@ M.CONFIG_MAX_SIZE = LIB.UCI_MAX_SIZE
 local PODKOP_INSTALL_URL = "https://raw.githubusercontent.com/itdoginfo/podkop/refs/heads/main/install.sh"
 local PODKOP_CHECK_CACHE = "/tmp/pt_podkop_check.json"
 local CHECK_CACHE_TTL = 86400
-
-local function save_and_restart(content)
-    local sys = require("luci.sys")
-
-    if not S.backup_config() then
-        return false, "Cannot create backup"
-    end
-
-    local ok, err = SRV.write_file_atomic(SRV.podkop.config, content)
-    if not ok then
-        return false, err
-    end
-
-    sys.exec("/etc/init.d/podkop restart 2>&1")
-    return true
-end
 
 local function parse_podkop_info(raw)
     local info
@@ -84,13 +68,14 @@ local function podkop_update_snapshot(info, force)
     return entry
 end
 
--- Theme latest via the 24h cache; refreshes the cache (network) when missing/expired.
-local function theme_latest_auto()
-    local info = THEME.check(false)
-    if info and not info.error then
-        return info.latest_version
-    end
-    return nil
+-- Release facts may be cached, but package revisions and recovery are live.
+-- Keep the absence guard here as well: no theme means no release request.
+local function theme_status(force)
+    local current = THEME.installed_version()
+    if not current then return { update_available = false, resume_available = false } end
+    local info = THEME.check(force)
+    info.current_version = info.current_version or current
+    return info
 end
 
 function M.system_info()
@@ -99,9 +84,7 @@ function M.system_info()
     local raw = sys.exec("podkop get_system_info 2>/dev/null")
     local info = parse_podkop_info(raw)
 
-    -- theme detect once; no installed theme -> no network check at all
-    local argon_ver = THEME.installed_version()
-    local argon_latest = argon_ver and theme_latest_auto() or nil
+    local theme = theme_status(false)
     local tweaker = UPD.cached_update() or {}
 
     if not info or not info.podkop_version then
@@ -116,8 +99,13 @@ function M.system_info()
             tweaker_version = UPD.get_version(),
             tweaker_latest = tweaker.latest_version,
             tweaker_download_url = tweaker.download_url,
-            argon_theme_version = argon_ver,
-            argon_theme_latest = argon_latest,
+            argon_theme_version = theme.current_version,
+            argon_theme_latest = theme.latest_version,
+            argon_theme_update_available = theme.update_available == true,
+            argon_theme_resume_available = theme.resume_available == true,
+            argon_theme_phase = theme.phase,
+            argon_theme_error = theme.error,
+            argon_theme_details = theme.details,
             error = "Failed to get system info from podkop"
         }
     end
@@ -138,8 +126,13 @@ function M.system_info()
         tweaker_version = UPD.get_version(),
         tweaker_latest = tweaker.latest_version,
         tweaker_download_url = tweaker.download_url,
-        argon_theme_version = argon_ver,
-        argon_theme_latest = argon_latest
+        argon_theme_version = theme.current_version,
+        argon_theme_latest = theme.latest_version,
+        argon_theme_update_available = theme.update_available == true,
+        argon_theme_resume_available = theme.resume_available == true,
+        argon_theme_phase = theme.phase,
+        argon_theme_error = theme.error,
+        argon_theme_details = theme.details
     }
 end
 
@@ -157,8 +150,8 @@ function M.check_updates()
     -- tweaker: drop the cache to bypass the rate-limit gate, then check
     local tweaker = UPD.check_update_force()
 
-    -- theme: force-check writes a fresh 24h cache entry
-    local theme = THEME.check(true)
+    -- theme: refresh release facts and all live package/recovery metadata
+    local theme = theme_status(true)
 
     return { podkop = podkop, tweaker = tweaker, theme = theme }
 end
@@ -201,11 +194,7 @@ function M.save_config(content)
     if not ok then
         return { error = err }
     end
-    ok, err = save_and_restart(content)
-    if not ok then
-        return { error = err }
-    end
-    return { success = true, restarting = true }
+    return SRV.apply_service(SRV.podkop, content, { skip_unchanged = true })
 end
 
 function M.export_config()
@@ -228,11 +217,7 @@ function M.import_config(upload_content, upload_file)
     if not ok then
         return { error = err }
     end
-    ok, err = save_and_restart(upload_content)
-    if not ok then
-        return { error = err }
-    end
-    return { success = true, restarting = true }
+    return SRV.apply_service(SRV.podkop, upload_content)
 end
 
 function M.service_status()
@@ -248,25 +233,26 @@ function M.service_toggle(action)
 end
 
 function M.autostart()
-    local fd = io.open("/etc/rc.d/S99podkop", "r")
-    local resp = {
-        enabled = (fd ~= nil)
-    }
-    if fd then fd:close() end
-    return resp
+    local content, err, errno = SRV.read_file("/etc/rc.d/S99podkop", LIB.UCI_MAX_SIZE)
+    if content ~= nil then return { enabled = true } end
+    if errno == 2 then return { enabled = false } end
+    return { error = "Cannot read Podkop autostart state", details = err }
 end
 
 function M.autostart_toggle(action)
     if action ~= "enable" and action ~= "disable" then
         return { error = "Invalid action" }
     end
-    require("luci.sys").exec("/etc/init.d/podkop " .. action .. " 2>&1")
-    local fd = io.open("/etc/rc.d/S99podkop", "r")
-    local resp = {
-        success = true,
-        enabled = (fd ~= nil)
-    }
-    if fd then fd:close() end
+    local ok, details = SRV.exec_checked("/etc/init.d/podkop " .. action)
+    if not ok then
+        return { success = false, error = "Podkop autostart command failed", details = details }
+    end
+    local resp = M.autostart()
+    if resp.error then resp.success = false; return resp end
+    if resp.enabled ~= (action == "enable") then
+        return { success = false, error = "Podkop autostart state did not change as requested", enabled = resp.enabled }
+    end
+    resp.success = true
     return resp
 end
 

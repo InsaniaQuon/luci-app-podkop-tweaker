@@ -28,6 +28,9 @@ jobs:
       - name: Run frontend update regression tests
         run: node tests/frontend_update_spec.js
 
+      - name: Run shared frontend transport regressions
+        run: node tests/frontend_transport_spec.js
+
       - name: Run frontend theme regression tests
         run: node tests/frontend_theme_spec.js
 
@@ -40,8 +43,20 @@ jobs:
       - name: Run frontend reliability regressions
         run: node tests/frontend_reliability_spec.js
 
+      - name: Run Stubby frontend result and lifecycle regressions
+        run: node tests/frontend_stubby_spec.js
+
       - name: Check portable background execution
         run: lua5.1 tests/native_background.lua
+
+      - name: Check APK hook stdin isolation
+        run: lua5.1 tests/native_apk_stdio.lua
+
+      - name: Check atomic Fragment writer and idempotent wrapper
+        run: python3 tests/native_fragment.py
+
+      - name: Check native shared IO ownership and service backup invariants
+        run: python3 tests/native_io.py
 
       - name: Build and verify release archive
         env:

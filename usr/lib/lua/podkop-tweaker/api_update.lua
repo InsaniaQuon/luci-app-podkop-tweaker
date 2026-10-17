@@ -14,7 +14,7 @@ local GIT_API_URL = "https://api.github.com/repos/" .. GIT_REPO .. "/releases/la
 local CHECK_CACHE_FILE = "/tmp/tweaker_check_cache.json"
 local CHECK_CACHE_TTL = 86400
 
-M.UPLOAD_MAX_SIZE = 128000
+M.UPLOAD_MAX_SIZE = 256000
 
 -- Files removed in newer versions; cleaned up after every successful self-update
 local DEPRECATED_PATHS = {
@@ -89,7 +89,7 @@ end
 
 local function run_checked(command)
     local sys = require("luci.sys")
-    local raw = sys.exec("(" .. command .. ") 2>&1; printf '\\nPT_EXIT:%s\\n' \"$?\"") or ""
+    local raw = sys.exec(SRV.checked_command(command)) or ""
     local details, status = raw:match("^(.*)\nPT_EXIT:(%d+)\n$")
     return status == "0", details or raw
 end

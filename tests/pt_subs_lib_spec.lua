@@ -210,6 +210,189 @@ describe("parse_subscription_raw", function()
     end)
 end)
 
+describe("strict subscription state IO", function()
+    local path = "/virtual/subs.json"
+    after_each(function() H.finish() end)
+
+    it("initializes only a missing first-use file without writing it", function()
+        H.begin({})
+        local s = require("pt-subs-lib")
+        local data, err = s.read_subs(path)
+        assert.same({}, data)
+        assert.is_nil(err)
+        assert.falsy(H.vfs_exists(path))
+        assert.same({}, H.stage_paths())
+        assert.is_true(s.write_subs(data, path))
+        assert.equal(1, s.read_subs(path).version)
+        assert.is_nil(data.version, "serialization must not modify the caller's metadata")
+    end)
+
+    for _, raw in ipairs({ "", " \r\n\t", "{broken", "[]", "[{}]", "true", "42", "null", '"text"',
+        '{"settings":false}', '{"settings":{"auto_update_interval":"4"}}',
+        '{"settings":{"auto_update_on_restart":"1"}}', '{"settings":{"log_display_count":0}}',
+        '{"main":[7]}', '{"main":[{"subscription_url":false}]}', '{"main":[{"proxy_name":[]}]}',
+        '{"main":[{"last_updated":5}]}', '{"version":"1"}' }) do
+        it("rejects existing invalid/typed state and retains its exact bytes: " .. raw:sub(1, 60), function()
+            H.begin({})
+            H.vfs_write(path, raw)
+            local data, err = require("pt-subs-lib").read_subs(path)
+            assert.is_nil(data)
+            assert.is_string(err)
+            assert.equal(raw, H.vfs_read(path))
+            assert.same({}, H.stage_paths())
+        end)
+    end
+
+    for _, operation in ipairs({ "open", "read", "close" }) do
+        it("does not treat an existing " .. operation .. " failure as first use", function()
+            H.begin({ failures = { [path] = { [operation] = true, errno = 5 } } })
+            local raw = '{"version":3,"main":[{"subscription_url":"https://provider.test"}]}'
+            H.vfs_write(path, raw)
+            local data, err = require("pt-subs-lib").read_subs(path)
+            assert.is_nil(data)
+            assert.matches("Cannot read subscriptions", err)
+            assert.equal(raw, H.vfs_read(path))
+        end)
+    end
+
+    it("rejects non-ENOENT open failure even when no file can be inspected", function()
+        H.begin({ failures = { [path] = { open = true, errno = 13 } } })
+        local data, err = require("pt-subs-lib").read_subs(path)
+        assert.is_nil(data)
+        assert.is_string(err)
+        assert.falsy(H.vfs_exists(path))
+    end)
+
+    it("bounds the complete read instead of accepting an oversized state", function()
+        H.begin({})
+        local s = require("pt-subs-lib")
+        local raw = '{"future":"' .. string.rep("x", s.SUB_MAX_SIZE) .. '"}'
+        H.vfs_write(path, raw)
+        local data, err = s.read_subs(path)
+        assert.is_nil(data)
+        assert.matches("size limit", err)
+        assert.equal(raw, H.vfs_read(path))
+    end)
+
+    it("round-trips version, sparse slots and unknown fields without mutating the input", function()
+        H.begin({})
+        local s = require("pt-subs-lib")
+        H.vfs_write(path, '{"version":7,"future":{"flag":"keep"},"future_flag":"preserve","settings":{"future":{"a":1}},' ..
+            '"main":[null,false,{"subscription_url":"https://provider.test","proxy_name":"third","future":{"b":2}}]}')
+        local data = assert(s.read_subs(path))
+        assert.is_nil(data.main[1])
+        assert.is_false(data.main[2])
+        assert.equal("third", data.main[3].proxy_name)
+        assert.is_true(s.write_subs(data, path))
+        local written = assert(s.read_subs(path))
+        assert.equal(7, written.version)
+        assert.same({ flag = "keep" }, written.future)
+        assert.equal("preserve", written.future_flag)
+        assert.same({ a = 1 }, written.settings.future)
+        assert.same({ b = 2 }, written.main[3].future)
+        assert.is_false(written.main[1])
+        assert.is_nil(data.main[1], "filling positional holes must not mutate a read snapshot")
+        assert.equal(7, data.version)
+    end)
+
+    for _, operation in ipairs({ "open", "write", "close", "rename" }) do
+        it("retains the live state and metadata on publication " .. operation .. " failure", function()
+            H.begin({ failures = { [operation == "rename" and path or path .. ".tmp.*"] = { [operation] = true, partial = 3 } } })
+            local s = require("pt-subs-lib")
+            local before = '{"version":7,"future":{"flag":"old"}}'
+            H.vfs_write(path, before)
+            local data = { version = 7, future = { flag = "new" } }
+            local ok, err = s.write_subs(data, path)
+            assert.is_false(ok)
+            assert.is_string(err)
+            assert.equal(before, H.vfs_read(path))
+            assert.same({ version = 7, future = { flag = "new" } }, data)
+            for _, stage in ipairs(H.stage_paths(path .. ".tmp.*")) do assert.falsy(H.vfs_exists(stage)) end
+        end)
+    end
+
+    it("timestamp mutation keeps unknown association fields and checks the final write", function()
+        H.begin({})
+        local s = require("pt-subs-lib")
+        H.vfs_write(path, '{"version":4,"main":[{"subscription_url":"https://provider.test","future":"keep"}]}')
+        assert.is_true(s.update_subs_timestamp(path, "main", 0, "auto"))
+        local data = assert(s.read_subs(path))
+        assert.equal(4, data.version)
+        assert.equal("keep", data.main[1].future)
+        local before = H.vfs_read(path)
+        H.state().failures[path] = { rename = true }
+        local ok, err = s.update_subs_timestamp(path, "main", 0, "manual")
+        assert.is_false(ok)
+        assert.is_string(err)
+        assert.equal(before, H.vfs_read(path))
+    end)
+end)
+
+describe("subscription publication versus lock-release uncertainty", function()
+    local path, lock = "/virtual/subs.json", "/var/lock/podkop-tweaker-subscriptions.lock"
+    after_each(function() H.finish() end)
+
+    for _, published in ipairs({ false, true }) do
+        it("reports only actual state publication when release fails (published=" .. tostring(published) .. ")", function()
+            local failures = { [lock] = { rmdir = true } }
+            if not published then failures[path .. ".tmp.*"] = { write = true, partial = 3 } end
+            H.begin({ strict = true, failures = failures })
+            local s = require("pt-subs-lib")
+            local before = '{"version":7,"settings":{"log_display_count":4}}'
+            H.vfs_write(path, before)
+            local ok, err, applied, unknown = s.write_subs({ version = 7, settings = { log_display_count = 12 } }, path)
+            assert.is_false(ok)
+            assert.equal(published, applied == true)
+            assert.is_true(unknown)
+            assert.matches("cannot release owned lock", err)
+            if published then
+                assert.equal(12, s.read_subs(path).settings.log_display_count)
+            else
+                assert.matches("Injected write failure", err)
+                assert.equal(before, H.vfs_read(path))
+            end
+        end)
+    end
+
+    it("retains the timestamp read failure without claiming applied state when release also fails", function()
+        H.begin({ strict = true, failures = { [lock] = { rmdir = true }, [path] = { read = true } } })
+        local before = '{"main":[{"subscription_url":"https://provider.test","proxy_name":"node"}]}'
+        H.vfs_write(path, before)
+        local ok, err, applied, unknown = require("pt-subs-lib").update_subs_timestamp(path, "main", 0, "auto")
+        assert.is_false(ok)
+        assert.falsy(applied)
+        assert.is_true(unknown)
+        assert.matches("Cannot read subscriptions", err)
+        assert.matches("cannot release owned lock", err)
+        assert.equal(before, H.vfs_read(path))
+        assert.same({}, H.stage_paths())
+    end)
+
+    for _, operation in ipairs({ "read failure", "rotation no-op", "append publication" }) do
+        it("keeps log publication separate from release failure after " .. operation, function()
+            local log = "/virtual/log"
+            local failures = { [lock] = { rmdir = true } }
+            if operation == "read failure" then failures[log] = { read = true } end
+            H.begin({ strict = true, failures = failures })
+            local before = "old event|auto|updated=0|unchanged=1|failed=0\n"
+            H.vfs_write(log, before)
+            local s = require("pt-subs-lib")
+            local ok, err, applied, unknown
+            if operation == "rotation no-op" then ok, err, applied, unknown = s.rotate_log(log, 5)
+            else ok, err, applied, unknown = s.append_log(log, 5, "new event|auto|updated=0|unchanged=0|failed=0") end
+            assert.is_false(ok)
+            assert.is_true(unknown)
+            assert.matches("cannot release owned lock", err)
+            assert.equal(operation == "append publication", applied == true)
+            if operation ~= "append publication" then
+                assert.equal(before, H.vfs_read(log))
+                assert.same({}, H.stage_paths())
+            end
+            if operation == "read failure" then assert.matches("Cannot read subscription log", err) end
+        end)
+    end
+end)
+
 describe("rotate_log", function()
     before_each(function() H.begin({}) end)
     after_each(function() H.finish() end)
@@ -314,6 +497,20 @@ describe("append_log", function()
         assert.equal(3, #lines)
         assert.equal("event 2|auto|updated=0|unchanged=0|failed=0", lines[1])
     end)
+
+    for _, operation in ipairs({ "open", "read", "close", "write", "rename" }) do
+        it("reports log " .. operation .. " failure without losing the existing events", function()
+            local path = "/virtual/log"
+            local failure_path = (operation == "write" and path .. ".tmp-write.*") or path
+            H.state().failures[failure_path] = { [operation] = true, partial = 2 }
+            local before = "event 1|auto|updated=1|unchanged=0|failed=0\n  main:\n    node: updated\n"
+            H.vfs_write(path, before)
+            local ok, err = require("pt-subs-lib").append_log(path, 1, "event 2|auto|updated=0|unchanged=1|failed=0")
+            assert.is_false(ok)
+            assert.is_string(err)
+            assert.equal(before, H.vfs_read(path))
+        end)
+    end
 end)
 
 describe("_is_valid_update_path", function()
@@ -428,7 +625,7 @@ describe("backup_file", function()
         assert.equal("new content", content)
     end)
 
-    it("does not leave .tmp file on success", function()
+    it("does not leave owned unique stages on success", function()
         local src = test_dir .. "/source.conf"
         local dst = test_dir .. "/backup.conf"
 
@@ -438,12 +635,13 @@ describe("backup_file", function()
 
         pt.backup_file(src, dst)
 
-        local tmpfd = io.open(dst .. ".tmp", "r")
-        assert.is_nil(tmpfd)
+        local stages = H.stage_paths(dst .. ".tmp.*")
+        assert.equal(1, #stages)
+        for _, stage in ipairs(stages) do assert.falsy(H.vfs_exists(stage)) end
     end)
 
     it("returns false when destination dir is not writable", function()
-        H.state().failures["/nonexistent_dir/backup.conf.tmp"] = { open = true }
+        H.state().failures["/nonexistent_dir/backup.conf.tmp.*"] = { open = true }
         local src = test_dir .. "/source.conf"
         local fd = io.open(src, "w")
         fd:write("data")

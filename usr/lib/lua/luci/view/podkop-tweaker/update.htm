@@ -69,6 +69,7 @@ window.PT = {
     var uploading = false;
     var applying = false;
     var archiveVersion = '';
+    var uploadMaxSize = 256000;
 
     function setStatus(text, color) {
         resultEl.style.display = '';
@@ -113,8 +114,8 @@ window.PT = {
 
     function uploadFile(file) {
         if (uploading || applying) return;
-        if (file.size > 128000) {
-            showError('Archive too large (max 128000 bytes)');
+        if (file.size > uploadMaxSize) {
+            showError('Archive too large (max ' + uploadMaxSize + ' bytes)');
             return;
         }
         uploading = true;
@@ -123,23 +124,17 @@ window.PT = {
 
         var form = new FormData();
         form.append('archive', file, file.name);
-        PT.xhrPost(PT.urls.upload, form, function(xhr) {
+        PT.postJson(PT.urls.upload, form, function(resp, error) {
             uploading = false;
             fileInput.disabled = false;
-            if (!xhr) { showError('Network error'); return; }
-            var resp = null;
-            try { resp = JSON.parse(xhr.responseText); } catch (e) {}
-            if (xhr.status !== 200) {
-                showError('HTTP error: ' + xhr.status + (resp && resp.error ? ': ' + resp.error : ''),
-                    resp && resp.details ? resp.details : xhr.responseText);
-            } else if (!resp) {
-                showError('Invalid response', xhr.responseText);
+            if (error) {
+                showError(error.message, error.details);
             } else if (resp.success) {
                 showResult(resp);
             } else {
-                showError(resp.error || 'Unknown error', resp.details);
+                showError('Unknown error', resp.details);
             }
-        });
+        }, 120000);
     }
 
     function doApply(reinstall) {

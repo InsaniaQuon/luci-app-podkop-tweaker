@@ -9,48 +9,155 @@ PATCH_SCRIPT="/usr/bin/podkop-fragment-patch.sh"
 FRAGMENT_INIT="/etc/init.d/podkop-fragment"
 FRAGMENT_CONFIG="/etc/config/podkop-fragment"
 DEFAULT_LOG="/var/log/podkop-fragment.log"
+WRAPPER_LOCK="/var/lock/podkop-fragment-wrapper.lock"
 
-_install_wrapper() {
-	if [ -f "$PODKOP_ORIG" ]; then
-		echo "Wrapper already installed ($PODKOP_ORIG exists)"
-		return 0
+_wrapper_cleanup() {
+	[ -z "$CURRENT_TMP" ] || rm -f "$CURRENT_TMP"
+	[ -z "$CLEAN_TMP" ] || rm -f "$CLEAN_TMP"
+	[ -z "$NEW_TMP" ] || rm -f "$NEW_TMP"
+	if [ "$WRAPPER_LOCK_HELD" = 1 ]; then
+		rmdir "$WRAPPER_LOCK"
 	fi
+}
 
-	if [ ! -f "$PODKOP_INIT" ]; then
-		echo "ERROR: $PODKOP_INIT not found"
+_wrapper_hash() {
+	local value
+	value="$(sha256sum < "$1")" || return 1
+	value="${value%% *}"
+	case "$value" in ''|*[!0-9a-fA-F]*) return 1 ;; esac
+	[ "${#value}" = 64 ] || return 1
+	printf '%s\n' "$value"
+}
+
+_wrapper_unchanged() {
+	local current original
+	current="$(_wrapper_hash "$PODKOP_INIT")" && original="$(_wrapper_hash "$CURRENT_TMP")" && [ "$current" = "$original" ]
+}
+
+_wrapper_prepare() {
+	CURRENT_TMP=''
+	CLEAN_TMP=''
+	NEW_TMP=''
+	WRAPPER_LOCK_HELD=0
+	trap _wrapper_cleanup 0
+	trap 'exit 129' HUP
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	umask 077
+	if mkdir "$WRAPPER_LOCK" 2>/dev/null; then
+		WRAPPER_LOCK_HELD=1
+	else
+		echo "ERROR: wrapper lock busy or unavailable: $WRAPPER_LOCK"
 		return 1
 	fi
+	if ! command -v sha256sum >/dev/null 2>&1; then
+		echo "ERROR: sha256sum is required to guard wrapper publication"
+		return 1
+	fi
+	if [ ! -f "$PODKOP_INIT" ] || [ ! -s "$PODKOP_INIT" ] || [ -L "$PODKOP_INIT" ]; then
+		echo "ERROR: $PODKOP_INIT must be a nonempty regular file"
+		return 1
+	fi
+	if [ -L "$PODKOP_ORIG" ] || { [ -e "$PODKOP_ORIG" ] && [ ! -f "$PODKOP_ORIG" ]; }; then
+		echo "ERROR: $PODKOP_ORIG is not a regular file"
+		return 1
+	fi
+	CURRENT_TMP="$(mktemp "${PODKOP_INIT}.pt-fragment-current.XXXXXX")" || return 1
+	CLEAN_TMP="$(mktemp "${PODKOP_INIT}.pt-fragment-clean.XXXXXX")" || return 1
+	if ! cp -p "$PODKOP_INIT" "$CURRENT_TMP" || ! sh -n "$CURRENT_TMP" || ! _wrapper_unchanged; then
+		echo "ERROR: current init snapshot failed, is invalid or changed while reading"
+		return 1
+	fi
+	# Match only the literal line emitted by this application. Preserve other
+	# commands/comments mentioning the patcher and all current upstream functions.
+	WRAPPER_HOOK="$(printf '\t( sleep 5 && %s ) &' "$PATCH_SCRIPT")"
+	WRAPPER_HOOK_BODY="( sleep 5 && $PATCH_SCRIPT ) &"
+	NORMALIZE_AWK='
+/^[A-Za-z_][A-Za-z_0-9]*[ \t]*\(\)/ { managed=($0 ~ /^(start_service|reload_service)\(\)/) }
+{
+	line=$0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
+	if (managed && line == hook) { found=1; if (mode == "clean") next }
+	if (mode == "clean") print
+}
+/^}/ { managed=0 }
+END { if (mode == "detect") exit found ? 0 : 1 }
+'
+	if ! cp -p "$CURRENT_TMP" "$CLEAN_TMP"; then
+		echo "ERROR: could not prepare clean current init"
+		return 1
+	fi
+	awk -v hook="$WRAPPER_HOOK_BODY" -v mode=detect "$NORMALIZE_AWK" "$CURRENT_TMP"
+	case "$?" in
+		0) awk -v hook="$WRAPPER_HOOK_BODY" -v mode=clean "$NORMALIZE_AWK" "$CURRENT_TMP" > "$CLEAN_TMP" || return 1 ;;
+		1) : ;; # No owned hooks: retain exact bytes, including a missing final LF.
+		*) echo "ERROR: could not inspect generated hooks"; return 1 ;;
+	esac
+	if ! sh -n "$CLEAN_TMP"; then
+		echo "ERROR: could not derive a valid clean current init"
+		return 1
+	fi
+}
 
-	cp "$PODKOP_INIT" "$PODKOP_ORIG"
-
-	awk '
-/^start_service\(\)/ { in_start=1 }
-in_start && /^}$/ { print "\t( sleep 5 && '"$PATCH_SCRIPT"' ) &"; in_start=0 }
-/^reload_service\(\)/ { in_reload=1 }
-in_reload && /^}$/ { print "\t( sleep 5 && '"$PATCH_SCRIPT"' ) &"; in_reload=0 }
+_install_wrapper() (
+	_wrapper_prepare || exit 1
+	NEW_TMP="$(mktemp "${PODKOP_INIT}.pt-fragment-new.XXXXXX")" || exit 1
+	if ! cp -p "$CLEAN_TMP" "$NEW_TMP" || ! awk -v hook="$WRAPPER_HOOK" '
+/^start_service\(\)/ { starts++; in_start=1 }
+in_start && /^}$/ { print hook; in_start=0; start_hooks++ }
+/^reload_service\(\)/ { reloads++; in_reload=1 }
+in_reload && /^}$/ { print hook; in_reload=0; reload_hooks++ }
 { print }
-' "$PODKOP_ORIG" > "$PODKOP_INIT"
-
-	chmod +x "$PODKOP_INIT"
-	echo "Wrapper installed: $PODKOP_INIT -> $PODKOP_ORIG + patch hook"
-}
-
-_uninstall_wrapper() {
-	if [ ! -f "$PODKOP_ORIG" ]; then
-		return 0
+END { if (starts != 1 || reloads != 1 || start_hooks != 1 || reload_hooks != 1 || in_start || in_reload) exit 1 }
+' "$CLEAN_TMP" > "$NEW_TMP" || ! sh -n "$NEW_TMP" || ! chmod +x "$CLEAN_TMP" "$NEW_TMP"; then
+		echo "ERROR: wrapper generation, syntax or executable permissions failed"
+		exit 1
 	fi
-
-	if grep -q "$PATCH_SCRIPT" "$PODKOP_INIT" 2>/dev/null; then
-		mv "$PODKOP_ORIG" "$PODKOP_INIT"
-		chmod +x "$PODKOP_INIT"
-		echo "Wrapper removed: restored original $PODKOP_INIT"
-	else
-		# Stale state: $PODKOP_INIT was replaced by a podkop package update,
-		# restoring the old orig would roll the init script back. Keep current.
-		rm -f "$PODKOP_ORIG"
-		echo "Wrapper already lost after podkop update: removed $PODKOP_ORIG, kept current $PODKOP_INIT"
+	if ! _wrapper_unchanged; then
+		echo "ERROR: current init changed while preparing wrapper"
+		exit 1
 	fi
-}
+	# Each rename is atomic, not a two-file transaction. Save a clean recoverable
+	# baseline first; a later failure keeps it and reports the partial outcome.
+	if ! mv -f "$CLEAN_TMP" "$PODKOP_ORIG"; then
+		echo "ERROR: could not publish clean original init"
+		exit 1
+	fi
+	CLEAN_TMP=''
+	if ! _wrapper_unchanged || ! mv -f "$NEW_TMP" "$PODKOP_INIT"; then
+		echo "ERROR: clean original saved, but current init changed or wrapper publication failed"
+		exit 1
+	fi
+	NEW_TMP=''
+	echo "Wrapper installed: $PODKOP_INIT -> clean $PODKOP_ORIG + one hook per start/reload"
+)
+
+_uninstall_wrapper() (
+	_wrapper_prepare || exit 1
+	CLEAN_HASH="$(_wrapper_hash "$CLEAN_TMP")" || exit 1
+	CURRENT_HASH="$(_wrapper_hash "$CURRENT_TMP")" || exit 1
+	if ! _wrapper_unchanged; then
+		echo "ERROR: current init changed while preparing wrapper removal"
+		exit 1
+	fi
+	if [ "$CLEAN_HASH" != "$CURRENT_HASH" ]; then
+		if ! chmod +x "$CLEAN_TMP" || ! _wrapper_unchanged || ! mv -f "$CLEAN_TMP" "$PODKOP_INIT"; then
+			echo "ERROR: clean init permissions, source guard or publication failed"
+			exit 1
+		fi
+		CLEAN_TMP=''
+	fi
+	if [ -n "$CLEAN_TMP" ] && ! _wrapper_unchanged; then
+		echo "ERROR: current init changed before stale original cleanup"
+		exit 1
+	fi
+	# Never restore a potentially nested or stale .orig over the current upstream
+	# init. Removing only our exact hooks is safe even after an upstream update.
+	if ! rm -f "$PODKOP_ORIG"; then
+		echo "ERROR: current init cleaned, but old original could not be removed"
+		exit 1
+	fi
+	echo "Wrapper removed: kept current upstream init and removed only generated hooks"
+)
 
 start_service() {
 	"$PATCH_SCRIPT"
@@ -69,28 +176,34 @@ service_triggers() {
 enable() {
 	if ! _install_wrapper; then
 		echo "ERROR: wrapper installation failed"
-		exit 1
+		return 1
 	fi
-	ln -sf "$FRAGMENT_INIT" "/etc/rc.d/S99podkop-fragment"
-	"$PATCH_SCRIPT"
+	if ! ln -sf "$FRAGMENT_INIT" "/etc/rc.d/S99podkop-fragment"; then
+		echo "ERROR: wrapper installed, but autostart link failed"
+		return 1
+	fi
+	if ! "$PATCH_SCRIPT"; then
+		echo "ERROR: wrapper installed, but immediate fragment patch failed"
+		return 1
+	fi
 	echo "podkop-fragment enabled and wrapper installed"
 }
 
 disable() {
-	_uninstall_wrapper
-	rm -f "/etc/rc.d/S99podkop-fragment"
+	_uninstall_wrapper || return 1
+	if ! rm -f "/etc/rc.d/S99podkop-fragment"; then
+		echo "ERROR: wrapper removed, but autostart link removal failed"
+		return 1
+	fi
 	echo "podkop-fragment disabled and wrapper removed"
 }
 
 uninstall() {
-	_uninstall_wrapper
-
-	rm -f "/etc/rc.d/S99podkop-fragment"
-
-	rm -f "$PATCH_SCRIPT"
-	rm -f "$FRAGMENT_INIT"
-	rm -f "$FRAGMENT_CONFIG"
-	rm -f "$DEFAULT_LOG"
+	_uninstall_wrapper || return 1
+	if ! rm -f "/etc/rc.d/S99podkop-fragment" "$PATCH_SCRIPT" "$FRAGMENT_INIT" "$FRAGMENT_CONFIG" "$DEFAULT_LOG"; then
+		echo "ERROR: wrapper removed, but module file removal failed"
+		return 1
+	fi
 
 	echo "podkop-fragment completely uninstalled"
 }

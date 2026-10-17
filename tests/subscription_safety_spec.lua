@@ -54,7 +54,7 @@ describe("untrusted subscription bytes and logical UCI replacement", function()
         assert.truthy(H.vfs_read(CFG):find("selector_proxy_links 'vless://new@host:443#new'", 1, true))
     end)
     it("does not overwrite a last-good backup when candidate validation or backup flush fails", function()
-        H.begin({ failures = { [BACKUP .. ".tmp"] = { close = true } } })
+        H.begin({ failures = { [BACKUP .. ".tmp.*"] = { close = true } } })
         H.vfs_write(CFG, BASE)
         H.vfs_write(BACKUP, "last good")
         local s = require("pt-subs-lib")
@@ -75,4 +75,28 @@ describe("untrusted subscription bytes and logical UCI replacement", function()
         assert.equal(BASE, H.vfs_read(CFG))
         assert.falsy(H.vfs_exists(BACKUP))
     end)
+
+    for _, published in ipairs({ false, true }) do
+        it("does not infer config application from release failure (published=" .. tostring(published) .. ")", function()
+            local failures = { ["/var/lock/podkop-tweaker-podkop.lock"] = { rmdir = true } }
+            if not published then failures[CFG .. ".tmp.*"] = { write = true, partial = 5 } end
+            H.begin({ strict = true, failures = failures })
+            H.vfs_write(CFG, BASE)
+            H.vfs_write(BACKUP, "last good")
+            local link = "vless://new@host:443#new"
+            local ok, err, applied, unknown = require("pt-subs-lib").replace_proxy_link("main", "url", 0, link, BACKUP)
+            assert.is_false(ok)
+            assert.equal(published, applied == true)
+            assert.is_true(unknown)
+            assert.matches("cannot release owned lock", err)
+            if published then
+                assert.truthy(H.vfs_read(CFG):find(link, 1, true))
+                assert.equal(BASE, H.vfs_read(BACKUP))
+            else
+                assert.matches("Injected write failure", err)
+                assert.equal(BASE, H.vfs_read(CFG))
+                assert.equal("last good", H.vfs_read(BACKUP))
+            end
+        end)
+    end
 end)

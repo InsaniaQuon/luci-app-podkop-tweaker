@@ -1,40 +1,23 @@
--- Podkop Tweaker | v4.4.0 | 30.08.2026 | write flow via services.singbox_apply_checked (checked rename)
+-- Podkop Tweaker | v4.10.2 | 17.10.2026 | Checked service application and immutable outbound/Fragment queries
 -- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local H = require("podkop-tweaker.http")
 local SRV = require("podkop-tweaker.services")
+local LIB = require("podkop-tweaker.lib")
 
 local M = {}
 M.CONFIG_MAX_SIZE = SRV.SINGBOX_MAX_SIZE
 
 function M.read_config()
-    H.send_text_file(SRV.SINGBOX_CONFIG)
+    H.send_text_file(SRV.SINGBOX_CONFIG, { limit = M.CONFIG_MAX_SIZE, require_nonempty = true })
 end
 
 function M.save_config(content)
-    local sys = require("luci.sys")
     local ok, err = SRV.singbox_content_check(content, "Configuration is empty")
     if not ok then
         return { error = err }
     end
-    local rfd = io.open(SRV.SINGBOX_CONFIG, "r")
-    if rfd then
-        local orig = rfd:read("*a")
-        rfd:close()
-        if orig == content then
-            return { success = true, unchanged = true }
-        end
-    end
-    local details
-    ok, err, details = SRV.singbox_apply_checked(content, ".tmp-write", "sing-box check failed")
-    if not ok then
-        if details then
-            return { error = err, details = details }
-        end
-        return { error = err }
-    end
-    sys.exec("/etc/init.d/sing-box restart 2>&1")
-    return { success = true, restarting = true }
+    return SRV.apply_service(SRV.singbox, content, { skip_unchanged = true })
 end
 
 function M.service_status()
@@ -58,77 +41,103 @@ function M.download_backup()
 end
 
 function M.import_config(content)
-    local sys = require("luci.sys")
     local ok, err = SRV.singbox_content_check(content, "Empty content")
     if not ok then
         return { error = err }
     end
-    local details
-    ok, err, details = SRV.singbox_apply_checked(content, ".tmp-import", "sing-box check failed")
-    if not ok then
-        if details then
-            return { error = err, details = details }
-        end
-        return { error = err }
+    return SRV.apply_service(SRV.singbox, content)
+end
+
+local JQ_OBJECT = 'if length == 1 and (.[0] | type == "object") then .[0] else error("Config must contain exactly one JSON object") end'
+local JQ_OUTBOUNDS = [[
+if (.outbounds | type) != "array" then error("Config outbounds must be an array") else
+    [.outbounds[] |
+        if type != "object" then error("Invalid outbound shape")
+        elif ((.tag == null or (.tag | type) == "string") and (.type | type) == "string" and .type != ""
+            and (.server == null or (.server | type) == "string")
+            and (.tls == null or (.tls | type) == "object")
+            and (.tls.enabled == null or (.tls.enabled | type) == "boolean")
+            and (.tls.fragment == null or (.tls.fragment | type) == "boolean")
+            and (.tls.record_fragment == null or (.tls.record_fragment | type) == "boolean")) then
+            {tag: (.tag // ""), type, server: (.server // ""), tls_enabled: (.tls.enabled // false),
+                has_fragment: ((.tls.fragment // false) or (.tls.record_fragment // false))}
+        else error("Invalid outbound shape") end
+    ] as $rows | {outbound_count: ($rows | length), outbounds: $rows}
+end
+]]
+
+local function json_object(raw)
+    if type(raw) ~= "string" or not raw:match("^%s*{") then return nil end
+    local ok, value = pcall(require("luci.jsonc").parse, raw)
+    if ok and type(value) == "table" then return value end
+end
+
+-- jq sees only a private immutable snapshot, never the live configuration path.
+-- Slurp plus the root guard rejects concatenated JSON documents natively too.
+local function query_config(expression, args, error_message)
+    local source, read_err = SRV.read_file(SRV.SINGBOX_CONFIG, M.CONFIG_MAX_SIZE)
+    if not source then return nil, { success = false, error = "Cannot read config", details = read_err } end
+    if not json_object(source) then
+        return nil, { success = false, error = "Config must contain exactly one JSON object" }
     end
-    sys.exec("/etc/init.d/sing-box restart 2>&1")
-    return { success = true, restarting = true }
+    local stage, stage_err = SRV.stage_file(SRV.SINGBOX_CONFIG, source, { suffix = ".tmp-read", mode = "600" })
+    if not stage then return nil, { success = false, error = "Cannot stage config snapshot", details = stage_err } end
+    local command = "jq -c -e -s" .. (args or "") .. " " .. LIB.shell_escape(JQ_OBJECT .. " | " .. expression) ..
+        " " .. LIB.shell_escape(stage)
+    local ran, ok, output = pcall(SRV.exec_checked, command)
+    local cleaned, cleanup_err = SRV.discard_stage(stage)
+    if not cleaned then
+        local query_failed = not ran or not ok
+        local details = query_failed and (ran and output or tostring(ok)) or nil
+        local cleanup = "Cannot remove owned config snapshot " .. stage .. ": " .. tostring(cleanup_err or "Cleanup failed")
+        return nil, { success = false, error = query_failed and error_message or "Cannot clean up config snapshot",
+            details = details and (details .. "\n" .. cleanup) or cleanup, cleanup_failed = true }
+    end
+    if not ran then return nil, { success = false, error = error_message, details = tostring(ok) } end
+    if not ok then return nil, { success = false, error = error_message, details = output } end
+    return output, source
 end
 
 function M.outbounds()
-    local sys = require("luci.sys")
-    local raw = sys.exec("jq '.outbounds[] | {tag, type, server: (.server // \"\"), tls_enabled: (.tls.enabled // false), has_fragment: ((.tls.fragment // false) or (.tls.record_fragment // false))}' " .. SRV.SINGBOX_CONFIG .. " 2>/dev/null")
-    if not raw or raw == "" then
-        return { outbounds = {} }
-    end
-    local outbounds = {}
-    local cur = {}
-    for line in raw:gmatch("[^\r\n]+") do
-        local tag = line:match('"tag":%s*"([^"]+)"')
-        local typ = line:match('"type":%s*"([^"]+)"')
-        local srv = line:match('"server":%s*"([^"]*)"')
-        local tls_en = line:match('"tls_enabled":%s*(true)')
-        local tls_dis = line:match('"tls_enabled":%s*(false)')
-        local frag_en = line:match('"has_fragment":%s*(true)')
-        local frag_dis = line:match('"has_fragment":%s*(false)')
-        if tag then cur.tag = tag end
-        if typ then cur.type = typ end
-        if srv then cur.server = srv end
-        if tls_en then cur.tls_enabled = true end
-        if tls_dis then cur.tls_enabled = false end
-        if frag_en then cur.has_fragment = true end
-        if frag_dis then cur.has_fragment = false end
-        if line:match("^%}") then
-            table.insert(outbounds, cur)
-            cur = {}
+    local raw, source_or_error = query_config(JQ_OUTBOUNDS, nil, "Cannot enumerate outbounds")
+    if not raw then return source_or_error end
+    local result = #raw <= M.CONFIG_MAX_SIZE * 8 and json_object(raw) or nil
+    local count = result and result.outbound_count
+    local rows = result and result.outbounds
+    if result and result.error == nil and (result.success == nil or result.success == true) and type(count) == "number" and count >= 0 and count == math.floor(count)
+        and count <= M.CONFIG_MAX_SIZE and type(rows) == "table" then
+        local actual = 0
+        for key, row in pairs(rows) do
+            if type(key) ~= "number" or key < 1 or key > count or key ~= math.floor(key) or type(row) ~= "table"
+                or row.error ~= nil or type(row.tag) ~= "string" or type(row.type) ~= "string" or row.type == "" or type(row.server) ~= "string"
+                or type(row.tls_enabled) ~= "boolean" or type(row.has_fragment) ~= "boolean"
+                or row.tls_enabled and not row.tag:match("^[a-zA-Z0-9_%-%.]+$") then
+                return { success = false, error = "Invalid outbounds response" }
+            end
+            actual = actual + 1
         end
+        if actual == count then return { outbound_count = count, outbounds = rows } end
     end
-    return { outbounds = outbounds }
+    return { success = false, error = "Invalid outbounds response" }
 end
 
 function M.patch_fragment(tags_raw, mode_raw, use_fragment_raw, use_record_fragment_raw, fallback_delay_raw)
-    local sys = require("luci.sys")
     local json = require("luci.jsonc")
 
     local tags = json.parse(tags_raw or "[]")
     if not tags or type(tags) ~= "table" or #tags == 0 then
         return { error = "No outbounds selected" }
     end
-    for i, t in ipairs(tags) do
+    for _, t in ipairs(tags) do
         if type(t) ~= "string" or not t:match("^[a-zA-Z0-9_%-%.]+$") then
             return { error = "Invalid tag value" }
         end
     end
     local mode = mode_raw or "apply"
-    local rfd = io.open(SRV.SINGBOX_CONFIG, "r")
-    if not rfd then
-        return { error = "Cannot read config" }
-    end
-    rfd:close()
     local jq_args = ""
     local jq_select = ""
     for i, t in ipairs(tags) do
-        jq_args = jq_args .. ' --arg t' .. i .. ' ' .. t
+        jq_args = jq_args .. ' --arg t' .. i .. ' ' .. LIB.shell_escape(t)
         if i > 1 then jq_select = jq_select .. " or " end
         jq_select = jq_select .. '.tag == $t' .. i
     end
@@ -152,89 +161,171 @@ function M.patch_fragment(tags_raw, mode_raw, use_fragment_raw, use_record_fragm
             jq_expr = '(.outbounds[] | select(' .. jq_select .. ') | .tls) |= . + {"fragment": false, "record_fragment": true} | (.outbounds[] | select(' .. jq_select .. ') | .tls) |= del(.fragment_fallback_delay)'
         end
     end
-    local patched = sys.exec("jq " .. jq_args .. " '" .. jq_expr .. "' " .. SRV.SINGBOX_CONFIG .. " 2>/dev/null")
-    if not patched or patched == "" then
-        return { error = "jq patch failed" }
-    end
-    local ok, err, details = SRV.singbox_apply_checked(patched, ".tmp-patch", "sing-box check failed after patch")
-    if not ok then
-        if details then
-            return { error = err, details = details }
+    local function patch_locked()
+        local expression = 'if (.outbounds | type) != "array" then error("Config outbounds must be an array") else ' .. jq_expr .. ' end'
+        local patched, source_or_error = query_config(expression, jq_args, "jq patch failed")
+        if not patched then return source_or_error end
+        if not json_object(patched) then return { success = false, error = "jq patch failed", details = "Expected one JSON object" } end
+        local current, read_err = SRV.read_file(SRV.SINGBOX_CONFIG, M.CONFIG_MAX_SIZE)
+        if current ~= source_or_error then
+            return { success = false, error = current and "Config changed during patch" or "Cannot re-read config", details = read_err }
         end
-        return { error = err }
+        local result = SRV.apply_service(SRV.singbox, patched)
+        if result.error == "sing-box check failed" then result.error = "sing-box check failed after patch" end
+        return result
     end
-    sys.exec("/etc/init.d/sing-box restart 2>&1")
-    return { success = true, restarting = true }
+    local outcome
+    local resp, lock_err, uncertain = SRV.with_lock("singbox", function()
+        outcome = patch_locked()
+        return outcome
+    end)
+    if not resp then
+        local failure = outcome or {}
+        if failure.error then failure.details = failure.error .. (failure.details and ("\n" .. failure.details) or "") end
+        failure.success, failure.error, failure.unknown = false, lock_err, uncertain or nil
+        return failure
+    end
+    return resp
 end
 
 function M.wrapper_status()
-    local fd = io.open("/etc/init.d/podkop.orig", "r")
-    local installed = (fd ~= nil)
-    if fd then fd:close() end
+    local original, original_err, original_errno = SRV.read_file("/etc/init.d/podkop.orig", LIB.UCI_MAX_SIZE)
+    if not original and original_errno ~= 2 then return { error = "Cannot read wrapper original", details = original_err } end
+    local installed = original ~= nil
     local stale = false
+    local hooks = 0
+    local function count_hooks(content)
+        local count = 0
+        local managed = false
+        for line in (content or ""):gmatch("[^\r\n]+") do
+            if line:match("^[A-Za-z_][A-Za-z_0-9]*%s*%(%)") then
+                managed = line:match("^start_service%(%)") ~= nil or line:match("^reload_service%(%)") ~= nil
+            end
+            if managed and line:match("^%s*(.-)%s*$") == "( sleep 5 && /usr/bin/podkop-fragment-patch.sh ) &" then count = count + 1 end
+            if line:match("^}") then managed = false end
+        end
+        return count
+    end
     if installed then
-        local ifd = io.open("/etc/init.d/podkop", "r")
-        if ifd then
-            local content = ifd:read("*a")
-            ifd:close()
+        local content, init_err, init_errno = SRV.read_file("/etc/init.d/podkop", LIB.UCI_MAX_SIZE)
+        if not content and init_errno ~= 2 then return { error = "Cannot read current Podkop init", details = init_err } end
+        if content then
             if not content:find("podkop-fragment-patch.sh", 1, true) then
                 stale = true
             end
+            hooks = count_hooks(content)
         end
     end
-    return {
+    local response = {
         installed = installed,
         stale = stale
     }
+    if hooks > 2 or count_hooks(original) > 0 then response.duplicate_hooks = true end
+    return response
+end
+
+local FRAGMENT_CONFIG = "/etc/config/podkop-fragment"
+
+-- A missing package is a first-use case. An existing package needs both a
+-- complete bounded file read and a successful native whole-package UCI parse:
+-- get(option) alone cannot tell a missing option from a failed RPC read.
+local function read_fragment_config(uci)
+    local raw, read_err, errno = SRV.read_file(FRAGMENT_CONFIG, LIB.UCI_MAX_SIZE)
+    if not raw then
+        if errno == 2 then return {}, nil, true end
+        return nil, read_err or "Cannot read Fragment configuration"
+    end
+    if not raw:match("%S") then return nil, "Fragment configuration is empty" end
+    local ran, sections, err = pcall(function()
+        uci = uci or require("luci.model.uci").cursor()
+        return uci:get_all("podkop-fragment")
+    end)
+    if not ran then return nil, tostring(sections) end
+    if err ~= nil or type(sections) ~= "table" then return nil, err or "Cannot parse Fragment configuration" end
+    for name, section in pairs(sections) do
+        if type(name) ~= "string" or type(section) ~= "table" or section[".name"] ~= name or
+            type(section[".type"]) ~= "string" or section[".type"] == "" then
+            return nil, "Invalid Fragment configuration response"
+        end
+    end
+    if sections.settings and sections.settings[".type"] ~= "fragment" then return nil, "Invalid Fragment settings section" end
+    return sections, nil, false
+end
+
+local function typed_fragment_settings(sections, missing)
+    local section = sections.settings or {}
+    local fragment, record_fragment, fallback_delay = section.fragment, section.record_fragment, section.fragment_fallback_delay
+    if fragment == nil then fragment = "false" end
+    if record_fragment == nil then record_fragment = "true" end
+    if fallback_delay == nil then fallback_delay = "500ms" end
+    if fragment ~= "true" and fragment ~= "false" then return nil, "Invalid Fragment setting: fragment" end
+    if record_fragment ~= "true" and record_fragment ~= "false" then return nil, "Invalid Fragment setting: record_fragment" end
+    if type(fallback_delay) ~= "string" or not fallback_delay:match("^%d+[a-zA-Z]+$") then
+        return nil, "Invalid Fragment setting: fragment_fallback_delay"
+    end
+    return { fragment = fragment == "true", record_fragment = record_fragment == "true", fallback_delay = fallback_delay,
+        settings_source = sections.settings and "uci" or "defaults", config_missing = missing == true }
 end
 
 function M.wrapper_toggle(action, fragment_raw, record_fragment_raw, fallback_delay_raw)
-    local sys = require("luci.sys")
-
     if action ~= "enable" and action ~= "disable" and action ~= "reinstall" then
         return { error = "Invalid action" }
     end
-    if action == "reinstall" then
-        os.remove("/etc/init.d/podkop.orig")
-    elseif action == "enable" then
+    if action == "enable" then
         local uci = require("luci.model.uci").cursor()
+        local sections, read_err = read_fragment_config(uci)
+        if not sections then return { success = false, error = "Cannot read Fragment settings", details = read_err } end
         local fragment = fragment_raw == "1"
         local record_fragment = record_fragment_raw == "1"
         local fallback_delay = fallback_delay_raw or "500ms"
         if not fallback_delay:match("^%d+%a+$") then
             fallback_delay = "500ms"
         end
-        uci:set("podkop-fragment", "settings", "fragment", fragment and "true" or "false")
-        uci:set("podkop-fragment", "settings", "record_fragment", record_fragment and "true" or "false")
-        uci:set("podkop-fragment", "settings", "fragment_fallback_delay", fallback_delay)
-        uci:commit("podkop-fragment")
+        local function checked_uci(method, ...)
+            local ran, ok, err = pcall(uci[method], uci, ...)
+            if ran and ok then return true end
+            return false, tostring(ran and (err or "UCI operation failed") or ok)
+        end
+        if not sections.settings then
+            local ok, err = checked_uci("set", "podkop-fragment", "settings", "fragment")
+            if not ok then return { success = false, error = "Cannot create Fragment settings", details = err } end
+        end
+        for _, entry in ipairs({
+            { "fragment", fragment and "true" or "false" },
+            { "record_fragment", record_fragment and "true" or "false" },
+            { "fragment_fallback_delay", fallback_delay }
+        }) do
+            local ok, err = checked_uci("set", "podkop-fragment", "settings", entry[1], entry[2])
+            if not ok then return { success = false, error = "Cannot save Fragment setting: " .. entry[1], details = err } end
+        end
+        local ok, err = checked_uci("commit", "podkop-fragment")
+        if not ok then return { success = false, error = "Cannot commit Fragment settings", details = err } end
     end
+    local settings_saved = action == "enable"
     if action == "reinstall" then action = "enable" end
-    local output = sys.exec("/etc/init.d/podkop-fragment " .. action .. " 2>&1; echo EXIT:$?")
-    local exit_code = output:match("EXIT:(%d+)") or "1"
-    if exit_code ~= "0" then
-        local err_msg = output:gsub("EXIT:%d+%s*$", ""):match("^%s*(.-)%s*$") or "Command failed"
-        return { success = false, error = err_msg }
+    local ok, details = SRV.exec_checked("/etc/init.d/podkop-fragment " .. action)
+    if not ok then
+        local err_msg = (details or ""):match("^%s*(.-)%s*$")
+        if err_msg == "" then err_msg = "Wrapper command failed" end
+        return { success = false, error = err_msg, details = details, settings_saved = settings_saved or nil }
     end
-    local fd = io.open("/etc/init.d/podkop.orig", "r")
-    local resp = {
-        success = true,
-        installed = (fd ~= nil)
-    }
-    if fd then fd:close() end
-    return resp
+    local original, read_err, errno = SRV.read_file("/etc/init.d/podkop.orig", LIB.UCI_MAX_SIZE)
+    if not original and errno ~= 2 then
+        return { success = false, error = "Cannot read wrapper state", details = read_err, settings_saved = settings_saved or nil }
+    end
+    local installed = original ~= nil
+    if installed ~= (action == "enable") then
+        return { success = false, error = "Wrapper state did not change as requested", installed = installed, settings_saved = settings_saved or nil }
+    end
+    return { success = true, installed = installed }
 end
 
 function M.fragment_settings()
-    local uci = require("luci.model.uci").cursor()
-    local fragment = uci:get("podkop-fragment", "settings", "fragment") or "false"
-    local record_fragment = uci:get("podkop-fragment", "settings", "record_fragment") or "true"
-    local fallback_delay = uci:get("podkop-fragment", "settings", "fragment_fallback_delay") or "500ms"
-    return {
-        fragment = (fragment == "true"),
-        record_fragment = (record_fragment == "true"),
-        fallback_delay = fallback_delay
-    }
+    local sections, read_err, missing = read_fragment_config()
+    if not sections then return { success = false, error = "Cannot read Fragment settings", details = read_err } end
+    local settings, settings_err = typed_fragment_settings(sections, missing)
+    if not settings then return { success = false, error = settings_err } end
+    return settings
 end
 
 return M

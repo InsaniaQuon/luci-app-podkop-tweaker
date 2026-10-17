@@ -24,6 +24,7 @@ Author: InsaniaQuon
             <button class="btn cbi-button" id="ps-initfix-btn">Fix Init Script</button>
             <span id="ps-initfix-status" style="font-size:12px;font-weight:600;"></span>
         </div>
+        <div id="ps-stubby-action-status" aria-live="polite" style="display:none;margin-bottom:12px;font-size:12px;"></div>
 
         <div class="ps-editor-wrap">
             <div class="ps-line-numbers" id="ps-line-numbers">1</div>
@@ -207,101 +208,204 @@ window.PT = {
         }
     });
 
-    // === Parameters modal ===
-    var paramsModal = document.getElementById('ps-params-modal');
-    var paramsBtn = document.getElementById('ps-params-btn');
-    var paramsClose = document.getElementById('ps-params-close');
-    var applyTemplateBtn = document.getElementById('ps-apply-template-btn');
-    var applyTemplateStatus = document.getElementById('ps-apply-template-status');
-    paramsBtn.addEventListener('click', function() { applyTemplateStatus.textContent = ''; paramsModal.style.display = 'flex'; });
-    PT.bindModal(paramsModal, paramsClose);
-
-    applyTemplateBtn.addEventListener('click', function() {
-        if (!confirm('This will completely replace your Stubby config with the recommended template.\n\nAn automatic backup will be created.\n\nContinue?')) return;
-        applyTemplateBtn.disabled = true;
-        applyTemplateStatus.textContent = 'Applying...';
-        applyTemplateStatus.style.color = PT.color('info');
-        PT.xhrPost(PT.urls.applyTemplate, '', function(xhr) {
-            applyTemplateBtn.disabled = false;
-            if (!xhr) {
-                applyTemplateStatus.textContent = 'Network error';
-                applyTemplateStatus.style.color = PT.color('error');
-                return;
-            }
-            try {
-                var resp = JSON.parse(xhr.responseText);
-                if (resp.success) {
-                    applyTemplateStatus.textContent = 'Applied. Restarting...';
-                    applyTemplateStatus.style.color = PT.color('success');
-                    setTimeout(function() {
-                        paramsModal.style.display = 'none';
-                        ctx.loadConfig();
-                        ctx.refreshStatus();
-                    }, 2000);
-                } else {
-                    applyTemplateStatus.textContent = resp.error || 'Failed';
-                    applyTemplateStatus.style.color = PT.color('error');
-                }
-            } catch (e) {
-                applyTemplateStatus.textContent = 'Failed';
-                applyTemplateStatus.style.color = PT.color('error');
-            }
-        });
-    });
-
     // === Fix Init Script ===
-    var initfixBtn = document.getElementById('ps-initfix-btn');
     var initfixStatus = document.getElementById('ps-initfix-status');
-    var initfixModal = document.getElementById('ps-initfix-modal');
-    var initfixClose = document.getElementById('ps-initfix-close');
-    var initfixApply = document.getElementById('ps-initfix-apply');
-    var initfixApplyStatus = document.getElementById('ps-initfix-apply-status');
+    var initCheckSequence = 0;
 
     function checkInitFix() {
-        PT.getJson(PT.urls.initCheck, function(r) {
-            if (!r) return;
+        var sequence = ++initCheckSequence;
+        var xhr = new XMLHttpRequest(), finished = false;
+        initfixStatus.textContent = 'Checking...';
+        initfixStatus.style.color = PT.color('info');
+        function finish(r, error, details) {
+            if (finished) return;
+            finished = true;
+            if (sequence !== initCheckSequence) return;
+            if (error) {
+                showActionStatus(initfixStatus, 'Unknown — ' + error, 'warning', details);
+                return;
+            }
             if (r.status === 'fixed') {
                 initfixStatus.textContent = 'Running as root';
                 initfixStatus.style.color = PT.color('success');
             } else if (r.status === 'needs_fix') {
                 initfixStatus.textContent = 'Needs fix';
                 initfixStatus.style.color = PT.color('error');
-            } else {
+            } else if (r.status === 'not_installed') {
                 initfixStatus.textContent = 'Not installed';
                 initfixStatus.style.color = PT.color('dim');
             }
-        });
+        }
+        xhr.open('GET', PT.urls.initCheck);
+        xhr.timeout = 30000;
+        // The shared GET adapter drops non-200 bodies. Retain this read's full
+        // HTTP/schema diagnostics without changing mutation or editor transport.
+        xhr.onload = function() {
+            if (finished) return;
+            var r = null, body = xhr.responseText || '';
+            try { r = JSON.parse(body); } catch (e) {}
+            var object = r && typeof r === 'object' && !Array.isArray(r);
+            var valid = xhr.status === 200 && object && !('error' in r) &&
+                (r.success === undefined || r.success === true) && (r.unknown === undefined || r.unknown === false) &&
+                (r.status === 'fixed' || r.status === 'needs_fix' || r.status === 'not_installed');
+            if (valid) { finish(r); return; }
+            var message = object && typeof r.error === 'string' && r.error ||
+                (xhr.status !== 200 ? 'Init script status HTTP error: ' + xhr.status : 'Invalid init script status response');
+            var details = object && typeof r.details === 'string' ? r.details : body;
+            if (xhr.status !== 200) details = 'HTTP ' + xhr.status + (details ? '\n\n' + details : '');
+            finish(null, message, details);
+        };
+        xhr.onerror = function() { finish(null, 'Network error'); };
+        xhr.ontimeout = function() { finish(null, 'Request timed out', 'Init script status read did not complete within 30 seconds.'); };
+        xhr.onabort = function() { finish(null, 'Request aborted'); };
+        xhr.send();
     }
 
-    initfixBtn.addEventListener('click', function() {
-        initfixApplyStatus.textContent = '';
-        initfixModal.style.display = 'flex';
-    });
-    PT.bindModal(initfixModal, initfixClose);
+    // Modal presentation belongs to an opening; an already sent operation owns
+    // its page result/readback independently and is never replayed on reopen.
+    var actionStatus = document.getElementById('ps-stubby-action-status');
+    var editor = document.getElementById('ps-config-editor');
+    var saveBtn = document.getElementById('ps-config-save');
+    var undoBtn = document.getElementById('ps-config-undo');
+    var actionPending = false, actionUnknown = false, operationSequence = 0;
 
-    initfixApply.addEventListener('click', function() {
-        initfixApply.disabled = true;
-        initfixApply.textContent = 'Applying...';
-        initfixApplyStatus.textContent = '';
-        PT.xhrPost(PT.urls.initFix, '', function(xhr) {
-            initfixApply.disabled = false;
-            initfixApply.textContent = 'Apply Fix';
-            try {
-                var r = JSON.parse(xhr.responseText);
-                if (r.success) {
-                    initfixApplyStatus.textContent = 'Fix applied. Stubby restarted.';
-                    initfixApplyStatus.style.color = PT.color('success');
-                    checkInitFix();
-                    ctx.refreshStatus();
-                } else {
-                    initfixApplyStatus.textContent = r.error || 'Failed';
-                    initfixApplyStatus.style.color = PT.color('error');
-                }
-            } catch (e) {
-                initfixApplyStatus.textContent = xhr ? 'Invalid response' : 'Network error';
-                initfixApplyStatus.style.color = PT.color('error');
-            }
+    function showActionStatus(el, message, role, details) {
+        el.style.display = '';
+        if (role === 'error' || details) PT.setErr(el, message, details ? message + '\n\n' + details : null);
+        else el.textContent = message;
+        el.style.color = PT.color(role);
+    }
+
+    function bindAction(cfg) {
+        var modal = document.getElementById(cfg.modal);
+        var apply = document.getElementById(cfg.apply);
+        var status = document.getElementById(cfg.status);
+        var opening = 0, closeTimer = null;
+        function clearClose() {
+            if (closeTimer !== null) clearTimeout(closeTimer);
+            closeTimer = null;
+        }
+        var hide = PT.bindModal(modal, document.getElementById(cfg.close), function() {
+            ++opening;
+            clearClose();
         });
+        function ownsOpening(sequence) { return sequence === opening && modal.style.display !== 'none'; }
+        document.getElementById(cfg.open).addEventListener('click', function() {
+            ++opening;
+            clearClose();
+            apply.disabled = actionPending || actionUnknown;
+            status.textContent = actionUnknown ? 'Result unknown. Reload the page to verify before another operation.' :
+                actionPending ? 'An earlier Stubby operation is in progress. Close and reopen after it completes; see the page result.' : '';
+            status.style.color = PT.color('warning');
+            modal.style.display = 'flex';
+        });
+
+        apply.addEventListener('click', function() {
+            if (apply.disabled || actionPending || actionUnknown || modal.style.display === 'none') return;
+            if (cfg.confirm && !confirm(cfg.confirm)) return;
+            clearClose();
+            actionPending = true;
+            apply.disabled = true;
+            var sequence = opening, operation = ++operationSequence;
+            var draft = editor.value;
+            // Save is enabled only for a dirty typed baseline. Disabled Undo
+            // means no usable read (or an editor-owned operation): retain any
+            // existing draft conservatively instead of guessing a baseline.
+            var preserveDraft = !saveBtn.disabled || undoBtn.disabled && draft !== '';
+            var outcome = null, readError = null, finished = false;
+            if (!cfg.reload) ++initCheckSequence;
+
+            function present(message, role, details) {
+                if (operation !== operationSequence) return;
+                outcome = { message: message, role: role, details: details };
+                var text = message + (readError ? ' Config read failed: ' + readError + '. Verify the disk baseline before saving.' : '');
+                showActionStatus(actionStatus, text, readError ? 'error' : role, details);
+                if (ownsOpening(sequence)) showActionStatus(status, text, readError ? 'error' : role, details);
+            }
+            function complete(message, role, details, accepted) {
+                if (finished) return;
+                finished = true;
+                actionPending = false;
+                present(message, role, details);
+                ctx.refreshStatus();
+                if (!cfg.reload) checkInitFix();
+                if (!ownsOpening(sequence)) return;
+                apply.disabled = actionUnknown || accepted;
+                if (cfg.reload && accepted) {
+                    var timer = setTimeout(function() {
+                        if (closeTimer !== timer || !ownsOpening(sequence)) return;
+                        closeTimer = null;
+                        hide();
+                    }, 2000);
+                    closeTimer = timer;
+                }
+            }
+            function reloadConfig() {
+                ctx.loadConfig({ preserveDraft: preserveDraft || editor.value !== draft, onComplete: function(error) {
+                    if (operation !== operationSequence) return;
+                    readError = error;
+                    if (outcome) present(outcome.message, outcome.role, outcome.details);
+                } });
+            }
+
+            present('Applying ' + cfg.label + '...', 'info');
+            PT.postJson(cfg.url, '', function(resp, error, xhr) {
+                var result = resp || error && error.data || {};
+                var applied = result.applied === true;
+                var malformed = ['applied', 'unknown', 'restarting'].some(function(key) {
+                    return result[key] !== undefined && typeof result[key] !== 'boolean';
+                });
+                var unknown = malformed || result.unknown === true || error && (error.kind === 'transport' || error.kind === 'parse' ||
+                    error.message === 'Internal error' || error.kind === 'http' && xhr && xhr.status >= 500 &&
+                    typeof result.success !== 'boolean' && typeof result.applied !== 'boolean') || !error && result.success !== true;
+                var details = error && error.details !== undefined ? error.details : result.details;
+                var prefix = applied ? cfg.applied : cfg.label + ' request completed.';
+                if (unknown) {
+                    actionUnknown = true;
+                    if (cfg.reload && applied) reloadConfig();
+                    complete((applied ? prefix + ' Finishing result unknown.' : cfg.label + ' result unknown.') +
+                        ' Reload the page to verify before another operation.' + (error ? ' ' + error.message : ''), 'error', details, false);
+                } else if (error) {
+                    if (cfg.reload && applied) reloadConfig();
+                    complete((applied ? prefix + ' Restart failed or is unverified. ' : '') + error.message, 'error', details, false);
+                } else if (!cfg.reload && result.message === 'Already fixed' && !applied && result.restarting !== true && result.verification_required !== true) {
+                    complete('Already fixed. No restart was requested.', 'success', details, true);
+                } else {
+                    if (cfg.reload) reloadConfig();
+                    if (result.restarting !== true) {
+                        complete(prefix + ' Restart is unconfirmed.', 'warning', details, true);
+                        return;
+                    }
+                    present(prefix + ' Verifying Stubby restart...', 'info', details);
+                    PT.statusWatcher(PT.urls.status).poll(function(observation) {
+                        if (observation && observation.confirmed === true) complete(prefix + ' A new Stubby instance is running.', 'success', details, true);
+                        else unconfirmed(observation);
+                    }, unconfirmed, result);
+                }
+                function unconfirmed(observation) {
+                    var message = observation && observation.message || 'Service status is unknown; restart is unconfirmed.';
+                    var full = details || '';
+                    if (result.previous_instance) full += (full ? '\n\n' : '') + 'Previous instance: ' + result.previous_instance;
+                    if (observation && observation.instance) full += (full ? '\n' : '') + 'Current instance: ' + observation.instance;
+                    if (observation && observation.error) full += (full ? '\n' : '') + observation.error;
+                    if (observation && observation.details) full += (full ? '\n\n' : '') + observation.details;
+                    complete(prefix + ' ' + message, observation && observation.known && observation.running === false ? 'error' : 'warning', full, true);
+                }
+            }, 120000);
+        });
+        window.addEventListener('pagehide', function() { ++opening; clearClose(); });
+    }
+
+    bindAction({
+        open: 'ps-params-btn', modal: 'ps-params-modal', close: 'ps-params-close',
+        apply: 'ps-apply-template-btn', status: 'ps-apply-template-status',
+        url: PT.urls.applyTemplate, label: 'Template', applied: 'Template applied to disk.', reload: true,
+        confirm: 'This will completely replace your Stubby config with the recommended template.\n\nAn automatic backup will be created.\n\nContinue?'
+    });
+    bindAction({
+        open: 'ps-initfix-btn', modal: 'ps-initfix-modal', close: 'ps-initfix-close',
+        apply: 'ps-initfix-apply', status: 'ps-initfix-apply-status',
+        url: PT.urls.initFix, label: 'Init script fix', applied: 'Init script fix applied to disk.', reload: false
     });
 
     checkInitFix();

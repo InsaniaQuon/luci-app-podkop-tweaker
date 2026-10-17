@@ -11,8 +11,8 @@ Author: InsaniaQuon
 
     <div class="cbi-section">
         <div id="ps-argon-stale" style="margin-bottom:12px;display:flex;align-items:center;gap:8px;font-size:13px;">
-            <span id="ps-argon-css-status" style="font-weight:600;"></span>
-            <button class="btn cbi-button cbi-button-apply" id="ps-argon-reinject" style="display:none;font-size:11px;padding:2px 8px;">Reinject CSS</button>
+            <span id="ps-argon-css-status" style="font-weight:600;">CSS status unknown</span>
+            <button class="btn cbi-button cbi-button-apply" id="ps-argon-reinject" style="display:none;font-size:11px;padding:2px 8px;" disabled>Reinject CSS</button>
         </div>
 
         <h3>Typography</h3>
@@ -24,12 +24,12 @@ Author: InsaniaQuon
 
             <label for="ps-font-size">Font Size</label>
             <div style="display:flex;align-items:center;gap:8px;">
-                <input type="range" id="ps-font-size" min="13" max="20" step="1" value="16" style="flex:1;">
+                <input type="range" id="ps-font-size" min="13" max="20" step="1" value="16" style="flex:1;" disabled>
                 <span id="ps-font-size-val" style="min-width:40px;text-align:right;">16px</span>
             </div>
 
             <label for="ps-font-family">Font Family</label>
-            <select id="ps-font-family" style="width:100%;max-width:250px;">
+            <select id="ps-font-family" style="width:100%;max-width:250px;" disabled>
                 <option value="Google Sans">Google Sans</option>
                 <option value="system-ui">system-ui</option>
                 <option value="Arial">Arial</option>
@@ -40,23 +40,23 @@ Author: InsaniaQuon
             </select>
 
             <label for="ps-font-family-custom" id="ps-font-custom-label" style="display:none;">Custom Font</label>
-            <input type="text" id="ps-font-family-custom" placeholder="e.g. 'Roboto', sans-serif" style="width:100%;max-width:250px;display:none;">
+            <input type="text" id="ps-font-family-custom" placeholder="e.g. 'Roboto', sans-serif" style="width:100%;max-width:250px;display:none;" disabled>
 
             <label for="ps-font-weight">Font Weight</label>
             <div style="display:flex;align-items:center;gap:8px;">
-                <input type="range" id="ps-font-weight" min="300" max="700" step="50" value="400" style="flex:1;">
+                <input type="range" id="ps-font-weight" min="300" max="700" step="50" value="400" style="flex:1;" disabled>
                 <span id="ps-font-weight-val" style="min-width:40px;text-align:right;">400</span>
             </div>
 
             <label for="ps-line-height">Line Height</label>
             <div style="display:flex;align-items:center;gap:8px;">
-                <input type="range" id="ps-line-height" min="1.0" max="2.0" step="0.1" value="1.5" style="flex:1;">
+                <input type="range" id="ps-line-height" min="1.0" max="2.0" step="0.1" value="1.5" style="flex:1;" disabled>
                 <span id="ps-line-height-val" style="min-width:40px;text-align:right;">1.5</span>
             </div>
 
             <label for="ps-letter-spacing">Letter Spacing</label>
             <div style="display:flex;align-items:center;gap:8px;">
-                <input type="range" id="ps-letter-spacing" min="-0.5" max="2" step="0.1" value="0" style="flex:1;">
+                <input type="range" id="ps-letter-spacing" min="-0.5" max="2" step="0.1" value="0" style="flex:1;" disabled>
                 <span id="ps-letter-spacing-val" style="min-width:40px;text-align:right;">0px</span>
             </div>
         </div>
@@ -69,21 +69,22 @@ Author: InsaniaQuon
         <div class="pts-grid" style="display:grid;grid-template-columns:200px 1fr;gap:12px 20px;align-items:center;font-size:13px;max-width:600px;">
             <label for="ps-menu-font-size">Menu Font Size</label>
             <div style="display:flex;align-items:center;gap:8px;">
-                <input type="range" id="ps-menu-font-size" min="0.7" max="1.2" step="0.05" value="0.9" style="flex:1;">
+                <input type="range" id="ps-menu-font-size" min="0.7" max="1.2" step="0.05" value="0.9" style="flex:1;" disabled>
                 <span id="ps-menu-font-size-val" style="min-width:40px;text-align:right;">0.9rem</span>
             </div>
 
             <label for="ps-menu-padding">Menu Padding</label>
             <div style="display:flex;align-items:center;gap:8px;">
-                <input type="range" id="ps-menu-padding" min="5" max="20" step="1" value="10" style="flex:1;">
+                <input type="range" id="ps-menu-padding" min="5" max="20" step="1" value="10" style="flex:1;" disabled>
                 <span id="ps-menu-padding-val" style="min-width:40px;text-align:right;">10px</span>
             </div>
         </div>
 
-        <div style="margin-top:24px;display:flex;align-items:center;gap:8px;">
-            <button class="btn cbi-button" id="ps-argon-reset">Reset to Defaults</button>
-            <button class="btn cbi-button cbi-button-apply" id="ps-argon-save">Save &amp; Apply</button>
-            <span id="ps-argon-status" style="font-size:12px;"></span>
+        <div style="margin-top:24px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <button class="btn cbi-button" id="ps-argon-reset" disabled>Reset to Defaults</button>
+            <button class="btn cbi-button cbi-button-apply" id="ps-argon-save" disabled>Save &amp; Apply</button>
+            <button class="btn cbi-button" id="ps-argon-retry" style="display:none;">Retry settings read</button>
+            <span id="ps-argon-status" style="font-size:12px;">Loading typography settings...</span>
         </div>
 
         <div class="ps-warning-box" style="margin-top:16px;">
@@ -178,6 +179,7 @@ Author: InsaniaQuon
         <div class="ps-appearance-actions">
             <button class="btn cbi-button" id="ps-appearance-reset" disabled>Reset Appearance</button>
             <button class="btn cbi-button cbi-button-apply" id="ps-appearance-save" disabled>Save Appearance</button>
+            <button class="btn cbi-button" id="ps-appearance-retry" style="display:none;">Retry appearance read</button>
             <span id="ps-appearance-status" style="font-size:12px;">Loading settings...</span>
         </div>
         <p class="ps-appearance-help">Monospace settings apply to editors, run logs, DNS chains and diff previews. Saved in <code>/etc/config/podkop-tweaker</code>; included in the Tweaker bundle item.</p>
@@ -242,8 +244,58 @@ window.PT = {
         reinjectBtn: document.getElementById('ps-argon-reinject'),
         resetBtn: document.getElementById('ps-argon-reset'),
         saveBtn: document.getElementById('ps-argon-save'),
+        retryBtn: document.getElementById('ps-argon-retry'),
         status: document.getElementById('ps-argon-status')
     };
+    var typographyReady = false, typographyBusy = false, typographyLoading = false;
+    var typographyFields = ['fontSize', 'fontFamily', 'fontCustom', 'fontWeight', 'lineHeight', 'letterSpacing', 'menuFontSize', 'menuPadding'];
+
+    function typographyControls() {
+        typographyFields.concat(['saveBtn', 'resetBtn', 'reinjectBtn']).forEach(function(key) {
+            els[key].disabled = !typographyReady || typographyBusy || typographyLoading;
+        });
+        els.retryBtn.disabled = typographyBusy || typographyLoading;
+    }
+
+    function cssUnknown() {
+        els.cssStatus.textContent = 'CSS status unknown';
+        els.cssStatus.style.color = PT.color('warning');
+        els.reinjectBtn.style.display = 'none';
+    }
+
+    function typographyFailure(message, details) {
+        typographyReady = false;
+        cssUnknown();
+        els.retryBtn.style.display = 'inline-block';
+        typographyControls();
+        PT.setErr(els.status, message + '. Retry the settings read before applying typography.', details);
+    }
+
+    // Missing individual fields in an explicit settings object are native
+    // first-run defaults. An error, missing settings or invalid field is not.
+    function typedTypography(r) {
+        if (!r || typeof r !== 'object' || Array.isArray(r) || 'error' in r || r.unknown === true || (r.success !== undefined && r.success !== true) ||
+            !r.settings || typeof r.settings !== 'object' || Array.isArray(r.settings) || typeof r.stale !== 'boolean') return null;
+        var source = r.settings, settings = {}, valid = true;
+        var ranges = { font_size: [13, 20, '16'], font_weight: [300, 700, '400'], line_height: [1, 2, '1.5'],
+            letter_spacing: [-0.5, 2, '0'], menu_font_size: [0.7, 1.2, '0.9'], menu_padding: [5, 20, '10'] };
+        Object.keys(source).forEach(function(key) {
+            if (!Object.prototype.hasOwnProperty.call(ranges, key) && key !== 'font_family' && key !== 'font_family_custom') valid = false;
+        });
+        Object.keys(ranges).forEach(function(key) {
+            var value = source[key], range = ranges[key];
+            if (value === undefined || value === '') settings[key] = range[2];
+            else if ((typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value) || typeof value === 'number') &&
+                isFinite(Number(value)) && Number(value) >= range[0] && Number(value) <= range[1]) settings[key] = String(value);
+            else valid = false;
+        });
+        ['font_family', 'font_family_custom'].forEach(function(key) {
+            if (source[key] !== undefined && typeof source[key] !== 'string') valid = false;
+        });
+        settings.font_family = source.font_family === undefined ? 'Google Sans' : source.font_family;
+        settings.font_family_custom = source.font_family_custom === undefined ? '' : source.font_family_custom;
+        return valid ? settings : null;
+    }
 
     function updateValDisplays() {
         els.fontSizeVal.textContent = els.fontSize.value + 'px';
@@ -255,6 +307,7 @@ window.PT = {
     }
 
     function applyPreview() {
+        if (!typographyReady || typographyBusy || typographyLoading) return;
         var fontSize = els.fontSize.value;
         document.documentElement.style.fontSize = fontSize + 'px';
         els.fontSizeVal.textContent = fontSize + 'px';
@@ -318,27 +371,50 @@ window.PT = {
     }
 
     function loadSettings() {
-        PT.getJson(PT.urls.typography, function(r) {
-            if (!r) return;
-            var s = r.settings || {};
-            if (s.font_size) els.fontSize.value = s.font_size; else els.fontSize.value = 16;
-            els.fontFamily.value = s.font_family || 'Google Sans';
-            if (s.font_family === 'custom') {
-                els.fontCustom.value = s.font_family_custom || '';
-                els.fontCustom.style.display = '';
-                els.fontCustomLabel.style.display = '';
+        if (typographyBusy || typographyLoading) return;
+        typographyReady = false;
+        typographyLoading = true;
+        typographyControls();
+        cssUnknown();
+        els.status.textContent = 'Loading typography settings...';
+        els.status.style.color = PT.color('dim');
+        PT.getJson(PT.urls.typography, function(r, status, reason) {
+            typographyLoading = false;
+            var s = typedTypography(r);
+            if (!s) {
+                typographyFailure(r && typeof r.error === 'string' && r.error ||
+                    (status && status !== 200 ? 'Cannot read typography settings (HTTP ' + status + ')' : reason || 'Invalid typography settings response'),
+                    r && typeof r.details === 'string' ? r.details : null);
+                return;
             }
-            els.fontWeight.value = s.font_weight || '400';
-            if (s.line_height) els.lineHeight.value = s.line_height; else els.lineHeight.value = 1.5;
-            if (s.letter_spacing) els.letterSpacing.value = s.letter_spacing; else els.letterSpacing.value = 0;
-            if (s.menu_font_size) els.menuFontSize.value = s.menu_font_size; else els.menuFontSize.value = 0.9;
-            if (s.menu_padding) els.menuPadding.value = s.menu_padding; else els.menuPadding.value = 10;
+            els.fontSize.value = s.font_size;
+            // Unknown stored families are retained, never silently replaced by
+            // the first dropdown option; option text is not HTML.
+            if (s.font_family !== 'custom' && !Object.prototype.hasOwnProperty.call(FONT_FAMILIES, s.font_family)) {
+                var option = document.createElement('option');
+                option.value = s.font_family; option.textContent = s.font_family || '(Theme default)';
+                els.fontFamily.appendChild(option);
+            }
+            els.fontFamily.value = s.font_family;
+            els.fontCustom.value = s.font_family_custom;
+            els.fontCustom.style.display = els.fontCustomLabel.style.display = s.font_family === 'custom' ? '' : 'none';
+            els.fontWeight.value = s.font_weight;
+            els.lineHeight.value = s.line_height;
+            els.letterSpacing.value = s.letter_spacing;
+            els.menuFontSize.value = s.menu_font_size;
+            els.menuPadding.value = s.menu_padding;
             updateValDisplays();
             updateCssStatus(r.stale);
+            typographyReady = true;
+            els.retryBtn.style.display = 'none';
+            typographyControls();
+            els.status.textContent = '';
         });
     }
 
-    ['fontSize', 'fontFamily', 'fontCustom', 'fontWeight', 'lineHeight', 'letterSpacing', 'menuFontSize', 'menuPadding'].forEach(function(id) {
+    els.retryBtn.addEventListener('click', loadSettings);
+
+    typographyFields.forEach(function(id) {
         var el = els[id];
         if (el) {
             var evt = el.tagName === 'SELECT' ? 'change' : 'input';
@@ -347,7 +423,9 @@ window.PT = {
     });
 
     els.saveBtn.addEventListener('click', function() {
-        els.saveBtn.disabled = true;
+        if (!typographyReady || typographyBusy || typographyLoading) return;
+        typographyBusy = true;
+        typographyControls();
         els.status.textContent = 'Saving...';
         els.status.style.color = PT.color('info');
         var params = 'font_size=' + encodeURIComponent(els.fontSize.value) +
@@ -358,59 +436,56 @@ window.PT = {
             '&letter_spacing=' + encodeURIComponent(els.letterSpacing.value) +
             '&menu_font_size=' + encodeURIComponent(els.menuFontSize.value) +
             '&menu_padding=' + encodeURIComponent(els.menuPadding.value);
-        PT.xhrPost(PT.urls.save, params, function(xhr) {
-            els.saveBtn.disabled = false;
-            if (!xhr) { els.status.textContent = 'Network error'; els.status.style.color = PT.color('error'); return; }
-            try {
-                var r = JSON.parse(xhr.responseText);
-                if (r.success) {
-                    els.status.textContent = 'Saved. Reloading...';
-                    els.status.style.color = PT.color('success');
-                    updateCssStatus(r.stale);
-                    setTimeout(function() { window.location.reload(true); }, 1500);
-                } else {
-                    els.status.textContent = 'Failed';
-                    els.status.style.color = PT.color('error');
-                }
-            } catch (e) { els.status.textContent = 'Failed'; els.status.style.color = PT.color('error'); }
+        PT.postJson(PT.urls.save, params, function(r, error) {
+            if (error || r.success !== true) {
+                typographyBusy = false;
+                typographyFailure(error ? error.message : 'Invalid typography save response', error && error.details);
+                return;
+            }
+            els.status.textContent = 'Saved. Reloading...';
+            els.status.style.color = PT.color('success');
+            if (typeof r.stale === 'boolean') updateCssStatus(r.stale); else cssUnknown();
+            setTimeout(function() { window.location.reload(true); }, 1500);
         });
     });
 
     els.resetBtn.addEventListener('click', function() {
+        if (!typographyReady || typographyBusy || typographyLoading) return;
         if (!confirm('Reset all typography settings to defaults?')) return;
-        els.resetBtn.disabled = true;
+        typographyBusy = true;
+        typographyControls();
         els.status.textContent = 'Resetting...';
         els.status.style.color = PT.color('info');
-        PT.xhrPost(PT.urls.reset, '', function(xhr) {
-            els.resetBtn.disabled = false;
-            if (!xhr) { els.status.textContent = 'Network error'; els.status.style.color = PT.color('error'); return; }
-            try {
-                var r = JSON.parse(xhr.responseText);
-                if (r.success) {
-                    els.status.textContent = 'Reset. Reload page.';
-                    els.status.style.color = PT.color('success');
-                    restoreFromSaved();
-                }
-            } catch (e) { els.status.textContent = 'Failed'; els.status.style.color = PT.color('error'); }
+        PT.postJson(PT.urls.reset, '', function(r, error) {
+            typographyBusy = false;
+            if (error || r.success !== true) {
+                typographyFailure(error ? error.message : 'Invalid typography reset response', error && error.details);
+                return;
+            }
+            restoreFromSaved();
+            typographyReady = false;
+            typographyControls();
+            els.retryBtn.style.display = 'inline-block';
+            els.status.textContent = 'Typography reset. Read settings again or reload the page.';
+            els.status.style.color = PT.color('success');
+            if (typeof r.stale === 'boolean') updateCssStatus(r.stale); else cssUnknown();
         });
     });
 
     els.reinjectBtn.addEventListener('click', function() {
-        els.reinjectBtn.disabled = true;
-        PT.xhrPost(PT.urls.reinject, '', function(xhr) {
-            els.reinjectBtn.disabled = false;
-            if (xhr) {
-                try {
-                    var r = JSON.parse(xhr.responseText);
-                    if (r.success) {
-                        updateCssStatus(r.stale);
-                        if (!r.stale) {
-                            els.status.textContent = 'CSS reinjected.';
-                            els.status.style.color = PT.color('success');
-                        }
-                    }
-                } catch (e) {}
+        if (!typographyReady || typographyBusy || typographyLoading) return;
+        typographyBusy = true;
+        typographyControls();
+        PT.postJson(PT.urls.reinject, '', function(r, error) {
+            typographyBusy = false;
+            if (error || r.success !== true || typeof r.stale !== 'boolean') {
+                typographyFailure(error ? error.message : 'Invalid CSS reinjection response', error && error.details);
+                return;
             }
+            typographyControls();
+            updateCssStatus(r.stale);
+            els.status.textContent = r.stale ? 'CSS reinjection is not confirmed. Check the theme stylesheet.' : 'CSS reinjected.';
+            els.status.style.color = PT.color(r.stale ? 'warning' : 'success');
         });
     });
 
@@ -424,10 +499,12 @@ window.PT = {
         save: document.getElementById('ps-appearance-save'),
         reset: document.getElementById('ps-appearance-reset'),
         colorsReset: document.getElementById('ps-colors-reset'),
+        retry: document.getElementById('ps-appearance-retry'),
         status: document.getElementById('ps-appearance-status')
     };
     var colorControls = [];
     var appearanceSaving = false;
+    var appearanceReady = false, appearanceLoading = false;
     ['light', 'dark'].forEach(function(scheme) {
         ['success', 'error', 'warning'].forEach(function(role) {
             var id = 'ps-color-' + role + '-' + scheme;
@@ -449,13 +526,37 @@ window.PT = {
     function appearanceBusy(busy) {
         appearanceSaving = busy;
         ['profile', 'size', 'weight', 'height', 'reset', 'colorsReset'].forEach(function(key) {
-            appearance[key].disabled = busy;
+            appearance[key].disabled = busy || !appearanceReady || appearanceLoading;
         });
         colorControls.forEach(function(control) {
-            control.picker.disabled = busy;
-            control.hex.disabled = busy;
+            control.picker.disabled = busy || !appearanceReady || appearanceLoading;
+            control.hex.disabled = busy || !appearanceReady || appearanceLoading;
         });
-        appearance.save.disabled = busy || !colorsValid();
+        appearance.save.disabled = busy || !appearanceReady || appearanceLoading || !colorsValid();
+        appearance.retry.disabled = busy || appearanceLoading;
+    }
+
+    function typedAppearance(resp) {
+        if (!resp || typeof resp !== 'object' || Array.isArray(resp) || 'error' in resp || resp.unknown === true ||
+            (resp.success !== undefined && resp.success !== true) || !resp.settings || typeof resp.settings !== 'object' || Array.isArray(resp.settings)) return null;
+        var settings = resp.settings;
+        if ((settings.profile !== 'soft' && settings.profile !== 'contrast') || typeof settings.mono_font_size !== 'string' || !/^1[2-8]$/.test(settings.mono_font_size) ||
+            (settings.mono_font_weight !== '400' && settings.mono_font_weight !== '500') || typeof settings.mono_line_height !== 'string' || !/^1\.[3-8]$/.test(settings.mono_line_height) ||
+            !colorControls.every(function(control) { return typeof settings[control.key] === 'string' && /^#[0-9a-f]{6}$/i.test(settings[control.key]); })) return null;
+        return settings;
+    }
+
+    function appearanceFailure(error, data) {
+        if (!data || error && (error.kind === 'transport' || error.kind === 'parse' || error.kind === 'http' || error.unknown) || data.applied === true || data.unknown === true || data.error === 'Internal error') appearanceReady = false;
+        appearanceBusy(false);
+        appearance.retry.style.display = appearanceReady ? 'none' : 'inline-block';
+        PT.setErr(appearance.status, error && error.message || data && data.error || 'Invalid appearance response', error && error.details || data && data.details);
+    }
+
+    function appearancePayload(resp, error) {
+        if (resp) return resp;
+        var data = error && error.data;
+        return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
     }
 
     function appearanceValues() {
@@ -505,6 +606,7 @@ window.PT = {
     }
 
     function markAppearancePreview() {
+        if (!appearanceReady || appearanceSaving || appearanceLoading) return;
         previewAppearance();
         appearance.save.disabled = appearanceSaving || !colorsValid();
         appearance.status.textContent = colorsValid() ? 'Preview — not saved' : 'Enter colors as #RRGGBB (six HEX digits)';
@@ -537,6 +639,7 @@ window.PT = {
     });
 
     function saveAppearance(reset) {
+        if (!appearanceReady || appearanceSaving || appearanceLoading) return;
         if (reset && !confirm('Reset Tweaker appearance to the soft profile and default monospace settings?')) return;
         if (!reset && !colorsValid()) { markAppearancePreview(); return; }
         appearanceBusy(true);
@@ -546,19 +649,18 @@ window.PT = {
         var params = reset ? '' : Object.keys(settings).map(function(key) {
             return key + '=' + encodeURIComponent(settings[key]);
         }).join('&');
-        PT.xhrPost(reset ? PT.urls.appearanceReset : PT.urls.appearanceSave, params, function(xhr) {
-            appearanceBusy(false);
-            var resp = null;
-            if (xhr && xhr.status === 200) {
-                try { resp = JSON.parse(xhr.responseText); } catch (e) {}
-            }
-            if (resp && resp.success && resp.settings) {
-                if (reset) { showBaseAppearance(resp.settings); previewAppearance(); }
-                else showAppearance(resp.settings);
+        PT.postJson(reset ? PT.urls.appearanceReset : PT.urls.appearanceSave, params, function(resp, error) {
+            var settings = !error && resp.success === true && typedAppearance(resp);
+            if (settings) {
+                if (reset) { showBaseAppearance(settings); previewAppearance(); }
+                else showAppearance(settings);
+                appearanceBusy(false);
                 appearance.status.textContent = reset ? 'Appearance reset.' : 'Appearance saved.';
                 appearance.status.style.color = PT.color('success');
             } else {
-                PT.setErr(appearance.status, (resp && resp.error) || (xhr ? 'Cannot save appearance' : 'Network error'));
+                var data = appearancePayload(resp, error);
+                if (!error) appearanceReady = false;
+                appearanceFailure(error, data);
             }
         });
     }
@@ -567,36 +669,50 @@ window.PT = {
     appearance.reset.addEventListener('click', function() { saveAppearance(true); });
 
     appearance.colorsReset.addEventListener('click', function() {
+        if (!appearanceReady || appearanceSaving || appearanceLoading) return;
         if (!confirm('Reset the six status colors to defaults?')) return;
         appearanceBusy(true);
         appearance.status.textContent = 'Resetting colors...';
         appearance.status.style.color = PT.color('info');
-        PT.xhrPost(PT.urls.appearanceColorsReset, '', function(xhr) {
-            var resp = null;
-            if (xhr && xhr.status === 200) {
-                try { resp = JSON.parse(xhr.responseText); } catch (e) {}
-            }
-            if (resp && resp.success && resp.settings) {
-                showColors(resp.settings);
+        PT.postJson(PT.urls.appearanceColorsReset, '', function(resp, error) {
+            var settings = !error && resp.success === true && typedAppearance(resp);
+            if (settings) {
+                showColors(settings);
                 previewAppearance();
+                appearanceBusy(false);
                 appearance.status.textContent = 'Colors reset.';
                 appearance.status.style.color = PT.color('success');
             } else {
-                PT.setErr(appearance.status, (resp && resp.error) || (xhr ? 'Cannot reset colors' : 'Network error'));
+                var data = appearancePayload(resp, error);
+                if (!error) appearanceReady = false;
+                appearanceFailure(error, data);
             }
-            appearanceBusy(false);
         });
     });
 
-    PT.getJson(PT.urls.appearance, function(resp) {
-        if (!resp || !resp.settings) {
-            PT.setErr(appearance.status, (resp && resp.error) || 'Cannot load appearance settings');
-            return;
-        }
-        showAppearance(resp.settings);
+    function loadAppearance() {
+        if (appearanceSaving || appearanceLoading) return;
+        appearanceReady = false;
+        appearanceLoading = true;
         appearanceBusy(false);
-        appearance.status.textContent = '';
-    });
+        appearance.status.textContent = 'Loading appearance settings...';
+        PT.getJson(PT.urls.appearance, function(resp, status, reason) {
+            appearanceLoading = false;
+            var settings = typedAppearance(resp);
+            if (!settings) {
+                appearanceFailure({ message: resp && typeof resp.error === 'string' && resp.error ||
+                    (status && status !== 200 ? 'Cannot read appearance settings (HTTP ' + status + ')' : reason || 'Invalid appearance settings response'), details: resp && resp.details }, resp);
+                return;
+            }
+            showAppearance(settings);
+            appearanceReady = true;
+            appearanceBusy(false);
+            appearance.retry.style.display = 'none';
+            appearance.status.textContent = '';
+        });
+    }
+    appearance.retry.addEventListener('click', loadAppearance);
+    loadAppearance();
 
     loadSettings();
 })();

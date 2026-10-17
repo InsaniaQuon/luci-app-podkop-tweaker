@@ -1,7 +1,8 @@
-// theme_browser_spec.js | v4.2.0 | 09.10.2026 | Real reliability, multipart and mobile flows
+// theme_browser_spec.js | v4.3.1 | 17.10.2026 | Exact contextual Stubby diagnostics in native browser fixtures
 // node tests/theme_browser_spec.js --browser <installed Chromium/Edge executable>
-// Add --diagnostics-only, --update-only or --copy-only for focused form checks.
-// All generated files and the isolated browser profile live under ROOT/tmp.
+// Add --theme-only for schemes/live Argon modes, or a focused form flag below.
+// --output-dir .test_tmp/<run> isolates generated files/profile from old runs.
+// --argon-css <local cascade.css> uses real CSS in the Argon 3 mode fixtures.
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -13,16 +14,30 @@ const root = path.dirname(repo);
 const controller = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/controller/podkop-tweaker.lua'), 'utf8');
 const appVersion = controller.match(/APP_VERSION = "([^"]+)"/)[1];
 const assetBaseVersion = appVersion + '-' + controller.match(/ASSET_REVISION = "([^"]+)"/)[1];
-const browser = process.argv[process.argv.indexOf('--browser') + 1];
+function option(flag) {
+    const index = process.argv.indexOf(flag);
+    if (index < 0) return null;
+    const value = process.argv[index + 1];
+    if (!value || value.startsWith('--')) throw new Error(`Supply ${flag} <value>`);
+    return value;
+}
+const browser = option('--browser');
 const diagnosticsOnly = process.argv.includes('--diagnostics-only');
 const updateOnly = process.argv.includes('--update-only');
 const copyOnly = process.argv.includes('--copy-only');
 const reliabilityOnly = process.argv.includes('--reliability-only');
-const focused = diagnosticsOnly || updateOnly || copyOnly || reliabilityOnly;
-if ([diagnosticsOnly, updateOnly, copyOnly, reliabilityOnly].filter(Boolean).length > 1) throw new Error('Choose one focused mode');
-if (!process.argv.includes('--browser') || !browser) throw new Error('Supply --browser <installed executable>');
-const artifacts = path.join(root, 'tmp', 'theme-smoke');
-assert.ok(fs.existsSync(path.dirname(artifacts)), 'ROOT/tmp must exist');
+const themeOnly = process.argv.includes('--theme-only');
+const focused = diagnosticsOnly || updateOnly || copyOnly || reliabilityOnly || themeOnly;
+if ([diagnosticsOnly, updateOnly, copyOnly, reliabilityOnly, themeOnly].filter(Boolean).length > 1) throw new Error('Choose one focused mode');
+if (!browser) throw new Error('Supply --browser <installed executable>');
+const outputDir = option('--output-dir');
+const runDate = new Date(Date.now() + 3 * 3600000);
+const pad2 = value => String(value).padStart(2, '0');
+const runStamp = `${pad2(runDate.getUTCDate())}.${pad2(runDate.getUTCMonth() + 1)}.${runDate.getUTCFullYear()}_${pad2(runDate.getUTCHours())}.${pad2(runDate.getUTCMinutes())}`;
+const artifacts = outputDir ? path.resolve(root, outputDir) : path.join(root, '.test_tmp', `browser-${runStamp}-${process.pid}`);
+const relativeOutput = path.relative(path.join(root, '.test_tmp'), artifacts);
+assert.ok(relativeOutput && relativeOutput !== '..' && !relativeOutput.startsWith('..' + path.sep) && !path.isAbsolute(relativeOutput), '--output-dir must be a run directory inside ROOT/.test_tmp');
+assert.ok(fs.existsSync(root), 'ROOT must exist');
 fs.mkdirSync(artifacts, { recursive: true });
 
 // Theme-owned rules from Argon 2.4.x, including unchanged light variables,
@@ -44,6 +59,19 @@ div>table>tbody>tr:nth-child(2n){background:#252526}table td{color:#ccc}table th
 .cbi-button-apply{background:var(--dark-primary)!important;color:#fff!important}
 `;
 
+// Minimal mode-aware fixture by default; a caller can supply upstream CSS
+// without changing the legacy 2.4.x/Bootstrap fixtures.
+const argonCssFile = option('--argon-css');
+const argon3Dark = '--fixture-bg:#1e1e1e;--fixture-fg:#ccc;--fixture-card:#252526;--fixture-border:#3c3c3c';
+const argon3Theme = argonCssFile ? fs.readFileSync(path.resolve(root, argonCssFile), 'utf8') : `${lightTheme}
+:root{--fixture-bg:#f4f5f7;--fixture-fg:#32325d;--fixture-card:#fff;--fixture-border:#ddd}
+:root[data-argon-mode="dark"]{${argon3Dark}}
+@media(prefers-color-scheme:dark){:root[data-argon-mode="normal"]{${argon3Dark}}}
+body,.main-right{background:var(--fixture-bg);color:var(--fixture-fg)}
+.cbi-section{background:var(--fixture-card)!important}h2,h3,h4{background:var(--fixture-card)}
+input,select,textarea{background:var(--fixture-card)!important;color:var(--fixture-fg);border-color:var(--fixture-border)!important}
+`;
+
 const scenarios = {
     'argon-auto-dark': { os: 'dark', theme: 'argon', mode: 'normal', media: '(prefers-color-scheme: dark)', darkLink: true, late: true, dark: true },
     'argon-force-dark': { os: 'light', theme: 'argon', mode: 'dark', darkLink: true, dark: true },
@@ -51,15 +79,19 @@ const scenarios = {
     'argon-versioned-css': { os: 'dark', theme: '', mode: '', darkLink: true, media: '(prefers-color-scheme: dark)', dark: true },
     'argon-inline-legacy': { os: 'dark', theme: '', mode: '', inline: true, dark: true },
     'bootstrap-dark': { os: 'light', theme: 'bootstrap', mode: '', bootstrap: true, inline: true, dark: true },
-    'bootstrap-light': { os: 'dark', theme: 'bootstrap', mode: '', bootstrap: false, dark: false }
+    'bootstrap-light': { os: 'dark', theme: 'bootstrap', mode: '', bootstrap: false, dark: false },
+    'argon3-light-stale-dark': { os: 'dark', theme: 'argon', mode: 'dark', argonMode: 'light', dark: false },
+    'argon3-dark-stale-light': { os: 'light', theme: 'argon', mode: 'light', argonMode: 'dark', dark: true },
+    'argon3-normal-stale-dark': { os: 'light', theme: 'argon', mode: 'dark', argonMode: 'normal', dark: false }
 };
 
 function fixture(name, profile) {
     const s = scenarios[name];
     const app = `<link rel="stylesheet" href="/common.css?v=${assetBaseVersion}">`;
     const darkLink = s.darkLink ? `<link rel="stylesheet" href="/luci-static/argon/css/dark.css?v=2.4.8#version" ${s.media ? `media="${s.media}"` : ''}>` : '';
-    return `<!doctype html><html ${s.bootstrap === undefined ? '' : `data-darkmode="${s.bootstrap}"`}><head><meta charset="utf-8">
-<link rel="stylesheet" href="/luci-static/argon/css/cascade.css?v=2.4.8">
+    const argon3 = s.argonMode !== undefined;
+    return `<!doctype html><html ${s.bootstrap === undefined ? '' : `data-darkmode="${s.bootstrap}"`} ${argon3 ? `data-argon-mode="${s.argonMode}"` : ''}><head><meta charset="utf-8">
+<link rel="stylesheet" href="${argon3 ? '/argon3.css' : '/luci-static/argon/css/cascade.css?v=2.4.8'}">
 ${s.late ? app + darkLink : darkLink + app}
 ${s.inline ? `<style>${darkTheme}</style>` : ''}
 <style>.fixture-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.ps-editor-wrap{height:190px}h3{margin:0 0 12px}.cbi-section{margin-bottom:18px}</style>
@@ -86,6 +118,7 @@ github.com'</textarea></div><button id="apply" class="btn cbi-button cbi-button-
 <section class="cbi-section" id="about-card"><h3>About</h3><div class="ps-disclaimer" id="disclaimer"><strong>Disclaimer</strong><p id="disclaimer-text">Podkop Tweaker is an independent third-party tool and is not affiliated with the Podkop project.</p></div>
 <div class="ps-warning-box" id="warning">Config contains credentials.</div><div class="ps-danger-box" id="danger">Service restart failed.</div><table class="ps-sysinfo-table"><tbody><tr><th>Service</th><th>Version</th></tr><tr><td>Argon Theme</td><td class="ps-sysinfo-value" id="table-value">2.4.7 <span class="ps-ver-outdated" id="update-available">(Update available 2.4.8)</span><span id="install-error"></span></td></tr></tbody></table></section>
 </div></div></div><input id="outside" value="Theme-owned control outside the application">
+${argon3 ? `<label>Theme mode <select id="argon-mode" onchange="document.documentElement.setAttribute('data-argon-mode',this.value)">${['dark', 'light', 'normal'].map(mode => `<option ${mode === s.argonMode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label>` : ''}
 <div class="ps-modal" id="modal" style="display:none"><div class="ps-modal-content"><h3>Attach subscription</h3><input id="modal-input" class="ps-sub-url-input" value="https://example.test/sub"><label class="ps-check-item"><input id="modal-check" type="checkbox" checked><span>Import settings</span></label><label class="ps-diff-toggle"><input id="diff-check" type="checkbox" checked>Only changed</label><pre class="ps-error-details" id="error-details">ERROR: unable to select packages</pre><button class="btn cbi-button" id="modal-close">Close</button></div></div>
 <script>window.PT={urls:{},csrf:'test'};</script><script src="/common.js?v=${assetBaseVersion}"></script>
 <script>document.getElementById('live-status').style.color=PT.color('success');PT.setErr(document.getElementById('install-error'),'Theme package installation failed','ERROR: ucode dependency conflict');document.querySelector('#install-error summary').id='install-summary';</script></body></html>`;
@@ -97,15 +130,68 @@ const colorDefaults = {
 };
 const defaults = { profile: 'soft', mono_font_size: '13', mono_font_weight: '400', mono_line_height: '1.6', ...colorDefaults };
 let appearanceState = { ...defaults, profile: 'contrast', mono_font_size: '18', mono_font_weight: '500', mono_line_height: '1.8' };
+const typographyState = { font_size: '17', font_family: 'Google Sans', font_family_custom: '', font_weight: '550',
+    line_height: '1.7', letter_spacing: '', menu_font_size: '', menu_padding: '' };
 const appearanceRequests = [];
-let appearanceFailure = false;
+let appearanceFailure = false, appearanceReadFailure = false;
+let typographyReadFailure = false, fragmentReadFailure = false, outboundReadFailure = false;
+const frontendPosts = [];
+// Observe the actual browser XHR/deadline and Blob download paths. No transport
+// callbacks, timers, production runners or download helpers are replaced here.
+const browserRequestObserver = `window.fixtureXHR=[];(()=>{const open=XMLHttpRequest.prototype.open,send=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url){this.fixtureRequest={method,url:String(url)};return open.apply(this,arguments);};XMLHttpRequest.prototype.send=function(){window.fixtureXHR.push({...this.fixtureRequest,timeout:this.timeout});return send.apply(this,arguments);};})();`;
+const browserDownloadObserver = `window.fixtureDownloads=[];window.fixtureDownloadErrors=[];document.addEventListener('click',event=>{const link=event.target.closest&&event.target.closest('a[download]');if(!link||!link.href.startsWith('blob:'))return;event.preventDefault();const filename=link.download;fetch(link.href).then(response=>response.text()).then(text=>window.fixtureDownloads.push({filename,text})).catch(error=>window.fixtureDownloadErrors.push(String(error)));},true);`;
+
+// Held HTTP replies let the native browser expose each progressive result before
+// the next operation completes. Every response remains on this local server.
+const fixtureReplyQueues = new Map(), fixtureCalls = [], heldFixtureReplies = new Set();
+function queueFixtureReply(endpoint, data, options = {}) {
+    const plan = { data, ...options };
+    if (!fixtureReplyQueues.has(endpoint)) fixtureReplyQueues.set(endpoint, []);
+    fixtureReplyQueues.get(endpoint).push(plan);
+    return plan;
+}
+function fixtureResponse(req, res, fields, fallback) {
+    const endpoint = new URL(req.url, 'http://localhost').pathname;
+    const plan = (fixtureReplyQueues.get(endpoint) || []).shift() || {};
+    plan.request = { endpoint, method: req.method, fields, receivedAt: Date.now() };
+    fixtureCalls.push(plan.request);
+    const send = () => {
+        heldFixtureReplies.delete(send);
+        if (plan.sentAt || res.destroyed || res.writableEnded) return;
+        const data = plan.data === undefined ? typeof fallback === 'function' ? fallback() : fallback : plan.data;
+        if (plan.effect) plan.effect();
+        res.statusCode = plan.status || 200;
+        res.setHeader('Content-Type', plan.contentType || 'application/json');
+        res.setHeader('Cache-Control', 'no-store');
+        plan.sentAt = Date.now();
+        res.end(plan.raw === undefined ? JSON.stringify(data) : plan.raw);
+    };
+    plan.release = send;
+    if (plan.hold) {
+        heldFixtureReplies.add(send);
+        res.once('close', () => heldFixtureReplies.delete(send));
+    } else send();
+}
+
+const localDiagnostics = {
+    diag_dns: { results: [
+        { source: 'dot.fixture.test', target: '192.0.2.53', ip: '192.0.2.80', status: 'OK' },
+        { source: 'Via Stubby', target: '127.0.0.53', ip: '192.0.2.80', status: 'OK' },
+        { source: 'Via dnsmasq', target: '127.0.0.1', ip: '198.18.0.10', status: 'OK' }
+    ] },
+    diag_proxy: { results: [
+        { source: 'sing-box mixed (:2080)', http_code: 204, time_ms: 37, status: 'OK' },
+        { source: 'fixture second inbound', http_code: 200, time_ms: 49, status: 'OK' }
+    ] },
+    diag_e2e: { external_ip: '198.51.100.24', http_code: 204, time_ms: 61, status: 'OK' }
+};
 function appearanceFixture() {
     const view = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/view/podkop-tweaker/argon.htm'), 'utf8');
     const colorAttrs = Object.keys(colorDefaults).map(key => `data-${key.replaceAll('_', '-')}="${appearanceState[key]}"`).join(' ');
     const marker = `<span hidden id="ps-theme-context" data-theme="argon" data-mode="dark" data-profile="${appearanceState.profile}" data-mono-size="${appearanceState.mono_font_size}" data-mono-weight="${appearanceState.mono_font_weight}" data-mono-line-height="${appearanceState.mono_line_height}" ${colorAttrs}></span>`;
     const markup = view.slice(view.indexOf('<div class="cbi-map"'), view.indexOf('<link rel="stylesheet"')).replace('<%+podkop-tweaker/tabs%>', marker);
     const scripts = [...view.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
-    const bootstrap = { csrf: 'browser-token', urls: { typography: '/api/typography', appearance: '/api/appearance', appearanceSave: '/api/appearance-save', appearanceReset: '/api/appearance-reset', appearanceColorsReset: '/api/appearance-colors-reset' } };
+    const bootstrap = { csrf: 'browser-token', urls: { typography: '/api/typography', save: '/api/typography-save', reset: '/api/typography-reset', reinject: '/api/typography-reinject', appearance: '/api/appearance', appearanceSave: '/api/appearance-save', appearanceReset: '/api/appearance-reset', appearanceColorsReset: '/api/appearance-colors-reset' } };
     return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style><link rel="stylesheet" href="/common.css?v=${assetBaseVersion}"></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};</script><script src="/common.js?v=${assetBaseVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
 }
 
@@ -115,11 +201,11 @@ function diagnosticsFixture() {
     const markup = view.slice(view.indexOf('<div class="cbi-map"'), view.indexOf('<link rel="stylesheet"'))
         .replace('<%+podkop-tweaker/tabs%>', marker).replace(/<%=url\('admin\/services\/podkop'\)%>/g, '/admin/services/podkop');
     const scripts = [...view.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
-    const bootstrap = { csrf: 'browser-token', urls: { chainInfo: '/testapi/chain', dnsObservationStart: '/testapi/dns-start', dnsObservationResults: '/testapi/dns-results' } };
+    const bootstrap = { version: appVersion, csrf: 'browser-token', urls: { chainInfo: '/testapi/chain', diagDns: '/testapi/diag_dns', diagProxy: '/testapi/diag_proxy', diagE2e: '/testapi/diag_e2e', dnsObservationStart: '/testapi/dns-start', dnsObservationResults: '/testapi/dns-results' } };
     // Provider probes are mapped to a local image: exercise real browser events
     // without sending DNS/HTTP test traffic to a third-party from the host.
     const probes = `window.probeURLs=[];window.Image=class{constructor(){this.img=document.createElement('img');this.img.onload=()=>this.onload&&this.onload();this.img.onerror=()=>this.onerror&&this.onerror();}set src(url){if(!url)return;window.probeURLs.push(url);this.img.src='/testapi/probe.png';}};`;
-    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${assetBaseVersion}"><style>${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};${probes}</script><script src="/common.js?v=${assetBaseVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${assetBaseVersion}"><style>${view.match(/<style>([\s\S]*?)<\/style>/)[1]}</style></head><body><div class="main-right">${markup}</div><script>window.PT=${JSON.stringify(bootstrap)};${probes}${browserRequestObserver}${browserDownloadObserver}</script><script src="/common.js?v=${assetBaseVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
 }
 
 const localApplyRequests = [];
@@ -150,13 +236,27 @@ function copyFixture(name) {
         const endpoint = expr.match(/api\/([^"']+)/);
         return endpoint ? '/copyapi/' + endpoint[1] : '';
     });
-    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${assetBaseVersion}"></head><body><div class="main-right">${markup}</div><script>${bootstrap};window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:undefined});document.addEventListener('copy',event=>{window.copyWrites.push(document.activeElement.value);event.preventDefault();});</script><script src="/common.js?v=${assetBaseVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${assetBaseVersion}"></head><body><div class="main-right">${markup}</div><script>${bootstrap};${browserRequestObserver}window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:undefined});document.addEventListener('copy',event=>{window.copyWrites.push(document.activeElement.value);event.preventDefault();});</script><script src="/common.js?v=${assetBaseVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
 }
 
 const copyLogLines = Array.from({ length: 15 }, (_, i) => [`09.10.2026 12:${String(i).padStart(2, '0')}|manual|updated=1|unchanged=0|failed=0`, `  main-${i}: updated`, `    detail ${i}: <script>plain text</script>`]).flat();
 const contentRequests = [], subscriptionRequests = [];
 const subscriptionSettings = { auto_update_interval: 4, auto_update_start: '01:30', auto_update_on_restart: true, log_display_count: 10 };
 let subscriptionFailure = false, brokenSchedule = false;
+let fixtureWrapperInstalled = false;
+const fixtureAutostart = { podkop: false, stubby: false };
+const initialStubbyConfig = "config stubby 'global'\n    option log_level '3'\n";
+let fixtureStubbyConfig = initialStubbyConfig;
+// Controlled process facts for frontend fixtures, not host/router services.
+const fixtureProcesses = { singbox: { running: false }, stubby: { running: false } };
+let fixtureStartTime = 100;
+function fixtureStatus(name) { return { ...fixtureProcesses[name === 'stubby' ? 'stubby' : 'singbox'] }; }
+function fixtureRestart(name) {
+    const key = name === 'stubby' ? 'stubby' : 'singbox', before = fixtureStatus(key), pid = key === 'stubby' ? '456' : '123';
+    fixtureProcesses[key] = { running: true, pid, instance: pid + ':' + (++fixtureStartTime) };
+    return { success: true, restarting: true, verification_required: true, previous_running: before.running,
+        previous_identity_known: true, ...(before.instance ? { previous_instance: before.instance } : {}) };
+}
 function multipartFields(body, contentType) {
     const match = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/);
     assert.ok(match, 'multipart boundary is supplied by the browser');
@@ -178,6 +278,7 @@ function multipartFields(body, contentType) {
 
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
+    if (req.method === 'POST') frontendPosts.push(url.pathname);
     if (url.pathname === '/cache-prime') {
         res.setHeader('Content-Type', 'text/html');
         res.end(`<!doctype html><html><script src="/common.js?v=${appVersion}"></script></html>`);
@@ -196,25 +297,76 @@ const server = http.createServer((req, res) => {
                     assert.equal(fields.token, 'browser-token');
                     assert.ok(Buffer.byteLength(fields.content_file) > 102400);
                     contentRequests.push({ endpoint, fields });
-                    res.end(JSON.stringify(endpoint === 'import_bundle' ? { success: true, results: { podkop: { ok: true } } } : { success: true, unchanged: true }));
+                    if (endpoint === 'import_bundle') {
+                        const selected = fields.items.split(','), results = {}, restarts = {};
+                        for (const name of selected) {
+                            results[name] = { ok: true, applied: true };
+                            if (['podkop', 'stubby', 'singbox'].includes(name)) {
+                                const ack = fixtureRestart(name); restarts[name] = ack;
+                                Object.assign(results[name], ack); delete results[name].success;
+                            }
+                        }
+                        const podkop = restarts.podkop || {};
+                        res.end(JSON.stringify({ success: true, applied: true, partial: false, complete: true, results, restarts,
+                            restarting: podkop.restarting === true, verification_required: podkop.verification_required,
+                            previous_running: podkop.previous_running, previous_instance: podkop.previous_instance,
+                            previous_identity_known: podkop.previous_identity_known, skipped: Object.keys(JSON.parse(fields.content_file).items).filter(name => !selected.includes(name)) }));
+                    } else if (endpoint.startsWith('import_')) {
+                        res.end(JSON.stringify({ ...fixtureRestart(endpoint === 'import_stubby_config' ? 'stubby' : 'singbox'), applied: true }));
+                    } else {
+                        // This transport scenario represents a checked unchanged Save.
+                        res.end(JSON.stringify({ success: true, unchanged: true }));
+                    }
                 } else {
                     const fields = Object.fromEntries(new URLSearchParams(body.toString()));
                     assert.equal(fields.token, 'browser-token');
+                    if (['podkop_autostart_toggle', 'stubby_autostart_toggle'].includes(endpoint)) {
+                        const name = endpoint.startsWith('stubby') ? 'stubby' : 'podkop';
+                        assert.ok(['enable', 'disable'].includes(fields.action));
+                        fixtureResponse(req, res, fields, () => {
+                            fixtureAutostart[name] = fields.action === 'enable';
+                            return { success: true, enabled: fixtureAutostart[name] };
+                        }); return;
+                    }
+                    if (endpoint === 'apply_recommended_stubby' || endpoint === 'stubby_init_fix') {
+                        fixtureResponse(req, res, fields, () => endpoint === 'stubby_init_fix' ? { success: true, message: 'Already fixed' } : { ...fixtureRestart('stubby'), applied: true }); return;
+                    }
                     subscriptionRequests.push({ endpoint, fields });
                     if (subscriptionFailure) { subscriptionFailure = false; res.statusCode = 403; res.end('<html>LuCI login</html>'); return; }
                     if (endpoint === 'settings_save') {
                         subscriptionSettings.log_display_count = +fields.log_display_count;
                         if (fields.log_only !== '1') Object.assign(subscriptionSettings, { auto_update_interval: +fields.auto_update_interval, auto_update_start: fields.auto_update_start, auto_update_on_restart: fields.auto_update_on_restart === '1' });
                     }
-                    res.end(JSON.stringify({ success: true, updated: 0, unchanged: 1, failed: 0 }));
+                    if (endpoint === 'wrapper_toggle') {
+                        fixtureWrapperInstalled = fields.action !== 'disable';
+                        res.end(JSON.stringify({ success: true, installed: fixtureWrapperInstalled })); return;
+                    }
+                    res.end(JSON.stringify({ success: true, updated: 0, unchanged: 1, failed: 0, skipped: 0, restarted: false, outcomes: [] }));
                 }
             });
             return;
         }
         if (['read_config', 'read_stubby_config', 'read_singbox_config'].includes(endpoint)) {
-            res.setHeader('Content-Type', 'text/plain'); res.end("config settings 'settings'\n    option enabled '1'\n");
+            res.setHeader('Content-Type', 'text/plain');
+            res.end(endpoint === 'read_singbox_config' ? '{"outbounds":[]}\n' : endpoint === 'read_stubby_config' ? fixtureStubbyConfig : "config settings 'settings'\n    option enabled '1'\n");
         } else {
             res.setHeader('Content-Type', 'application/json');
+            if (['podkop_autostart', 'stubby_autostart'].includes(endpoint)) {
+                fixtureResponse(req, res, null, { enabled: fixtureAutostart[endpoint.startsWith('stubby') ? 'stubby' : 'podkop'] }); return;
+            }
+            if (endpoint === 'stubby_init_check') { fixtureResponse(req, res, null, { status: 'fixed' }); return; }
+            if (endpoint === 'wrapper_status') { res.end(JSON.stringify({ installed: fixtureWrapperInstalled, stale: false })); return; }
+            if (endpoint === 'fragment_settings') {
+                res.end(JSON.stringify(fragmentReadFailure ? { success: false, error: 'Cannot read current Fragment settings' } : { fragment: true, record_fragment: false, fallback_delay: '900ms', settings_source: 'uci', config_missing: false }));
+                return;
+            }
+            if (endpoint === 'singbox_outbounds') {
+                res.end(JSON.stringify(outboundReadFailure ? { error: 'jq enumeration failed', details: '<script>literal jq stderr</script>' } : { outbound_count: 0, outbounds: {} }));
+                return;
+            }
+            if (['service_status', 'singbox_service_status', 'stubby_service_status'].includes(endpoint)) {
+                fixtureResponse(req, res, null, () => fixtureStatus(endpoint === 'stubby_service_status' ? 'stubby' : 'singbox')); return;
+            }
             const response = endpoint === 'read_update_log' ? { lines: copyLogLines } : endpoint === 'subscription_state' ? { sections: [{ name: 'main', proxy_config_type: 'url', slots: [{ index: 0, proxy: { name: 'Example', server: 'example.test', protocol: 'VLESS', security: 'tls' } }] }] } : endpoint === 'settings_read' ? subscriptionSettings : endpoint === 'auto_update_status' ? {
                 cron: { enabled: true, matches: !brokenSchedule, running: !brokenSchedule, expected: '30 1,5,9,13,17,21 * * * /usr/bin/pt-auto-update' },
                 launcher: { matches: !brokenSchedule, executable: !brokenSchedule }, hotplug: { enabled: true, matches: !brokenSchedule, executable: !brokenSchedule },
@@ -250,19 +402,30 @@ const server = http.createServer((req, res) => {
         res.setHeader('Content-Type', 'text/html');
         res.end(`<!doctype html><html><body><ul class="cbi-tabmenu"><li data-tab="diagnostic"><a href="#">Diagnostics</a></li></ul><div id="tabs" data-initialized="false"><div id="pane" data-tab="diagnostic" data-tab-active="false">Native Podkop diagnostics</div></div><script>setTimeout(()=>{document.querySelector('a').onclick=(event)=>{event.preventDefault();document.getElementById('pane').setAttribute('data-tab-active','true');};document.getElementById('tabs').setAttribute('data-initialized','true');},300);</script></body></html>`);
     } else if (url.pathname === '/testapi/chain') {
-        res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ resolvers: [] }));
+        res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ stubby_listen: '127.0.0.53@53', podkop_dns: '127.0.0.53', resolvers: [{ address: '192.0.2.53', tls_auth_name: 'dot.fixture.test', tls_port: '853' }] }));
+    } else if (Object.hasOwn(localDiagnostics, url.pathname.slice('/testapi/'.length)) && url.pathname.startsWith('/testapi/')) {
+        assert.equal(req.method, 'POST', 'local diagnostics are CSRF-protected POSTs');
+        assert.match(req.headers['content-type'] || '', /^application\/x-www-form-urlencoded\b/);
+        let body = '';
+        req.on('data', data => { body += data; assert.ok(body.length < 4096); });
+        req.on('end', () => {
+            const fields = Object.fromEntries(new URLSearchParams(body));
+            assert.equal(fields.token, 'browser-token');
+            fixtureResponse(req, res, fields, localDiagnostics[url.pathname.slice('/testapi/'.length)]);
+        });
     } else if (url.pathname === '/testapi/probe.png') {
         res.setHeader('Content-Type', 'image/png'); res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jPioAAAAASUVORK5CYII=', 'base64'));
     } else if (url.pathname === '/testapi/dns-start' || url.pathname === '/testapi/dns-results') {
         let body = ''; req.on('data', data => { body += data; }); req.on('end', () => {
             res.setHeader('Content-Type', 'application/json');
             if (new URLSearchParams(body).get('token') !== 'browser-token') { res.statusCode = 403; res.end('{}'); return; }
-            res.end(JSON.stringify(url.pathname.endsWith('-start') ? { success: true, id: 'native', hosts: Array.from({ length: 6 }, (_, i) => `${i + 1}.native.bash.ws`) } :
-                { success: true, complete: true, provider: 'bash.ws', scope: 'current_browser', resolvers: [{ ip: '1.1.1.1', asn: 'AS13335' }], control_request_ips: [{ ip: '203.0.113.1' }], control_request_scope: 'router', conclusion: 'Observations collected, compare intended policy' }));
+            res.end(JSON.stringify(url.pathname.endsWith('-start') ? { success: true, provider: 'bash.ws', scope: 'current_browser', id: 'native', hosts: Array.from({ length: 6 }, (_, i) => `${i + 1}.native.bash.ws`) } :
+                { success: true, id: 'native', complete: true, provider: 'bash.ws', scope: 'current_browser', resolvers: [{ ip: '1.1.1.1', asn: 'AS13335' }], control_request_ips: [{ ip: '203.0.113.1' }], control_request_scope: 'router', conclusion: 'Observations collected, compare intended policy' }));
         });
     } else if (url.pathname === '/api/appearance' || url.pathname === '/api/typography') {
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify(url.pathname.endsWith('/appearance') ? { settings: appearanceState } : { settings: { font_size: '17', font_weight: '550', line_height: '1.7' }, stale: false }));
+        res.end(JSON.stringify(url.pathname.endsWith('/appearance') ? appearanceReadFailure ? { success: false, error: 'Cannot read current appearance settings' } :
+            { settings: appearanceState, settings_source: 'uci', config_missing: false } : typographyReadFailure ? { success: false, error: 'Cannot read current Typography settings' } : { settings: typographyState, stale: false, settings_source: 'uci', config_missing: false }));
     } else if (['/api/appearance-save', '/api/appearance-reset', '/api/appearance-colors-reset'].includes(url.pathname)) {
         let body = '';
         req.on('data', data => { body += data; });
@@ -290,6 +453,8 @@ const server = http.createServer((req, res) => {
             return;
         }
         res.end(fs.readFileSync(path.join(repo, 'www/luci-static/resources/podkop-tweaker', url.pathname.slice(1))));
+    } else if (url.pathname === '/argon3.css') {
+        res.setHeader('Content-Type', 'text/css'); res.end(argon3Theme);
     } else if (url.pathname.endsWith('/cascade.css') || url.pathname.endsWith('/dark.css')) {
         res.setHeader('Content-Type', 'text/css');
         res.end(url.pathname.endsWith('/dark.css') ? darkTheme : lightTheme);
@@ -329,10 +494,31 @@ function connect(endpoint) {
     });
 }
 
+// Expected generic Run Log mirror, independent of each result table's renderer.
+function diagnosticLines(entry) {
+    const lines = ['took_ms: ' + (entry.took_ms || 0)];
+    if (entry.status === 'ERROR') lines.push('http_status: ' + (entry.http_status || 0));
+    if (entry.error) lines.push('error: ' + entry.error);
+    const value = item => item === null || item === undefined || item === '' ? '-' : typeof item === 'object' ? JSON.stringify(item) : String(item);
+    function walk(data, prefix = '') {
+        for (const [key, item] of Object.entries(data)) {
+            const name = prefix ? prefix + '.' + key : key;
+            if (Array.isArray(item)) {
+                if (!item.length) lines.push(name + ': []');
+                item.forEach((row, index) => lines.push(name + '[' + index + ']: ' + value(row)));
+            } else if (item !== null && typeof item === 'object') walk(item, name);
+            else lines.push(name + ': ' + value(item));
+        }
+    }
+    if (entry.data && typeof entry.data === 'object') walk(entry.data);
+    return lines;
+}
+
 async function main() {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
     const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-sync', '--remote-debugging-port=0', `--user-data-dir=${path.join(artifacts, 'profile')}`], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const browserClosed = new Promise(resolve => child.once('close', resolve));
     let cdp;
     try {
         const endpoint = await new Promise((resolve, reject) => {
@@ -355,12 +541,26 @@ async function main() {
             if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
             return result.result.value;
         };
-        const wait = async (expression, expected) => {
-            for (let i = 0; i < 100; i++) {
+        const wait = async (expression, expected, timeout = 3000) => {
+            for (let i = 0; i < Math.ceil(timeout / 30); i++) {
                 if (await evaluate(expression) === expected) return;
                 await new Promise(resolve => setTimeout(resolve, 30));
             }
             throw new Error(`Waiting for ${expression} === ${expected} failed`);
+        };
+        const waitFixture = async (predicate, description, timeout = 5000) => {
+            const deadline = Date.now() + timeout;
+            while (Date.now() < deadline) {
+                if (predicate()) return;
+                await new Promise(resolve => setTimeout(resolve, 30));
+            }
+            throw new Error('Waiting for local fixture: ' + description);
+        };
+        const navigateFixture = async url => {
+            const previousOrigin = await evaluate('performance.timeOrigin');
+            await cdp.call('Page.navigate', { url }, sessionId);
+            await wait(`performance.timeOrigin !== ${previousOrigin}`, true);
+            await wait('document.readyState', 'complete');
         };
         const escape = async modalId => {
             await cdp.call('Page.bringToFront', {}, sessionId);
@@ -379,8 +579,40 @@ async function main() {
             const id = `ps-color-${role}-${scheme}` + (picker ? '' : '-hex');
             await evaluate(`(() => {const el=document.getElementById(${JSON.stringify(id)});el.value=${JSON.stringify(value)};el.dispatchEvent(new Event('input'));})()`);
         };
+        const diagnosticButtons = ['ps-proxy-run', 'ps-dns-run', 'ps-e2e-run', 'ps-leak-run', 'ps-run-all'];
+        const diagnosticControls = busy => `[${diagnosticButtons.map(id => `document.getElementById(${JSON.stringify(id)}).disabled`).join(',')}].every(value=>value===${busy})`;
+        const assertDiagnosticLog = async () => {
+            const snapshot = await evaluate(`({entries:JSON.parse(sessionStorage.getItem('pt-diag-run-log')||'[]'),events:[...document.querySelectorAll('#ps-diaglog-wrap .ps-log-event')].map(el=>({summary:el.querySelector('.ps-log-summary').textContent,lines:[...el.querySelectorAll('.ps-log-detail-line')].map(line=>line.textContent),literal:[...el.querySelectorAll('.ps-log-detail-line')].every(line=>line.childElementCount===0)})),downloadDisabled:document.getElementById('ps-diaglog-download').disabled})`);
+            assert.equal(snapshot.events.length, snapshot.entries.length, 'visible events and stored entries have the same count');
+            assert.equal(snapshot.downloadDisabled, !snapshot.entries.length, 'partial logs are exportable while a run is still busy');
+            snapshot.entries.forEach((entry, index) => {
+                assert.match(entry.ts, /^\d{2}:\d{2}:\d{2}$/);
+                assert.ok(['OK', 'FAIL', 'ERROR'].includes(entry.status));
+                assert.ok(Number.isFinite(entry.took_ms) && entry.took_ms >= 0);
+                if (entry.status === 'ERROR') assert.ok(Number.isInteger(entry.http_status) && entry.http_status >= 0);
+                assert.ok(snapshot.events[index].summary.includes(entry.test));
+                assert.ok(snapshot.events[index].summary.includes(entry.status));
+                assert.deepEqual(snapshot.events[index].lines, diagnosticLines(entry), 'visible details mirror every current stored field');
+                assert.equal(snapshot.events[index].literal, true, 'log details are literal text, including HTML-shaped errors');
+            });
+            return snapshot.entries;
+        };
+        const exportDiagnosticLog = async entries => {
+            const count = await evaluate('window.fixtureDownloads.length');
+            await evaluate('document.getElementById("ps-diaglog-download").click()');
+            await wait('window.fixtureDownloads.length', count + 1);
+            assert.deepEqual(await evaluate('window.fixtureDownloadErrors'), []);
+            const download = await evaluate('window.fixtureDownloads.at(-1)');
+            assert.match(download.filename, /^\d{2}\.\d{2}\.\d{4}_\d{2}\.\d{2}-diagnostics-log\.json$/);
+            const data = JSON.parse(download.text);
+            assert.equal(data.format, 'pt-diag-run');
+            assert.equal(data.tweaker_version, appVersion);
+            assert.match(data.exported, /^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}:\d{2}$/);
+            assert.deepEqual(data.entries, entries, 'actual Blob export matches the current partial/full log');
+            return data;
+        };
         const reports = [];
-        for (const [scenario, s, profile] of (focused ? [] : Object.entries(scenarios)).flatMap(([name, settings]) => ['soft', 'contrast'].map(profile => [name, settings, profile]))) {
+        for (const [scenario, s, profile] of (focused && !themeOnly ? [] : Object.entries(scenarios)).flatMap(([name, settings]) => ['soft', 'contrast'].map(profile => [name, settings, profile]))) {
             const name = scenario + (profile === 'contrast' ? '-contrast' : '');
             await cdp.call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: s.os }] }, sessionId);
             await cdp.call('Page.navigate', { url: base + '/' + scenario + '?profile=' + profile }, sessionId);
@@ -399,6 +631,7 @@ async function main() {
                 return {colors,panels,mono,source:document.documentElement.getAttribute('data-pt-scheme-source'),outside:getComputedStyle(document.getElementById('outside')).color};
             })()`);
             const statusRoles = { warning: 'warning', danger: 'error', 'live-status': 'success', 'diag-ok': 'success', 'diag-fail': 'error', 'diff-added': 'success', 'diff-removed': 'error', 'update-available': 'warning', 'install-summary': 'error' };
+            if (s.argonMode !== undefined) assert.equal(result.source, 'argon-mode', name + ': the live mode overrides stale context');
             for (const item of result.colors) {
                 const role = statusRoles[item.id];
                 if (role) {
@@ -443,6 +676,69 @@ async function main() {
                 await cdp.call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] }, sessionId);
                 await wait('document.documentElement.getAttribute("data-pt-dark")', 'true');
                 assert.equal(await evaluate('getComputedStyle(document.getElementById("live-status")).color'), 'rgb(0, 238, 34)');
+            }
+            if (name === 'argon3-light-stale-dark') {
+                // Real change events on a mode selector, native MutationObserver
+                // delivery and OS emulation. No reload or explicit detector call
+                // is allowed to make a mode transition pass.
+                await evaluate(`(() => {document.getElementById('modal').style.display='flex';const editor=document.getElementById('editor');editor.value+='\\nunsaved edit';editor.focus();editor.setSelectionRange(7,19,'backward');window.modeOrigin=performance.timeOrigin;})()`);
+                const palettes = {}, liveModes = [];
+                const checkMode = async (dark, source = 'argon-mode') => {
+                    await wait('document.documentElement.getAttribute("data-pt-dark")', String(dark));
+                    const state = await evaluate(`(() => {
+                        const editor=document.getElementById('editor'),root=document.documentElement;
+                        const palette=Object.fromEntries(['editor','apply','live-status','modal-input','modal-check','diff-check'].map(id=>{
+                            const el=document.getElementById(id),css=getComputedStyle(el),checkbox=id.endsWith('check');
+                            // Custom checkboxes paint an SVG/pseudo-element, not
+                            // their inherited (invisible) input text color.
+                            return [id,checkbox?{background:css.backgroundColor,image:css.backgroundImage,border:css.borderColor,width:css.width,mark:id==='diff-check'?getComputedStyle(el,'::after').borderColor:null}:{color:css.color,background:css.backgroundColor}];
+                        }));
+                        return {mode:root.getAttribute('data-argon-mode'),dark:root.getAttribute('data-pt-dark'),source:root.getAttribute('data-pt-scheme-source'),palette,edited:editor.value.endsWith('unsaved edit'),focus:document.activeElement.id,start:editor.selectionStart,end:editor.selectionEnd,direction:editor.selectionDirection,samePage:performance.timeOrigin===window.modeOrigin};
+                    })()`);
+                    assert.equal(state.source, source);
+                    assert.equal(state.edited, true); assert.equal(state.samePage, true);
+                    assert.equal(state.focus, 'editor'); assert.equal(state.start, 7); assert.equal(state.end, 19); assert.equal(state.direction, 'backward');
+                    assert.equal(state.palette['live-status'].color, dark ? 'rgb(0, 255, 0)' : 'rgb(0, 190, 0)');
+                    assert.equal(state.palette['modal-check'].width, '16px'); assert.equal(state.palette['diff-check'].width, '14px');
+                    if (palettes[String(dark)]) assert.deepEqual(state.palette, palettes[String(dark)], 'existing controls must recolor consistently without rebuilding');
+                    else palettes[String(dark)] = state.palette;
+                    liveModes.push(state);
+                };
+                const selectMode = async (mode, dark) => {
+                    await evaluate(`(() => {const selector=document.getElementById('argon-mode');selector.value=${JSON.stringify(mode)};selector.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+                    await checkMode(dark);
+                };
+                const osMode = async (os, dark) => {
+                    await cdp.call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: os }] }, sessionId);
+                    // Wait for rendering/media change delivery even when a forced
+                    // scheme should stay unchanged, so that check cannot pass early.
+                    const frame = await cdp.call('Runtime.evaluate', { expression: 'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))', awaitPromise: true }, sessionId);
+                    assert.equal(frame.exceptionDetails, undefined);
+                    await checkMode(dark);
+                };
+                await checkMode(false);
+                await selectMode('dark', true);
+                await osMode('light', true);
+                await osMode('dark', true);
+                await selectMode('light', false);
+                await osMode('light', false);
+                await osMode('dark', false);
+                await selectMode('normal', true);
+                await osMode('light', false);
+                await osMode('dark', true);
+                await osMode('light', false);
+                await evaluate(`document.documentElement.setAttribute('data-argon-mode','invalid')`);
+                await checkMode(true, 'argon-config');
+                await evaluate(`document.documentElement.removeAttribute('data-argon-mode')`);
+                await checkMode(true, 'argon-config');
+                await selectMode('normal', false);
+                assert.equal(await evaluate('document.getElementById("ps-theme-context").getAttribute("data-mode")'), 'dark', 'the server snapshot remains stale through live changes');
+                assert.notDeepEqual(palettes.true.editor, palettes.false.editor);
+                assert.notDeepEqual(palettes.true['modal-input'], palettes.false['modal-input']);
+                reports.at(-1).liveModes = liveModes;
+                await screenshot('argon3-live-mode', 1440);
+                await evaluate(`document.getElementById('modal').style.display='none'`);
+                console.log('PASS Argon 3 live mode: 14 states, selector/OS changes, stale/invalid/removed markers, editor/modal controls and unsaved selection preserved');
             }
             console.log(`PASS ${name}: ${result.colors.length} computed text contrasts, distinct surfaces, modal`);
         }
@@ -566,7 +862,7 @@ async function main() {
         fs.writeFileSync(path.join(artifacts, 'appearance-form.json'), JSON.stringify({ preview, colorPreview, requests: appearanceRequests }, null, 2));
         console.log('PASS real Argon Config form: picker/HEX sync, live colors, computed contrast, invalid HEX, exact save+CSRF, reload, isolated resets, narrow layout, failure recovery');
         }
-        if (!updateOnly && !copyOnly) {
+        if (!updateOnly && !copyOnly && !themeOnly) {
         await cdp.call('Page.navigate', { url: base + '/diagnostics-form' }, sessionId);
         await wait('document.readyState', 'complete');
         await evaluate('document.getElementById("ps-leak-run").click()');
@@ -607,8 +903,191 @@ async function main() {
             if (width === 390) await screenshot('diagnostics-mobile', width);
         }
         await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false }, sessionId);
+
+        const localReport = { progressive: [], errors: [] };
+        const localNames = { diag_proxy: 'Proxy Connectivity Test', diag_dns: 'DNS Resolution Test', diag_e2e: 'End-to-End Test' };
+        const localButtons = { diag_proxy: 'ps-proxy-run', diag_dns: 'ps-dns-run', diag_e2e: 'ps-e2e-run' };
+        const order = ['diag_proxy', 'diag_dns', 'diag_e2e'];
+        const postsBeforeAll = frontendPosts.length;
+        const held = order.map(endpoint => queueFixtureReply('/testapi/' + endpoint, localDiagnostics[endpoint], { hold: true }));
+        const probesBeforeAll = await evaluate('window.probeURLs.length');
+        await evaluate('document.getElementById("ps-run-all").click()');
+        await waitFixture(() => held[0].request, 'Run All Proxy request');
+        assert.deepEqual(await assertDiagnosticLog(), [], 'Run All clears the previous external-observation log once');
+        assert.equal(await evaluate(diagnosticControls(true)), true);
+        assert.equal(held[1].request, undefined, 'DNS cannot start while Proxy is pending');
+        assert.equal(held[2].request, undefined, 'E2E cannot start while Proxy is pending');
+        for (let index = 0; index < held.length; index++) {
+            const plan = held[index];
+            await waitFixture(() => plan.request, order[index] + ' request');
+            assert.deepEqual(plan.request.fields, { token: 'browser-token' });
+            if (index) assert.ok(plan.request.receivedAt - held[index - 1].sentAt >= 450, 'Run All retains the real 500ms inter-test pause');
+            plan.release();
+            await wait('JSON.parse(sessionStorage.getItem("pt-diag-run-log")).length', index + 1);
+            const entries = await assertDiagnosticLog();
+            assert.deepEqual(entries.map(entry => entry.test), order.slice(0, index + 1).map(endpoint => localNames[endpoint]));
+            assert.equal(entries.every(entry => entry.status === 'OK'), true);
+            if (index < 2) {
+                assert.equal(await evaluate(diagnosticControls(true)), true, 'individual completions cannot unlock Run All');
+                assert.equal(held[index + 1].sentAt, undefined, 'later results are still pending');
+            }
+            localReport.progressive.push(await exportDiagnosticLog(entries));
+            if (index === 1) await screenshot('diagnostics-run-all-progressive', 1440);
         }
-        if (!diagnosticsOnly && !copyOnly) {
+        await wait(diagnosticControls(false), true);
+        assert.equal(await evaluate('document.getElementById("ps-run-all").textContent'), 'Run All Diagnostics');
+        assert.deepEqual(frontendPosts.slice(postsBeforeAll), order.map(endpoint => '/testapi/' + endpoint), 'Run All is exactly Proxy → DNS → E2E, with no external-provider requests');
+        assert.equal(await evaluate('window.probeURLs.length'), probesBeforeAll, 'Run All cannot create browser DNS probes');
+        const completeLog = await assertDiagnosticLog();
+        assert.deepEqual(completeLog[0].data, { http_code: 204, time_ms: 37, source: localDiagnostics.diag_proxy.results[0].source, results: localDiagnostics.diag_proxy.results });
+        assert.deepEqual(completeLog[1].data, { rows: localDiagnostics.diag_dns.results });
+        assert.deepEqual(completeLog[2].data, { external_ip: '198.51.100.24', http_code: 204, time_ms: 61 });
+        for (const [endpoint, tableId, columns] of [
+            ['diag_proxy', 'ps-proxy-body', ['source', 'http_code', 'time_ms', 'status']],
+            ['diag_dns', 'ps-dns-body', ['source', 'target', 'ip', 'status']]
+        ]) {
+            const rows = await evaluate(`[...document.querySelectorAll('#${tableId} tr')].map(row=>[...row.cells].map(cell=>cell.textContent.trim()))`);
+            assert.deepEqual(rows, localDiagnostics[endpoint].results.map(row => columns.map(key => String(row[key]) + (key === 'time_ms' ? ' ms' : ''))));
+        }
+        assert.deepEqual(await evaluate(`[...document.querySelectorAll('#ps-e2e-ip,#ps-e2e-http,#ps-e2e-time,#ps-e2e-status')].map(el=>el.textContent)`), ['198.51.100.24', '204', '61 ms', 'OK']);
+        assert.equal(await evaluate(`[...document.querySelectorAll('#ps-chain-content .ps-chain-line')].filter(el=>['chain-client','chain-singbox','chain-stubby','chain-upstream-0'].includes(el.id)).every(el=>el.classList.contains('ps-chain-ok'))`), true);
+        const nativeDeadlines = await evaluate('window.fixtureXHR.filter(request=>request.url.startsWith("/testapi/diag_"))');
+        assert.deepEqual(nativeDeadlines.map(request => request.url), order.map(endpoint => '/testapi/' + endpoint));
+        nativeDeadlines.forEach(request => assert.ok(Number.isSafeInteger(request.timeout) && request.timeout > 0, 'each native local diagnostic XHR has a finite operation deadline'));
+        assert.ok(nativeDeadlines[1].timeout > nativeDeadlines[0].timeout && nativeDeadlines[1].timeout > nativeDeadlines[2].timeout, 'serial DNS lookups retain their separate longer budget');
+        localReport.deadlines = nativeDeadlines;
+        await screenshot('diagnostics-run-all-complete', 1440);
+
+        const originBeforeDiagnosticsReload = await evaluate('performance.timeOrigin');
+        const postsBeforeDiagnosticsReload = frontendPosts.length;
+        await cdp.call('Page.reload', {}, sessionId);
+        await wait(`performance.timeOrigin !== ${originBeforeDiagnosticsReload}`, true);
+        await wait('document.readyState', 'complete');
+        assert.deepEqual(await assertDiagnosticLog(), completeLog, 'a real page refresh restores the full log without running tests');
+        assert.equal(frontendPosts.length, postsBeforeDiagnosticsReload);
+        await exportDiagnosticLog(completeLog);
+
+        // A failed result and a typed application error both allow the remaining
+        // local tests to run; the error cannot turn an empty DNS result into OK.
+        const failedProxy = { results: [{ source: 'sing-box mixed (:2080)', http_code: 503, time_ms: 12, status: 'FAIL' }] };
+        const dnsError = { success: false, error: 'Fixture DNS unavailable <literal>', details: '<img src=x onerror=fixtureInjection()>\ncomplete local DNS diagnostics', results: [] };
+        queueFixtureReply('/testapi/diag_proxy', failedProxy);
+        queueFixtureReply('/testapi/diag_dns', dnsError);
+        queueFixtureReply('/testapi/diag_e2e', localDiagnostics.diag_e2e);
+        const postsBeforeMixed = frontendPosts.length;
+        await evaluate('document.getElementById("ps-run-all").click()');
+        await wait(diagnosticControls(false), true, 5000);
+        const mixedLog = await assertDiagnosticLog();
+        assert.deepEqual(mixedLog.map(entry => entry.test), order.map(endpoint => localNames[endpoint]));
+        assert.equal(mixedLog[0].status, 'FAIL');
+        assert.notEqual(mixedLog[1].status, 'OK', 'an application error is never an empty successful DNS test');
+        assert.ok(mixedLog[1].error.includes(dnsError.error));
+        assert.equal(mixedLog[2].status, 'OK', 'Run All continues to E2E after both FAIL and ERROR');
+        assert.deepEqual(frontendPosts.slice(postsBeforeMixed), order.map(endpoint => '/testapi/' + endpoint));
+        localReport.mixed = await exportDiagnosticLog(mixedLog);
+
+        const singleDiagnostic = async (endpoint, data, options = {}) => {
+            const postsBefore = frontendPosts.length;
+            const plan = queueFixtureReply('/testapi/' + endpoint, data, { ...options, hold: true });
+            await evaluate(`document.getElementById(${JSON.stringify(localButtons[endpoint])}).click()`);
+            await waitFixture(() => plan.request, endpoint + ' single request');
+            assert.equal(await evaluate(diagnosticControls(true)), true);
+            assert.deepEqual(await assertDiagnosticLog(), [], 'a new single test discards the entire preceding run');
+            plan.release();
+            await wait(diagnosticControls(false), true);
+            const entries = await assertDiagnosticLog();
+            assert.equal(entries.length, 1, 'each terminal response appends exactly one entry');
+            assert.equal(entries[0].test, localNames[endpoint]);
+            assert.deepEqual(frontendPosts.slice(postsBefore), ['/testapi/' + endpoint], 'completion cannot replay a request or launch another runner');
+            return entries[0];
+        };
+        const primeE2e = async () => {
+            const entry = await singleDiagnostic('diag_e2e', localDiagnostics.diag_e2e);
+            assert.equal(entry.status, 'OK');
+            assert.equal(await evaluate('document.getElementById("ps-e2e-http").textContent'), '204');
+            assert.equal(await evaluate('document.getElementById("ps-e2e-time").textContent'), '61 ms');
+        };
+        const assertClearedE2e = async () => {
+            const fields = await evaluate(`({ip:document.getElementById('ps-e2e-ip').textContent,http:document.getElementById('ps-e2e-http').textContent,time:document.getElementById('ps-e2e-time').textContent,status:document.getElementById('ps-e2e-status').textContent})`);
+            assert.notEqual(fields.ip, localDiagnostics.diag_e2e.external_ip, 'failed E2E cannot show a previous successful external IP');
+            assert.ok(['', '\u2014'].includes(fields.http), 'failed E2E clears the previous HTTP status');
+            assert.ok(['', '\u2014'].includes(fields.time), 'failed E2E clears the previous response time');
+            assert.notEqual(fields.status, 'OK', 'failed E2E clears the previous OK verdict');
+        };
+        for (const endpoint of order) {
+            for (const failure of [
+                { name: 'application', data: { success: false, error: `Fixture ${endpoint} failed <literal>`, details: 'complete fixture diagnostic\n' + 'detail\n'.repeat(80) } },
+                { name: 'schema', data: {} },
+                { name: 'HTML session', data: null, raw: '<!doctype html><html><body>Fixture LuCI login</body></html>', contentType: 'text/html' }
+            ]) {
+                if (endpoint === 'diag_e2e') await primeE2e();
+                const entry = await singleDiagnostic(endpoint, failure.data, failure);
+                assert.notEqual(entry.status, 'OK', endpoint + ': ' + failure.name + ' cannot be successful');
+                if (failure.name !== 'application') assert.equal(entry.status, 'ERROR', 'malformed/HTML replies are typed request errors');
+                assert.ok(entry.error, 'a request/schema error keeps an explicit reason');
+                if (failure.name === 'application') assert.ok(entry.error.includes(failure.data.error));
+                if (endpoint === 'diag_e2e') await assertClearedE2e();
+                localReport.errors.push({ endpoint, failure: failure.name, entry });
+            }
+        }
+        for (const failure of [
+            { name: 'HTTP 503', data: { error: 'Fixture E2E backend unavailable', details: 'complete HTTP failure' }, status: 503 },
+            { name: 'invalid JSON', data: null, raw: '{broken fixture JSON' }
+        ]) {
+            await primeE2e();
+            const entry = await singleDiagnostic('diag_e2e', failure.data, failure);
+            assert.equal(entry.status, 'ERROR');
+            assert.equal(entry.http_status, failure.status || 200);
+            await assertClearedE2e();
+            localReport.errors.push({ endpoint: 'diag_e2e', failure: failure.name, entry });
+        }
+
+        // Exercise one real native deadline without shortening production timers:
+        // Proxy has a single curl budget; DNS deliberately has a much longer one.
+        const timedOutProxy = queueFixtureReply('/testapi/diag_proxy', localDiagnostics.diag_proxy, { hold: true });
+        const postsBeforeTimeout = frontendPosts.length;
+        await evaluate('document.getElementById("ps-proxy-run").click()');
+        await waitFixture(() => timedOutProxy.request, 'native Proxy timeout request');
+        const proxyDeadline = await evaluate('window.fixtureXHR.at(-1).timeout');
+        assert.ok(proxyDeadline > 0 && proxyDeadline <= 30000, 'native Proxy deadline must fit its single-curl budget');
+        await wait(diagnosticControls(false), true, proxyDeadline + 4000);
+        const timedOutLog = await assertDiagnosticLog();
+        assert.equal(timedOutLog.length, 1);
+        assert.equal(timedOutLog[0].status, 'ERROR');
+        assert.equal(timedOutLog[0].http_status, 0);
+        assert.match(timedOutLog[0].error, /timed out|timeout/i);
+        timedOutProxy.release();
+        await new Promise(resolve => setTimeout(resolve, 150));
+        assert.deepEqual(await assertDiagnosticLog(), timedOutLog, 'late timeout/load completion cannot append twice');
+        assert.deepEqual(frontendPosts.slice(postsBeforeTimeout), ['/testapi/diag_proxy'], 'a timed-out diagnostic request is never replayed');
+        localReport.timeout = timedOutLog[0];
+
+        // Navigating away from a held operation cannot let its eventual reply
+        // append a ghost completion to the refreshed page's session-scoped log.
+        const abandoned = queueFixtureReply('/testapi/diag_dns', localDiagnostics.diag_dns, { hold: true });
+        await evaluate('document.getElementById("ps-dns-run").click()');
+        await waitFixture(() => abandoned.request, 'abandoned DNS request');
+        const originBeforeAbandon = await evaluate('performance.timeOrigin');
+        await cdp.call('Page.navigate', { url: base + '/diagnostics-form' }, sessionId);
+        await wait(`performance.timeOrigin !== ${originBeforeAbandon}`, true);
+        await wait('document.readyState', 'complete');
+        abandoned.release();
+        await new Promise(resolve => setTimeout(resolve, 150));
+        assert.deepEqual(await assertDiagnosticLog(), []);
+        const postsBeforeManualObservation = frontendPosts.length;
+        await evaluate('document.getElementById("ps-leak-run").click()');
+        await wait('document.getElementById("ps-leak-status").textContent', 'OBSERVATIONS COLLECTED');
+        assert.deepEqual(frontendPosts.slice(postsBeforeManualObservation), ['/testapi/dns-start', '/testapi/dns-results'], 'manual external observation stays separate after local runs and failures');
+        assert.equal(await evaluate('window.probeURLs.length'), 6);
+        const finalObservation = await assertDiagnosticLog();
+        assert.equal(finalObservation.length, 1);
+        assert.equal(finalObservation[0].test, 'External DNS Observation (browser)');
+        assert.equal(finalObservation[0].data.probes_completed, 6);
+        localReport.manualObservation = await exportDiagnosticLog(finalObservation);
+        fs.writeFileSync(path.join(artifacts, 'diagnostics-local.json'), JSON.stringify(localReport, null, 2));
+        console.log('PASS real local Diagnostics: progressive Proxy → 500ms → DNS → 500ms → E2E, partial/full Blob export+refresh mirror, FAIL/error continuation, typed schema/HTML failures, cleared stale E2E fields, native deadlines and separate external observation');
+        }
+        if (!diagnosticsOnly && !copyOnly && !themeOnly) {
             for (const mode of ['older', 'newer', 'same']) {
                 await cdp.call('Page.navigate', { url: base + '/local-update-form?case=' + mode }, sessionId);
                 await wait('document.readyState', 'complete');
@@ -653,6 +1132,305 @@ async function main() {
             console.log('PASS real Local Update form: Update/Reinstall/older actions, multipart+CSRF, explicit reinstall flag, failure recovery and success lock');
         }
         if (!focused || reliabilityOnly) {
+            typographyReadFailure = appearanceReadFailure = true;
+            await cdp.call('Page.navigate', { url: base + '/appearance-form' }, sessionId);
+            await wait('document.getElementById("ps-argon-retry")?.style.display', 'inline-block');
+            await wait('document.getElementById("ps-appearance-retry")?.style.display', 'inline-block');
+            const postsBeforeReadGates = frontendPosts.length;
+            await evaluate(`(() => {for(const id of ['ps-argon-save','ps-argon-reset','ps-argon-reinject','ps-appearance-save','ps-appearance-reset','ps-colors-reset']){const el=document.getElementById(id);if(!el.disabled)throw new Error(id+' must wait for a typed GET');el.dispatchEvent(new MouseEvent('click',{bubbles:true}));}})()`);
+            assert.equal(await evaluate('document.getElementById("ps-argon-css-status").textContent'), 'CSS status unknown');
+            assert.equal(frontendPosts.length, postsBeforeReadGates, 'failed native Typography read cannot POST defaults');
+            typographyReadFailure = appearanceReadFailure = false;
+            await evaluate('document.getElementById("ps-argon-retry").click();document.getElementById("ps-appearance-retry").click()');
+            await wait('document.getElementById("ps-argon-save").disabled', false);
+            await wait('document.getElementById("ps-appearance-save").disabled', false);
+            assert.equal(await evaluate('document.getElementById("ps-font-size").value'), '17');
+            assert.equal(await evaluate('document.documentElement.style.fontSize'), '', 'typed retry is not a global preview event');
+
+            fragmentReadFailure = outboundReadFailure = true;
+            await cdp.call('Page.navigate', { url: base + '/copy-form?view=singbox' }, sessionId);
+            await wait('document.getElementById("ps-wrapper-btn")?.textContent', 'Enable Wrapper');
+            await evaluate('document.getElementById("ps-wrapper-btn").click()');
+            await wait('document.getElementById("ps-wrapper-retry").style.display', 'inline-block');
+            await evaluate(`document.getElementById('ps-wrapper-confirm').dispatchEvent(new MouseEvent('click',{bubbles:true}))`);
+            assert.equal(await evaluate('document.getElementById("ps-wrapper-confirm").disabled'), true);
+            assert.equal(frontendPosts.length, postsBeforeReadGates, 'failed native Fragment read cannot enable defaults');
+            fragmentReadFailure = false;
+            await evaluate('document.getElementById("ps-wrapper-retry").click()');
+            await wait('document.getElementById("ps-wrapper-confirm").disabled', false);
+            assert.equal(await evaluate('document.getElementById("ps-wrap-fragment").checked'), true);
+            assert.equal(await evaluate('document.getElementById("ps-wrap-record-fragment").checked'), false);
+            assert.equal(await evaluate('document.getElementById("ps-wrap-fallback-delay").value'), '900ms');
+            await escape('ps-wrapper-modal');
+            await evaluate('document.getElementById("ps-patch-btn").click()');
+            await wait('document.getElementById("ps-patch-status").textContent.includes("jq enumeration failed")', true);
+            assert.equal(await evaluate('document.getElementById("ps-patch-list").textContent.includes("No TLS")'), false);
+            assert.equal(await evaluate('document.getElementById("ps-patch-status").querySelector("pre").textContent'), '<script>literal jq stderr</script>');
+            await evaluate(`document.getElementById('ps-patch-apply').dispatchEvent(new MouseEvent('click',{bubbles:true}))`);
+            assert.equal(frontendPosts.length, postsBeforeReadGates, 'failed enumeration cannot patch stale outbounds');
+            outboundReadFailure = false;
+            await evaluate('document.getElementById("ps-patch-retry").click()');
+            await wait('document.getElementById("ps-patch-list").textContent', 'No TLS outbounds found.');
+            assert.equal(await evaluate('document.getElementById("ps-patch-apply").disabled'), true);
+            await escape('ps-patch-modal');
+            console.log('PASS native typed-read gates: Typography/Fragment failed GET and explicit retry, no forged/default POST, plaintext outbound failure vs explicit count-zero empty');
+
+            const editorError = async () => {
+                await wait('document.getElementById("ps-error-btn").style.display', 'inline-block');
+                await evaluate('document.getElementById("ps-error-btn").click()');
+                const error = await evaluate(`({text:document.getElementById('ps-error-details').textContent,literal:document.getElementById('ps-error-details').childElementCount===0})`);
+                assert.equal(error.literal, true, 'native editor diagnostics stay literal text');
+                await escape('ps-error-modal');
+                return error.text;
+            };
+            const autostartReport = [];
+            for (const [view, name] of [['config', 'podkop'], ['stubby', 'stubby']]) {
+                const readURL = '/copyapi/' + name + '_autostart', toggleURL = readURL + '_toggle';
+                for (const failure of [
+                    { name: 'missing enabled', data: {} },
+                    { name: 'string enabled', data: { enabled: 'false' } },
+                    { name: 'error with enabled', data: { error: 'Fixture boot-link read failed', enabled: false, details: '<script>literal read diagnostics</script>' } },
+                    { name: 'HTTP session', data: null, status: 403, raw: '<html>Fixture LuCI login</html>', contentType: 'text/html' }
+                ]) {
+                    const read = queueFixtureReply(readURL, failure.data, { ...failure, hold: true });
+                    await navigateFixture(base + '/copy-form?view=' + view);
+                    await wait('document.getElementById("ps-config-editor")?.disabled', false);
+                    await waitFixture(() => read.request, name + ' autostart failed read');
+                    read.release();
+                    await wait('document.getElementById("ps-error-btn").style.display', 'inline-block');
+                    assert.equal(await evaluate('document.getElementById("ps-autostart-btn").textContent'), 'Autostart: Unknown');
+                    assert.equal(await evaluate('document.getElementById("ps-autostart-btn").disabled'), true);
+                    const forged = await evaluate(`(() => {const count=window.fixtureXHR.filter(request=>request.method==='POST').length;document.getElementById('ps-autostart-btn').dispatchEvent(new MouseEvent('click',{bubbles:true}));return window.fixtureXHR.filter(request=>request.method==='POST').length-count;})()`);
+                    assert.equal(forged, 0, 'a forged click cannot mutate autostart after an untyped read');
+                    const details = await editorError();
+                    if (failure.data && failure.data.error) {
+                        assert.ok(details.includes(failure.data.error));
+                        assert.ok(details.includes(failure.data.details));
+                    }
+                    autostartReport.push({ name, scenario: failure.name, state: 'Unknown' });
+                }
+                for (const enabled of [true, false]) {
+                    fixtureAutostart[name] = enabled;
+                    await navigateFixture(base + '/copy-form?view=' + view);
+                    await wait('document.getElementById("ps-autostart-btn")?.textContent', 'Autostart: ' + (enabled ? 'ON' : 'OFF'));
+                    await wait('document.getElementById("ps-config-editor").disabled', false);
+                    const update = queueFixtureReply(toggleURL, undefined, { hold: true });
+                    const before = fixtureCalls.length;
+                    await evaluate('document.getElementById("ps-autostart-btn").click()');
+                    await waitFixture(() => update.request, name + ' autostart toggle');
+                    assert.equal(await evaluate('document.getElementById("ps-autostart-btn").disabled'), true);
+                    assert.deepEqual(update.request.fields, { token: 'browser-token', action: enabled ? 'disable' : 'enable' });
+                    update.release();
+                    await wait('document.getElementById("ps-autostart-btn").textContent', 'Autostart: ' + (enabled ? 'OFF' : 'ON'));
+                    assert.equal(await evaluate('document.getElementById("ps-autostart-btn").disabled'), false);
+                    assert.equal(fixtureAutostart[name], !enabled);
+                    assert.deepEqual(fixtureCalls.slice(before).filter(call => call.endpoint === readURL || call.endpoint === toggleURL).map(call => [call.method, call.endpoint]), [['POST', toggleURL], ['GET', readURL]], 'checked autostart mutation is followed by one read-only factual readback');
+                }
+
+                // A checked POST error is still reported when factual readback
+                // succeeds; the error's enabled=false is not a new OFF fact.
+                fixtureAutostart[name] = true;
+                await navigateFixture(base + '/copy-form?view=' + view);
+                await wait('document.getElementById("ps-autostart-btn")?.textContent', 'Autostart: ON');
+                await wait('document.getElementById("ps-config-editor").disabled', false);
+                const commandError = { success: false, error: 'Fixture autostart command failed', details: '<img src=x onerror=fixtureInjection()>\nfull boot-link command stderr', enabled: false };
+                const failedUpdate = queueFixtureReply(toggleURL, commandError, { hold: true });
+                const postsBeforeAutostartError = frontendPosts.length;
+                await evaluate('document.getElementById("ps-autostart-btn").click()');
+                await waitFixture(() => failedUpdate.request, name + ' checked autostart error');
+                failedUpdate.release();
+                await wait('document.getElementById("ps-autostart-btn").textContent', 'Autostart: ON');
+                const commandDetails = await editorError();
+                assert.ok(commandDetails.includes(commandError.error));
+                assert.ok(commandDetails.includes(commandError.details));
+                assert.deepEqual(frontendPosts.slice(postsBeforeAutostartError), [toggleURL], 'autostart command errors never trigger a second POST');
+
+                const readbackError = { error: 'Fixture autostart readback failed', details: '<script>literal readback output</script>' };
+                queueFixtureReply(readURL, readbackError);
+                queueFixtureReply(toggleURL, { success: true, enabled: false }, { effect() { fixtureAutostart[name] = false; } });
+                const postsBeforeReadbackError = frontendPosts.length;
+                await evaluate('document.getElementById("ps-autostart-btn").click()');
+                await wait('document.getElementById("ps-autostart-btn").title.includes("readback failed")', true);
+                assert.equal(await evaluate('document.getElementById("ps-autostart-btn").textContent'), 'Autostart: Unknown');
+                assert.equal(await evaluate('document.getElementById("ps-autostart-btn").disabled'), true);
+                const readbackDetails = await editorError();
+                assert.ok(readbackDetails.includes(readbackError.error));
+                assert.ok(readbackDetails.includes(readbackError.details));
+                assert.deepEqual(frontendPosts.slice(postsBeforeReadbackError), [toggleURL]);
+                autostartReport.push({ name, scenario: 'boolean ON/OFF, checked POST error and failed factual readback' });
+                fixtureAutostart[name] = false;
+            }
+            console.log('PASS native Podkop/Stubby autostart: typed ON/OFF, Unknown/error/HTML gates, forged-click suppression, checked mutation and factual re-read without POST replay');
+
+            const originalStubbyProcess = fixtureStatus('stubby');
+            const stubbyActions = [
+                { name: 'Template', endpoint: '/copyapi/apply_recommended_stubby', open: 'ps-params-btn', modal: 'ps-params-modal', apply: 'ps-apply-template-btn', status: 'ps-apply-template-status', reload: true },
+                { name: 'Init fix', endpoint: '/copyapi/stubby_init_fix', open: 'ps-initfix-btn', modal: 'ps-initfix-modal', apply: 'ps-initfix-apply', status: 'ps-initfix-apply-status', reload: false }
+            ];
+            const stubbyReport = [];
+            const loadStubby = async () => {
+                // Use the real Undo action before navigation if a preceding
+                // partial Template result deliberately preserved a dirty draft.
+                await evaluate(`(() => {const undo=document.getElementById('ps-config-undo'),save=document.getElementById('ps-config-save');if(undo&&!undo.disabled&&save&&!save.disabled){window.confirm=()=>true;undo.click();}})()`);
+                fixtureStubbyConfig = initialStubbyConfig;
+                fixtureProcesses.stubby = { running: true, pid: '456', instance: '456:' + (++fixtureStartTime) };
+                await navigateFixture(base + '/copy-form?view=stubby');
+                await wait('document.getElementById("ps-config-editor")?.value', initialStubbyConfig);
+                await wait('document.getElementById("ps-config-editor").disabled', false);
+                await wait('document.getElementById("ps-status-text").textContent.includes("Running")', true);
+                await wait('document.getElementById("ps-initfix-status").textContent', 'Running as root');
+                await wait('document.getElementById("ps-autostart-btn").textContent', 'Autostart: OFF');
+                await evaluate('window.confirm=()=>true');
+            };
+            const openStubbyAction = async action => {
+                await evaluate(`document.getElementById(${JSON.stringify(action.open)}).click()`);
+                await wait(`document.getElementById(${JSON.stringify(action.modal)}).style.display`, 'flex');
+            };
+            const applyStubbyAction = async action => {
+                await openStubbyAction(action);
+                await evaluate(`document.getElementById(${JSON.stringify(action.apply)}).click()`);
+            };
+            const stubbyFailureFrames = async (action, message, details) => {
+                await wait(`document.getElementById(${JSON.stringify(action.status)}).textContent.includes(${JSON.stringify(message)})`, true);
+                for (const id of [action.status, 'ps-stubby-action-status']) {
+                    const frame = await evaluate(`(() => {const el=document.getElementById(${JSON.stringify(id)}),pre=el.querySelector('pre');return {message:el.textContent,details:pre&&pre.textContent,literal:!!pre&&pre.childElementCount===0};})()`);
+                    assert.ok(frame.message.includes(message));
+                    assert.equal(frame.details, message + '\n\n' + details, 'both page and current modal keep the exact contextual message plus verbatim complete response diagnostics');
+                    assert.equal(frame.literal, true);
+                }
+            };
+            for (const action of stubbyActions) {
+                for (const outcome of ['rejected', 'applied restart failure', 'applied unknown']) {
+                    await loadStubby();
+                    const details = '<img src=x onerror=fixtureInjection()>\n' + 'complete Stubby diagnostic\n'.repeat(600) + 'last diagnostic line';
+                    const response = { success: false, error: 'Fixture ' + action.name + ' ' + outcome, details,
+                        ...(outcome !== 'rejected' ? { applied: true } : {}), ...(outcome === 'applied unknown' ? { unknown: true } : {}) };
+                    const draft = initialStubbyConfig + "    option tls_min_version '1.3'\n";
+                    if (action.reload && outcome !== 'rejected') {
+                        await evaluate(`document.getElementById('ps-config-editor').value=${JSON.stringify(draft)};document.getElementById('ps-config-editor').dispatchEvent(new Event('input'))`);
+                    }
+                    const plan = queueFixtureReply(action.endpoint, response, { hold: true, effect() {
+                        if (action.reload && response.applied) fixtureStubbyConfig = "config stubby 'global'\n    option log_level '4'\n";
+                    } });
+                    const before = frontendPosts.length;
+                    await applyStubbyAction(action);
+                    await waitFixture(() => plan.request, action.name + ' ' + outcome);
+                    assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.apply)}).disabled`), true);
+                    assert.deepEqual(plan.request.fields, { token: 'browser-token' });
+                    plan.release();
+                    const appliedMessage = action.reload ? 'Template applied to disk.' : 'Init script fix applied to disk.';
+                    const expectedMessage = response.unknown ? appliedMessage + ' Finishing result unknown. Reload the page to verify before another operation. ' + response.error :
+                        response.applied ? appliedMessage + ' Restart failed or is unverified. ' + response.error : response.error;
+                    await stubbyFailureFrames(action, expectedMessage, details);
+                    const status = await evaluate(`document.getElementById(${JSON.stringify(action.status)}).textContent`);
+                    if (response.applied) assert.match(status, /applied to disk/i, 'actual disk application remains distinct from service completion');
+                    if (response.unknown) assert.match(status, /result unknown/i);
+                    assert.doesNotMatch(status, /new Stubby instance is running|Stubby restarted/);
+                    if (action.reload && response.applied) {
+                        await wait('document.getElementById("ps-config-editor").disabled', false);
+                        assert.equal(await evaluate('document.getElementById("ps-config-editor").value'), draft, 'partial Template readback preserves the unsaved draft');
+                        assert.equal(await evaluate('document.getElementById("ps-config-save").disabled'), false);
+                    }
+                    assert.deepEqual(frontendPosts.slice(before), [action.endpoint], 'partial/unknown Stubby results cannot replay a mutation');
+                    await escape(action.modal);
+                    await openStubbyAction(action);
+                    assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.apply)}).disabled`), response.unknown === true);
+                    if (response.unknown) {
+                        const forged = await evaluate(`(() => {const count=window.fixtureXHR.filter(request=>request.method==='POST').length;document.getElementById(${JSON.stringify(action.apply)}).dispatchEvent(new MouseEvent('click',{bubbles:true}));return window.fixtureXHR.filter(request=>request.method==='POST').length-count;})()`);
+                        assert.equal(forged, 0, 'unknown Stubby result requires verification before another operation');
+                    }
+                    stubbyReport.push({ action: action.name, outcome, detailsLength: details.length });
+                    await escape(action.modal);
+                }
+
+                // The page owns completion of a sent operation; a later modal
+                // opening owns its own text and controls until explicitly reopened.
+                await loadStubby();
+                const staleError = { success: false, error: 'Fixture earlier opening completed', details: '<script>complete earlier-opening diagnostics</script>' };
+                const stale = queueFixtureReply(action.endpoint, staleError, { hold: true });
+                const beforeStale = frontendPosts.length;
+                await applyStubbyAction(action);
+                await waitFixture(() => stale.request, action.name + ' held older opening');
+                await escape(action.modal);
+                await openStubbyAction(action);
+                const newOpening = await evaluate(`document.getElementById(${JSON.stringify(action.status)}).textContent`);
+                assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.apply)}).disabled`), true);
+                stale.release();
+                await wait('document.getElementById("ps-stubby-action-status").textContent.includes("earlier opening completed")', true);
+                assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.status)}).textContent`), newOpening, 'an old callback cannot replace the reopened modal presentation');
+                assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.modal)}).style.display`), 'flex');
+                const staleFrame = await evaluate(`(() => {const pre=document.querySelector('#ps-stubby-action-status pre');return {text:pre.textContent,children:pre.childElementCount};})()`);
+                assert.equal(staleFrame.text, staleError.error + '\n\n' + staleError.details, 'the external page keeps the exact earlier-operation message plus verbatim complete diagnostics');
+                assert.equal(staleFrame.children, 0, 'earlier-operation diagnostics remain literal text');
+                await escape(action.modal);
+                await openStubbyAction(action);
+                assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.apply)}).disabled`), false, 'a fresh opening sees the released operation gate');
+                assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.status)}).textContent`), '');
+                assert.deepEqual(frontendPosts.slice(beforeStale), [action.endpoint]);
+                await escape(action.modal);
+
+                await loadStubby();
+                const beforeProcess = fixtureStatus('stubby');
+                const ack = { success: true, applied: true, restarting: true, verification_required: true,
+                    previous_running: true, previous_identity_known: true, previous_instance: beforeProcess.instance };
+                const oldObservation = queueFixtureReply('/copyapi/stubby_service_status', beforeProcess, { hold: true });
+                const applied = queueFixtureReply(action.endpoint, ack, { hold: true, effect() {
+                    if (action.reload) fixtureStubbyConfig = "config stubby 'global'\n    option log_level '4'\n";
+                } });
+                const beforeRestartProof = frontendPosts.length;
+                await applyStubbyAction(action);
+                await waitFixture(() => applied.request, action.name + ' checked restart ACK');
+                applied.release();
+                await waitFixture(() => oldObservation.request, action.name + ' prior process observation');
+                assert.match(await evaluate(`document.getElementById(${JSON.stringify(action.status)}).textContent`), /Verifying Stubby restart/);
+                oldObservation.release();
+                await new Promise(resolve => setTimeout(resolve, 100));
+                assert.doesNotMatch(await evaluate(`document.getElementById(${JSON.stringify(action.status)}).textContent`), /new Stubby instance is running|Stubby restarted/, 'an old running process cannot confirm a restart');
+                fixtureProcesses.stubby = { running: true, pid: '456', instance: '456:' + (++fixtureStartTime) };
+                await wait('document.getElementById("ps-stubby-action-status").textContent.includes("A new Stubby instance is running.")', true, 5000);
+                assert.notEqual(fixtureStatus('stubby').instance, beforeProcess.instance);
+                assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.apply)}).disabled`), true);
+                if (action.reload) await wait('document.getElementById("ps-config-editor").value', fixtureStubbyConfig);
+                assert.deepEqual(frontendPosts.slice(beforeRestartProof), [action.endpoint], 'restart verification only performs factual GETs');
+                await escape(action.modal);
+                await openStubbyAction(action);
+                assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.status)}).textContent`), '');
+                if (action.reload) {
+                    await new Promise(resolve => setTimeout(resolve, 2300));
+                    assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.modal)}).style.display`), 'flex', 'an earlier Template delayed-close timer cannot hide a new opening');
+                    assert.equal(await evaluate(`document.getElementById(${JSON.stringify(action.status)}).textContent`), '');
+                }
+                stubbyReport.push({ action: action.name, outcome: 'old instance unconfirmed → new process confirmed; reopened presentation retained' });
+                await escape(action.modal);
+
+                await loadStubby();
+                const noRestart = queueFixtureReply(action.endpoint, { success: true, applied: true }, { hold: true });
+                await applyStubbyAction(action);
+                await waitFixture(() => noRestart.request, action.name + ' response without restart evidence');
+                noRestart.release();
+                await wait(`document.getElementById(${JSON.stringify(action.status)}).textContent.includes('Restart is unconfirmed.')`, true);
+                assert.doesNotMatch(await evaluate(`document.getElementById(${JSON.stringify(action.status)}).textContent`), /new Stubby instance is running|Stubby restarted/);
+                await escape(action.modal);
+            }
+
+            await loadStubby();
+            const beforeAlreadyFixed = fixtureStatus('stubby');
+            const alreadyFixedCalls = fixtureCalls.length;
+            const alreadyFixed = queueFixtureReply('/copyapi/stubby_init_fix', { success: true, message: 'Already fixed' }, { hold: true });
+            await applyStubbyAction(stubbyActions[1]);
+            await waitFixture(() => alreadyFixed.request, 'Already fixed no-op');
+            alreadyFixed.release();
+            await wait('document.getElementById("ps-initfix-apply-status").textContent.includes("Already fixed")', true);
+            assert.match(await evaluate('document.getElementById("ps-initfix-apply-status").textContent'), /No restart was requested/);
+            assert.deepEqual(fixtureStatus('stubby'), beforeAlreadyFixed);
+            await new Promise(resolve => setTimeout(resolve, 2300));
+            assert.ok(fixtureCalls.slice(alreadyFixedCalls).filter(call => call.endpoint === '/copyapi/stubby_service_status').length <= 1, 'Already fixed may refresh status, but does not start restart polling');
+            await escape('ps-initfix-modal');
+            fixtureStubbyConfig = initialStubbyConfig;
+            fixtureProcesses.stubby = originalStubbyProcess;
+            fs.writeFileSync(path.join(artifacts, 'stubby-autostart.json'), JSON.stringify({ autostart: autostartReport, stubby: stubbyReport }, null, 2));
+            console.log('PASS native Stubby Template/Init Fix: complete literal diagnostics, applied/unknown facts, preserved draft, stale callback and delayed-close guards, old/new restart identity proof and Already fixed without invented restart');
+
             await cdp.call('Page.navigate', { url: base + '/copy-form?view=subscriptions' }, sessionId);
             await wait('document.readyState', 'complete');
             await wait('!!document.getElementById("ps-opt-save")', true);
@@ -866,11 +1644,15 @@ async function main() {
             assert.equal(await copy('[data-pt-copy-for="ps-appearance-editor"]'), await evaluate('document.getElementById("ps-appearance-editor").value'));
             console.log('PASS clipboard controls: in-frame SVG/accessible feedback, real editors/error/diff/command/log forms, Stubby guidance, native HTTP copy, secure API, full literal HTML, selection+scroll+dirty preservation, keyboard and light/dark/mobile controls');
         }
-        if (!focused) fs.writeFileSync(path.join(artifacts, 'computed-colors.json'), JSON.stringify(reports, null, 2));
-        console.log(copyOnly ? 'Native clipboard checks: PASS' : updateOnly ? 'Native Local Update checks: PASS' : diagnosticsOnly ? 'Native Diagnostics checks: PASS (DNS flow, light/dark result guide and Podkop navigation)' : reliabilityOnly ? 'Native reliability checks: PASS (mobile, multipart, independent schedule settings and restart confirmation)' : `Native browser theme checks: PASS (${reports.length} scheme/profile scenarios + real forms; screenshots in ROOT/tmp/theme-smoke)`);
+        if (!focused || themeOnly) fs.writeFileSync(path.join(artifacts, 'computed-colors.json'), JSON.stringify(reports, null, 2));
+        assert.equal(heldFixtureReplies.size, 0, 'all controlled HTTP replies must finish before fixture shutdown');
+        for (const [endpoint, queue] of fixtureReplyQueues) assert.equal(queue.length, 0, endpoint + ': every planned fixture reply must be consumed');
+        console.log(copyOnly ? 'Native clipboard checks: PASS' : updateOnly ? 'Native Local Update checks: PASS' : diagnosticsOnly ? 'Native Diagnostics checks: PASS (progressive local Run All, errors/deadlines/log export, separate external DNS and Podkop navigation)' : reliabilityOnly ? 'Native reliability checks: PASS (typed autostart, Stubby result/modal/restart proof, mobile, multipart and scheduling)' : `Native browser theme checks: PASS (${reports.length} scheme/profile scenarios + Argon 3 live modes${themeOnly ? '' : ' + real forms'}; artifacts in ${path.relative(root, artifacts)})`);
     } finally {
+        for (const release of [...heldFixtureReplies]) release();
         if (cdp) { await cdp.call('Browser.close').catch(() => {}); cdp.close(); }
         child.kill();
+        await browserClosed;
         await new Promise(resolve => server.close(resolve));
     }
 }

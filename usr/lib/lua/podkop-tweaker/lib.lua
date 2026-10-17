@@ -67,8 +67,8 @@ function M.validate_uci_config(content)
     end
     -- UCI lexer. Semantics:
     --  * single/double quoted values MAY span multiple lines (multiline values)
-    --  * a quote opens a value only when preceded by whitespace / line start,
-    --    so apostrophes inside bare words (don't) do not open anything
+    --  * a quote opens after whitespace / line start or a quoted fragment;
+    --    escaped apostrophes can join fragments, bare don't stays a bare word
     --  * line numbers in errors count every line, blanks included (editor-accurate)
     --  * an unclosed quote is reported with the line where it was opened
     local line_no = 0
@@ -88,29 +88,37 @@ function M.validate_uci_config(content)
             end
         end
         if not skip_line then
-            local prev_space = true
+            local prev_space, quoted_part, escaped = true, false, false
             for ci = 1, #line do
                 local b = line:byte(ci)
                 if b < 9 or (b > 13 and b < 32) then
                     return false, "Invalid character at line " .. line_no .. ", column " .. ci
                 end
                 local c = line:sub(ci, ci)
-                if in_sq then
-                    if c == "'" then in_sq = false end
+                if escaped then
+                    escaped = false
+                elseif in_sq then
+                    if c == "'" then in_sq, quoted_part = false, true end
                 elseif in_dq then
-                    if c == '"' then in_dq = false end
+                    if c == "\\" then escaped = true
+                    elseif c == '"' then in_dq, quoted_part = false, true end
+                elseif c == "\\" then
+                    escaped = true
+                elseif c == "#" and prev_space then
+                    break
                 elseif c == "'" then
-                    if prev_space then
+                    if prev_space or quoted_part then
                         in_sq = true
                         sq_open_line = line_no
                     end
                 elseif c == '"' then
-                    if prev_space then
+                    if prev_space or quoted_part then
                         in_dq = true
                         dq_open_line = line_no
                     end
                 end
                 prev_space = (c == " " or c == "\t")
+                if prev_space and not in_sq and not in_dq then quoted_part = false end
             end
         end
     end
@@ -134,19 +142,27 @@ end
 M.clamp_str = clamp_str
 
 -- Logical UCI statements with byte spans. Only short directive tokens are
--- collected; large multiline values are scanned without a per-byte table.
-function M.uci_statements(content)
+-- collected; full_values retains native-export values in bounded chunks.
+function M.uci_statements(content, full_values)
     if type(content) ~= "string" then return nil, "Configuration must be text" end
     local statements, tokens, token = {}, {}, ""
+    local chunks = {}
     local first, quote, escaped, comment, comment_first = 1, nil, false, false, nil
     local started, quoted_part = false, false
     local function finish_token()
-        if started then tokens[#tokens + 1] = token end
+        if started then
+            if #chunks > 0 then chunks[#chunks + 1] = token; token = table.concat(chunks) end
+            tokens[#tokens + 1] = token
+        end
+        chunks = {}
         token, started, quoted_part = "", false, false
     end
     local function append(char)
         started = true
-        if #tokens < 3 and #token < 256 then token = token .. char end
+        if #tokens < 3 and (full_values or #token < 256) then
+            token = token .. char
+            if full_values and #token >= 256 then chunks[#chunks + 1], token = token, "" end
+        end
     end
     local function finish_statement(last)
         finish_token()

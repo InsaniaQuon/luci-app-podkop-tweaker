@@ -75,16 +75,18 @@ describe("page theme context", function()
         assert.equal("#aabbcc", vars.pt_appearance.color_warning_dark)
     end)
     it("uses only a bounded hexadecimal reload nonce for equal-version asset refresh", function()
+        local ordinary = render({}).asset_version
+        assert.truthy(ordinary:match("%-%d+$"), "ordinary assets must include a build revision")
         H.begin({ fv = { _pt_reload = string.rep("a", 32) } })
         package.loaded[CTRL] = nil
         local vars
         luci.template = { render = function(_, input) vars = input end }
         require(CTRL).action_about()
         local refreshed = vars.asset_version
-        assert.equal(vars.app_version .. "-1-" .. string.rep("a", 32), refreshed)
+        assert.equal(ordinary .. "-" .. string.rep("a", 32), refreshed)
         H.state().fv._pt_reload = '\" onclick=\"bad'
         require(CTRL).action_about()
-        assert.equal(vars.app_version .. "-1", vars.asset_version)
+        assert.equal(ordinary, vars.asset_version)
         assert.not_equal(vars.app_version, vars.asset_version, "normal tab navigation must not return to the cached pre-fix URL")
         local base = vars.asset_version
         H.state().fv._pt_reload = nil
@@ -97,31 +99,141 @@ describe("page theme context", function()
 end)
 
 describe("appearance HTTP adapter", function()
-    it("passes appearance and all six colors through the CSRF-protected save endpoint", function()
-        H.begin({ uci = { ["podkop-tweaker"] = { H.sec("settings", "settings", { show_argon_tab = "1" }) } },
-            fv = { token = TOKEN, profile = "contrast", mono_font_size = "16", mono_font_weight = "500", mono_line_height = "1.7",
+    local CONFIG = "podkop-tweaker"
+    local CONFIG_PATH = "/etc/config/" .. CONFIG
+    local LOCK = "/var/lock/podkop-tweaker-tweaker.lock"
+    local EXPECTED = {
+        profile = "contrast", mono_font_size = "16", mono_font_weight = "500", mono_line_height = "1.7",
+        color_success_light = "#004400", color_error_light = "#aa0000", color_warning_light = "#884400",
+        color_success_dark = "#11ff22", color_error_dark = "#ff8899", color_warning_dark = "#ffcc11"
+    }
+
+    local function write_native_config()
+        local lines = {}
+        local function quote(value) return "'" .. tostring(value):gsub("'", "'\\''") .. "'" end
+        for _, section in ipairs(H.state().uci[CONFIG] or {}) do
+            lines[#lines + 1] = "config " .. quote(section[".type"]) .. " " .. quote(section[".name"]) .. "\n"
+            local keys = {}
+            for key in pairs(section) do if key:sub(1, 1) ~= "." then keys[#keys + 1] = key end end
+            table.sort(keys)
+            for _, key in ipairs(keys) do
+                local value = section[key]
+                if type(value) == "table" then
+                    for _, item in ipairs(value) do lines[#lines + 1] = " list " .. quote(key) .. " " .. quote(item) .. "\n" end
+                else lines[#lines + 1] = " option " .. quote(key) .. " " .. quote(value) .. "\n" end
+            end
+        end
+        H.vfs_write(CONFIG_PATH, table.concat(lines))
+    end
+
+    local function begin_appearance(opts)
+        opts = opts or {}
+        H.begin({ strict = true,
+            uci = { [CONFIG] = { H.sec("settings", "settings", { show_argon_tab = "1", future = "keep" }) } },
+            failures = opts.failures,
+            fv = { token = opts.token or TOKEN, profile = "contrast", mono_font_size = "16", mono_font_weight = "500", mono_line_height = "1.7",
                 color_success_light = "#004400", color_error_light = "#aa0000", color_warning_light = "#884400",
                 color_success_dark = "#11FF22", color_error_dark = "#ff8899", color_warning_dark = "#ffcc11" } })
         H.vfs_write("/etc/podkop-tweaker.token", TOKEN)
+        write_native_config()
+        local uci = require("luci.model.uci").cursor()
+        -- The controlled native-UCI boundary has two consistent views: a typed
+        -- package map and disk bytes. A successful commit updates both; seeding
+        -- only the RPC database otherwise looks like a missing first-run file.
+        if type(uci.get_all) ~= "function" then
+            function uci:get_all(config, name)
+                local sections = H.state().uci[config]
+                if not sections then return false, "Entry not found" end
+                local result = {}
+                for _, section in ipairs(sections) do
+                    if name == section[".name"] then return section end
+                    result[section[".name"]] = section
+                end
+                if name then return false, "Entry not found" end
+                return result
+            end
+        end
+        local commit = uci.commit
+        function uci:commit(config)
+            local ok, err = commit(self, config)
+            if ok and config == CONFIG then write_native_config() end
+            return ok, err
+        end
         package.loaded[CTRL] = nil
-        require(CTRL).api_tweaker_appearance_save()
+        return require(CTRL), uci
+    end
+
+    it("passes appearance and all six colors through the CSRF-protected save endpoint", function()
+        local ctl, uci = begin_appearance()
+        ctl.api_tweaker_appearance_save()
         assert.is_true(H.last_json().success)
-        assert.same({ profile = "contrast", mono_font_size = "16", mono_font_weight = "500", mono_line_height = "1.7",
-            color_success_light = "#004400", color_error_light = "#aa0000", color_warning_light = "#884400",
-            color_success_dark = "#11ff22", color_error_dark = "#ff8899", color_warning_dark = "#ffcc11" }, H.last_json().settings)
+        assert.same(EXPECTED, H.last_json().settings)
+        local appearance = require("podkop-tweaker.appearance")
+        assert.same(EXPECTED, appearance.read())
+        local current, err, source = appearance.read_checked()
+        assert.is_nil(err)
+        assert.same(EXPECTED, current)
+        assert.equal("uci", source.settings_source)
+        assert.is_false(source.config_missing)
+        local raw = H.vfs_read(CONFIG_PATH)
+        for key, value in pairs(EXPECTED) do
+            assert.truthy(raw:find("option '" .. key .. "' '" .. value .. "'", 1, true))
+        end
+        assert.equal("keep", uci:get(CONFIG, "settings", "future"))
+        assert.same({ CONFIG }, H.commits())
     end)
 
     it("rejects save and reset without a valid token, with no settings writes", function()
-        H.begin({ uci = { ["podkop-tweaker"] = { H.sec("settings", "settings", { show_argon_tab = "1" }) } },
-            fv = { token = "wrong", profile = "contrast" } })
-        H.vfs_write("/etc/podkop-tweaker.token", TOKEN)
-        package.loaded[CTRL] = nil
-        local ctl = require(CTRL)
+        local ctl = begin_appearance({ token = "wrong" })
+        local before = H.vfs_read(CONFIG_PATH)
         ctl.api_tweaker_appearance_save()
         ctl.api_tweaker_appearance_reset()
         ctl.api_tweaker_appearance_colors_reset()
         assert.equal(403, H.http()._status[1].code)
         assert.same({}, H.commits())
+        assert.equal(before, H.vfs_read(CONFIG_PATH))
+    end)
+
+    it("returns a native current-read error instead of saving default-filled appearance", function()
+        local ctl, uci = begin_appearance()
+        local before = H.vfs_read(CONFIG_PATH)
+        uci.get_all = function() return false, "Native UCI read failed" end
+        ctl.api_tweaker_appearance_save()
+        local response = H.last_json()
+        assert.is_false(response.success)
+        assert.equal("Native UCI read failed", response.error)
+        assert.is_nil(response.settings)
+        assert.is_nil(response.applied)
+        assert.same({}, H.commits())
+        assert.equal(before, H.vfs_read(CONFIG_PATH))
+    end)
+
+    it("returns a checked file-read failure without a settings commit", function()
+        local ctl = begin_appearance({ failures = { [CONFIG_PATH] = { close = true } } })
+        local before = H.vfs_read(CONFIG_PATH)
+        ctl.api_tweaker_appearance_save()
+        local response = H.last_json()
+        assert.is_false(response.success)
+        assert.matches("Cannot close file", response.error)
+        assert.is_nil(response.settings)
+        assert.is_nil(response.applied)
+        assert.same({}, H.commits())
+        assert.equal(before, H.vfs_read(CONFIG_PATH))
+    end)
+
+    it("keeps a confirmed save and release uncertainty distinct at the HTTP boundary", function()
+        local ctl = begin_appearance({ failures = { [LOCK] = { rmdir = true } } })
+        ctl.api_tweaker_appearance_save()
+        local response = H.last_json()
+        assert.is_false(response.success)
+        assert.is_true(response.unknown)
+        assert.is_true(response.uci_saved)
+        assert.is_true(response.partial)
+        assert.is_true(response.applied)
+        assert.truthy(response.lock_error)
+        assert.is_nil(response.settings)
+        assert.same(EXPECTED, require("podkop-tweaker.appearance").read())
+        assert.same({ CONFIG }, H.commits())
     end)
 end)
 
@@ -261,10 +373,20 @@ describe("Local Update multipart transport", function()
     end)
 
     it("oversized streamed file is rejected before archive processing", function()
-        local ctl, received, UPD = begin_upload({ parts = { { chunks = { string.rep("x", 128001) } } } })
+        local ctl, received, UPD = begin_upload({ parts = { { chunks = { string.rep("x", 128000), string.rep("x", 128001) } } } })
         ctl.api_upload_update()
         assert.equal("Archive too large (max " .. UPD.UPLOAD_MAX_SIZE .. " bytes)", H.last_json().error)
         assert.is_nil(received.data)
+    end)
+
+    it("passes an exact-limit multipart body including NUL bytes without truncating", function()
+        local first, last = string.rep("\0", 128000), string.rep("\255", 128000)
+        local ctl, received, UPD = begin_upload({ parts = { { chunks = { first, last } } } })
+        assert.equal(256000, UPD.UPLOAD_MAX_SIZE)
+        ctl.api_upload_update()
+        assert.same({ success = true }, H.last_json())
+        assert.equal(first .. last, received.data)
+        assert.equal(NAME, received.name)
     end)
 
     it("missing file returns a JSON error", function()

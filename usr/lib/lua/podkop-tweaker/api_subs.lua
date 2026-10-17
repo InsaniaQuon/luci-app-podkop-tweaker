@@ -1,5 +1,5 @@
 -- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
--- Hybrid exception kept as-is: download_sub_backup (transport endpoint)
+-- Hybrid exception: download_sub_backup delegates to the bounded download transport.
 
 local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
@@ -9,9 +9,59 @@ local NET = require("podkop-tweaker.net")
 
 local M = {}
 
+local function with_subscriptions(fn)
+    local response, progress = nil, {}
+    local result, err, uncertain = SRV.with_lock("subscriptions", function()
+        response = fn(progress)
+        return response
+    end)
+    if result then return result end
+    response = response or {}
+    response.success = false
+    response.error = response.error or "Subscription lock failed"
+    response.details = (response.details and (response.details .. "\n") or "") .. tostring(err)
+    response.applied = response.applied or progress.applied or nil
+    response.settings_saved = response.settings_saved or progress.settings_saved or nil
+    response.unknown = uncertain or response.unknown or nil
+    return response
+end
+
+local function restart_applied(response)
+    local observed
+    local restart, lock_err, uncertain = SRV.with_lock("podkop", function()
+        observed = SRV.restart_service("podkop")
+        return observed
+    end)
+    if not restart then
+        restart = observed or {}
+        restart.success = false
+        restart.error = restart.error or (restart.restarting and "Podkop restart requested, but lock release failed" or "Podkop restart lock failed")
+        restart.details = (restart.details and (restart.details .. "\n") or "") .. tostring(lock_err)
+        restart.unknown = uncertain or nil
+    end
+    for key, value in pairs(restart) do response[key] = value end
+    response.applied = true
+    if restart.success ~= true then
+        response.success = false
+        response.restart_required = restart.restarting ~= true or nil
+        local logged, log_err, log_applied, log_unknown = S.append_log(SRV.UPDATE_LOG_FILE, SRV.UPDATE_LOG_MAX,
+            os.date("%H:%M %d.%m.%Y") .. "|manual|updated=" .. (response.updated or 1)
+            .. "|unchanged=" .. (response.unchanged or 0) .. "|failed=" .. math.max(1, response.failed or 0)
+            .. "\n  service:\n    podkop: failed (" .. S.clean_log_field(restart.error or "Restart failed") .. ")")
+        if not logged then
+            response.log_applied = log_applied
+            response.unknown = response.unknown or log_unknown
+            response.details = (response.details and (response.details .. "\n") or "")
+                .. "Cannot write failure log: " .. tostring(log_err)
+        end
+    end
+    return response
+end
+
 function M.subscription_state()
+    local subs, err = S.read_subs(SRV.SUBS_FILE)
+    if not subs then return { error = err } end
     local sections = S.get_proxy_sections()
-    local subs = S.read_subs(SRV.SUBS_FILE)
 
     local result = {}
     for _, sec in ipairs(sections) do
@@ -20,14 +70,19 @@ function M.subscription_state()
             proxy_config_type = sec.proxy_config_type,
             slots = {}
         }
-        local sec_subs = subs[sec.name] or {}
-        for i, link in ipairs(sec.proxy_links) do
-            local proxy = S.parse_proxy_link(link)
-            table.insert(sec_data.slots, {
-                index = i - 1,
-                proxy = proxy,
-                subscription = sec_subs[i] or nil
-            })
+        local sec_subs, slots_err = S.subscription_slots(subs, sec.name)
+        if not sec_subs then return { error = slots_err } end
+        local max_n, count_err = S.slot_count(sec.proxy_links)
+        if not max_n then return { error = count_err } end
+        for i = 1, max_n do
+            local link = sec.proxy_links[i]
+            if link ~= nil then
+                table.insert(sec_data.slots, {
+                    index = i - 1,
+                    proxy = S.parse_proxy_link(link),
+                    subscription = sec_subs[i] or nil
+                })
+            end
         end
         table.insert(result, sec_data)
     end
@@ -58,8 +113,6 @@ function M.subscription_fetch(sub_url)
 end
 
 function M.subscription_attach(section_name, slot_index, subscription_url, proxy_name, new_link)
-    local sys = require("luci.sys")
-
     slot_index = tonumber(slot_index or "-1")
 
     if not slot_index or slot_index < 0 or slot_index > 999 or slot_index ~= math.floor(slot_index) then
@@ -74,91 +127,119 @@ function M.subscription_attach(section_name, slot_index, subscription_url, proxy
     end
     local valid_link, link_err = S.validate_proxy_link(new_link)
     if not valid_link then return { error = link_err } end
+    if not NET.valid_url(subscription_url) then return { error = "Only HTTP(S) URLs allowed" } end
+    if proxy_name == nil then proxy_name = "" end
+    if type(proxy_name) ~= "string" or #proxy_name > 1024 then return { error = "Invalid proxy name" } end
 
-    local sections = S.get_proxy_sections()
-    local proxy_type = nil
-    local current_links = nil
-    for _, sec in ipairs(sections) do
-        if sec.name == section_name then
-            proxy_type = sec.proxy_config_type
-            current_links = sec.proxy_links
-            break
+    local config_applied = false
+    local response = with_subscriptions(function(progress)
+        local subs, read_err = S.read_subs(SRV.SUBS_FILE)
+        if not subs then return { error = read_err } end
+        local slots, slots_err = S.subscription_slots(subs, section_name)
+        if not slots then return { error = slots_err } end
+        local section
+        for _, sec in ipairs(S.get_proxy_sections()) do
+            if sec.name == section_name then section = sec; break end
         end
-    end
-    if not proxy_type then
-        return { error = "Section not found or not a proxy section" }
-    end
+        if not section then return { error = "Section not found or not a proxy section" } end
+        local current_link = section.proxy_links[slot_index + 1]
+        if type(current_link) ~= "string" then return { error = "Proxy slot not found" } end
 
-    local current_link = current_links and current_links[slot_index + 1] or ""
-    if current_link == new_link then
-        local subs = S.read_subs(SRV.SUBS_FILE)
-        if not subs[section_name] then subs[section_name] = {} end
-        while #subs[section_name] < slot_index + 1 do
-            table.insert(subs[section_name], false)
+        local state_applied = false
+        local function apply_attachment()
+            local live_link, live_err = S.current_proxy_link(section_name, section.proxy_config_type, slot_index)
+            if not live_link then return { error = live_err } end
+            if live_link ~= current_link then return { error = "Proxy slot changed; refresh before attaching" } end
+            local entry = type(slots[slot_index + 1]) == "table" and slots[slot_index + 1] or {}
+            entry.subscription_url, entry.proxy_name = subscription_url, proxy_name
+            entry.last_updated = os.date("%H:%M %d.%m.%Y") .. " (manual)"
+            for i = 1, slot_index do if slots[i] == nil then slots[i] = false end end
+            slots[slot_index + 1], subs[section_name] = entry, slots
+            local stage, stage_err = S.stage_subs(subs, SRV.SUBS_FILE)
+            if not stage then return { error = "Failed to save data", details = stage_err } end
+            if current_link ~= new_link then
+                local replaced, replace_err, replace_applied, replace_unknown = S.replace_proxy_link(section_name, section.proxy_config_type,
+                    slot_index, new_link, "/etc/config/podkop.sub-backup", current_link)
+                config_applied = replaced or replace_applied == true
+                progress.applied = config_applied or nil
+                if not replaced then
+                    SRV.discard_stage(stage)
+                    return { error = replace_err, applied = config_applied or nil, restart_required = config_applied or nil, unknown = replace_unknown }
+                end
+            end
+            local published, publish_err = SRV.publish_file(stage, SRV.SUBS_FILE)
+            if not published then
+                SRV.discard_stage(stage)
+                return { success = false, error = "Failed to save data", details = publish_err,
+                    applied = config_applied or nil, restart_required = config_applied or nil }
+            end
+            state_applied = true
+            progress.applied = true
+            return { success = true }
         end
-        subs[section_name][slot_index + 1] = {
-            subscription_url = subscription_url,
-            proxy_name = proxy_name,
-            last_updated = os.date("%H:%M %d.%m.%Y") .. " (manual)"
-        }
-        if not S.write_subs(subs, SRV.SUBS_FILE) then
-            return { error = "Failed to save data" }
+        local observed
+        local saved, config_err, uncertain = SRV.with_lock("podkop", function()
+            observed = apply_attachment()
+            return observed
+        end)
+        if not saved then
+            observed = observed or {}
+            observed.success = false
+            observed.error = observed.error or "Podkop lock failed"
+            observed.details = (observed.details and (observed.details .. "\n") or "") .. tostring(config_err)
+            observed.applied = config_applied or state_applied or nil
+            observed.restart_required = config_applied or nil
+            observed.unknown = uncertain or observed.unknown or nil
+            return observed
         end
+        if saved.error then return saved end
+        local changed = current_link ~= new_link
         local log_text = os.date("%H:%M %d.%m.%Y") .. "|manual|updated=0|unchanged=1|failed=0"
             .. "\n  " .. section_name .. ":\n    " .. S.clean_log_field(proxy_name) .. ": unchanged"
-        S.append_log(SRV.UPDATE_LOG_FILE, SRV.UPDATE_LOG_MAX, log_text)
-        return { success = true, unchanged = true }
-    end
-
-    local ok2, err2 = S.replace_proxy_link(section_name, proxy_type, slot_index, new_link, "/etc/config/podkop.sub-backup")
-    if not ok2 then
-        return { error = err2 }
-    end
-
-    local subs = S.read_subs(SRV.SUBS_FILE)
-    if not subs[section_name] then subs[section_name] = {} end
-    while #subs[section_name] < slot_index + 1 do
-        table.insert(subs[section_name], false)
-    end
-    subs[section_name][slot_index + 1] = {
-        subscription_url = subscription_url,
-        proxy_name = proxy_name,
-        last_updated = os.date("%H:%M %d.%m.%Y") .. " (manual)"
-    }
-    if not S.write_subs(subs, SRV.SUBS_FILE) then
-        return { error = "Failed to save data" }
-    end
-
-    sys.exec(SRV.background_command("/etc/init.d/podkop restart"))
-    local log_text = os.date("%H:%M %d.%m.%Y") .. "|manual|updated=1|unchanged=0|failed=0"
-        .. "\n  " .. section_name .. ":\n    " .. S.clean_log_field(proxy_name) .. ": updated"
-    S.append_log(SRV.UPDATE_LOG_FILE, SRV.UPDATE_LOG_MAX, log_text)
-    return { success = true, restarting = true }
+        if changed then
+            log_text = os.date("%H:%M %d.%m.%Y") .. "|manual|updated=1|unchanged=0|failed=0"
+                .. "\n  " .. section_name .. ":\n    " .. S.clean_log_field(proxy_name) .. ": updated"
+        end
+        local logged, log_err, log_applied, log_unknown = S.append_log(SRV.UPDATE_LOG_FILE, SRV.UPDATE_LOG_MAX, log_text)
+        if not logged then
+            return { success = false, error = "Failed to write subscription update log", details = log_err,
+                applied = true, restart_required = changed or nil, log_applied = log_applied, unknown = log_unknown }
+        end
+        return changed and { success = true } or { success = true, unchanged = true }
+    end)
+    if config_applied and response.success == true then return restart_applied(response) end
+    if config_applied then response.applied, response.restart_required = true, true end
+    return response
 end
 
 function M.subscription_detach(section_name, slot_index)
     slot_index = tonumber(slot_index or "-1")
 
-    if not slot_index or slot_index < 0 or slot_index > 999 or section_name == "" then
+    if not slot_index or slot_index < 0 or slot_index > 999 or slot_index ~= math.floor(slot_index) or section_name == "" then
         return { error = "Missing required parameters" }
     end
     if not LIB.sanitize_section_name(section_name) then
         return { error = "Invalid section name" }
     end
 
-    local subs = S.read_subs(SRV.SUBS_FILE)
-    if subs[section_name] and subs[section_name][slot_index + 1] then
-        subs[section_name][slot_index + 1] = nil
-        if not S.write_subs(subs, SRV.SUBS_FILE) then
-            return { error = "Failed to save data" }
+    return with_subscriptions(function(progress)
+        local subs, read_err = S.read_subs(SRV.SUBS_FILE)
+        if not subs then return { error = read_err } end
+        local slots, slots_err = S.subscription_slots(subs, section_name)
+        if not slots then return { error = slots_err } end
+        if slots[slot_index + 1] then
+            slots[slot_index + 1] = nil
+            local saved, save_err, applied, unknown = S.write_subs(subs, SRV.SUBS_FILE)
+            progress.applied = saved or applied or nil
+            if not saved then return { error = "Failed to save data", details = save_err, applied = applied, unknown = unknown } end
         end
-    end
-
-    return { success = true }
+        return { success = true }
+    end)
 end
 
 function M.settings_read()
-    local subs = S.read_subs(SRV.SUBS_FILE)
+    local subs, err = S.read_subs(SRV.SUBS_FILE)
+    if not subs then return { error = err } end
     local settings = subs.settings or {}
 
     return {
@@ -176,15 +257,7 @@ function M.settings_save(interval_raw, start_time, on_restart, log_display_raw, 
     if log_display > 25 then log_display = 25 end
     log_display = math.floor(log_display)
 
-    if log_only == true then
-        local subs = S.read_subs(SRV.SUBS_FILE)
-        subs.settings = type(subs.settings) == "table" and subs.settings or {}
-        subs.settings.log_display_count = log_display
-        if not S.write_subs(subs, SRV.SUBS_FILE) then return { error = "Failed to save settings" } end
-        return { success = true }
-    end
-
-    if interval > 0 then
+    if log_only ~= true and interval > 0 then
         if interval < 1 or interval > 24 or interval ~= math.floor(interval) then
             return { error = "Interval must be 1-24 hours" }
         end
@@ -201,65 +274,63 @@ function M.settings_save(interval_raw, start_time, on_restart, log_display_raw, 
         start_time = ""
     end
 
-    local subs = S.read_subs(SRV.SUBS_FILE)
-    subs.settings = {
-        auto_update_interval = interval,
-        auto_update_start = start_time,
-        auto_update_on_restart = on_restart,
-        log_display_count = log_display
-    }
-    if not S.write_subs(subs, SRV.SUBS_FILE) then
-        return { error = "Failed to save settings" }
-    end
-
-    local ok, err = SCHED.apply(interval, start_time, on_restart)
-    if not ok then
-        return { success = false, settings_saved = true, error = "Settings saved, but scheduling failed", details = err }
-    end
-
-    return { success = true }
+    return with_subscriptions(function(progress)
+        local subs, read_err = S.read_subs(SRV.SUBS_FILE)
+        if not subs then return { error = read_err } end
+        subs.settings = subs.settings or {}
+        subs.settings.log_display_count = log_display
+        if log_only ~= true then
+            subs.settings.auto_update_interval = interval
+            subs.settings.auto_update_start = start_time
+            subs.settings.auto_update_on_restart = on_restart == true
+        end
+        local saved, save_err, applied, unknown = S.write_subs(subs, SRV.SUBS_FILE)
+        progress.applied = saved or applied or nil
+        progress.settings_saved = progress.applied
+        if not saved then return { error = "Failed to save settings", details = save_err, applied = applied,
+            settings_saved = applied, unknown = unknown } end
+        if log_only == true then return { success = true } end
+        local ok, err = SCHED.apply(interval, start_time, on_restart == true)
+        if not ok then
+            return { success = false, settings_saved = true, applied = true,
+                error = "Settings saved, but scheduling failed", details = err }
+        end
+        return { success = true }
+    end)
 end
 
 function M.auto_update_status()
-    return SCHED.status(M.settings_read(), SRV.UPDATE_LOG_FILE)
+    local settings = M.settings_read()
+    if settings.error then return settings end
+    return SCHED.status(settings, SRV.UPDATE_LOG_FILE)
 end
 
 function M.update_all()
-    local sys = require("luci.sys")
     local result = S.update_all_subscriptions(SRV.SUBS_FILE, SRV.UPDATE_LOG_FILE, SRV.UPDATE_LOG_MAX, "manual")
-
-    if result.need_restart then
-        sys.exec(SRV.background_command("/etc/init.d/podkop restart"))
-    end
-
-    return {
-        success = true,
+    local response = {
+        success = result.success == true,
         updated = result.updated,
         unchanged = result.unchanged,
         failed = result.failed,
-        restarted = result.need_restart
+        skipped = result.skipped,
+        restarted = false,
+        error = result.error,
+        details = result.error_details,
+        applied = result.applied,
+        unknown = result.unknown,
+        log_applied = result.log_applied,
+        restart_required = result.restart_required,
+        outcomes = result.details
     }
+    if result.success == true and result.need_restart then
+        response = restart_applied(response)
+        response.restarted = response.success == true
+    end
+    return response
 end
 
 function M.download_sub_backup()
-    local http = require("luci.http")
-    local nixio = require("nixio")
-    local backup_path = "/etc/config/podkop.sub-backup"
-    if not nixio.fs.stat(backup_path) then
-        http.prepare_content("application/json")
-        http.write_json({ error = "Sub backup file not found" })
-        return
-    end
-    http.prepare_content("application/octet-stream")
-    http.header("Content-Disposition", 'attachment; filename="podkop-sub-backup.conf"')
-    local fd = io.open(backup_path, "r")
-    if fd then
-        local content = fd:read("*a")
-        fd:close()
-        http.write(content)
-    else
-        http.status(500, "Cannot read sub backup")
-    end
+    require("podkop-tweaker.http").send_download("/etc/config/podkop.sub-backup", "podkop-sub-backup.conf", "Sub backup file not found")
 end
 
 return M

@@ -7,27 +7,93 @@ local APPEARANCE = require("podkop-tweaker.appearance")
 
 local M = {}
 
+local function failure_metadata(response, uncertain, info)
+    if uncertain == true then response.unknown = true end
+    if type(info) ~= "table" then return end
+    if info.unknown == true then response.unknown = true end
+    if info.lock_error then response.lock_error = info.lock_error end
+    if info.details ~= nil and response.details == nil then response.details = info.details end
+end
+
+local function with_typography(fn)
+    local response = { success = false }
+    local ok, result, err, uncertain = pcall(AR.with_lock, function()
+        local outcome = fn(response)
+        if type(outcome) == "table" then response = outcome end
+        return outcome
+    end)
+    if ok and uncertain ~= true and type(result) == "table" then return result end
+    response.success = false
+    local lock_err = (ok and err or result) or "Cannot lock Argon typography"
+    if response.error or uncertain == true then response.lock_error = lock_err end
+    if not response.error then response.error = lock_err end
+    if uncertain == true then
+        response.unknown = true
+        response.settings, response.stale, response.font_families = nil, nil, nil
+        response.settings_source, response.config_missing = nil, nil
+    end
+    if response.uci_saved or response.css_applied then
+        response.partial, response.applied = true, true
+    end
+    return response
+end
+
+local function css_result(response, ok, err, uncertain, info)
+    response.css_applied = ok == true
+    if not ok then response.error = err or "Cannot apply Argon typography CSS" end
+    failure_metadata(response, uncertain, info)
+    local stale, stale_err, stale_uncertain, stale_info = AR.check_stale()
+    if stale == nil then
+        response.stale_error = stale_err or "Cannot read Argon stylesheet status"
+        if not response.error then response.error = response.stale_error end
+        if type(stale_info) == "table" then response.stale_details = stale_info.details end
+        failure_metadata(response, stale_uncertain, stale_info)
+    elseif not response.unknown then
+        response.stale = stale
+    end
+    response.success = ok == true and response.error == nil and not response.unknown
+    if not response.success and (response.uci_saved or response.css_applied) then
+        response.partial, response.applied = true, true
+    end
+    return response
+end
+
 function M.typography()
     if AR.tab_disabled() then
         return { error = "Argon tab is disabled" }
     end
-    local settings = AR.read_settings()
-    local families = {}
-    for k, _ in pairs(LIB.ARGON_FONT_FAMILIES) do
-        table.insert(families, k)
-    end
-    table.sort(families)
-    return {
-        settings = settings,
-        stale = AR.check_stale(),
-        font_families = families
-    }
+    return with_typography(function(response)
+        local settings, err, source, info = AR.read_settings()
+        if not settings then
+            response.error = err
+            failure_metadata(response, source, info)
+            return response
+        end
+        local stale, stale_err, uncertain, stale_info = AR.check_stale()
+        if stale == nil then
+            response.error = stale_err
+            failure_metadata(response, uncertain, stale_info)
+            return response
+        end
+        local families = {}
+        for k in pairs(LIB.ARGON_FONT_FAMILIES) do table.insert(families, k) end
+        table.sort(families)
+        return { settings = settings, stale = stale, font_families = families,
+            settings_source = source.settings_source, config_missing = source.config_missing }
+    end)
 end
 
 function M.typography_save(input)
-    input = input or {}
     if AR.tab_disabled() then
         return { error = "Argon tab is disabled" }
+    end
+    if input == nil then input = {} end
+    if type(input) ~= "table" then return { success = false, error = "Invalid typography settings" } end
+    for _, key in ipairs({ "font_size", "font_family", "font_family_custom", "font_weight",
+        "line_height", "letter_spacing", "menu_font_size", "menu_padding" }) do
+        if input[key] ~= nil and type(input[key]) ~= "string" then
+            return { success = false, error = "Invalid typography setting: " .. key }
+        end
     end
 
     local clamp = LIB.clamp_str
@@ -43,71 +109,87 @@ function M.typography_save(input)
     }
     -- dropdown contract: unknown family names are stored verbatim (see api_argon_spec);
     -- generate_argon_css omits unknown families from CSS safely
-    if not settings.font_weight:match("^[0-9]+$") then
+    local weight = tonumber(settings.font_weight)
+    if not settings.font_weight:match("^[0-9]+$") or not weight or weight < 300 or weight > 700 then
         settings.font_weight = "400"
     end
 
-    AR.save_uci_fields(settings)
-
-    local ok = AR.apply()
-    return { success = ok, stale = AR.check_stale() }
+    return with_typography(function(response)
+        response.uci_saved, response.css_applied = false, false
+        local saved, save_err, uncertain, info = AR.save_uci_fields(settings)
+        if not saved then
+            response.error = save_err
+            failure_metadata(response, uncertain, info)
+            return response
+        end
+        response.uci_saved = true
+        -- Apply exactly the committed values under the same resource lock;
+        -- a failed re-read must never generate a default-filled CSS block.
+        return css_result(response, AR.apply(settings))
+    end)
 end
 
 function M.typography_reset()
     if AR.tab_disabled() then
         return { error = "Argon tab is disabled" }
     end
-    AR.save_uci_fields({
-        font_size = "",
-        font_family = "Google Sans",
-        font_family_custom = "",
-        font_weight = "400",
-        line_height = "",
-        letter_spacing = "",
-        menu_font_size = "",
-        menu_padding = ""
-    })
-    AR.remove_css()
-    return { success = true, stale = true }
+    return with_typography(function(response)
+        response.uci_saved, response.css_applied = false, false
+        local saved, save_err, uncertain, info = AR.save_uci_fields({
+            font_size = "", font_family = "Google Sans", font_family_custom = "", font_weight = "400",
+            line_height = "", letter_spacing = "", menu_font_size = "", menu_padding = ""
+        })
+        if not saved then
+            response.error = save_err
+            failure_metadata(response, uncertain, info)
+            return response
+        end
+        response.uci_saved = true
+        return css_result(response, AR.remove_css())
+    end)
 end
 
 function M.reinject()
     if AR.tab_disabled() then
         return { error = "Argon tab is disabled" }
     end
-    local ok = AR.apply()
-    return { success = ok, stale = AR.check_stale() }
+    return with_typography(function(response)
+        response.uci_saved, response.css_applied = false, false
+        return css_result(response, AR.apply())
+    end)
+end
+
+local function appearance_result(settings, err, state)
+    if settings then return { success = true, settings = settings } end
+    local response = { success = false, error = err }
+    if type(state) == "table" and state.uci_saved then
+        response.uci_saved, response.partial, response.applied = true, true, true
+    end
+    failure_metadata(response, false, state)
+    return response
 end
 
 function M.appearance()
     if AR.tab_disabled() then return { error = "Argon tab is disabled" } end
-    return { settings = APPEARANCE.read() }
+    local settings, err, source = APPEARANCE.read_checked()
+    if not settings then return appearance_result(nil, err, source) end
+    return { settings = settings, settings_source = source.settings_source, config_missing = source.config_missing }
 end
 
 function M.appearance_save(input)
     if AR.tab_disabled() then return { error = "Argon tab is disabled" } end
     if type(input) ~= "table" then return { error = "Invalid appearance settings" } end
-    local settings = APPEARANCE.read()
-    for key in pairs(settings) do
-        if input[key] ~= nil then settings[key] = input[key] end
-    end
-    local saved, err = APPEARANCE.save(settings)
-    if not saved then return { success = false, error = err } end
-    return { success = true, settings = saved }
+    return appearance_result(APPEARANCE.save(input))
 end
 
 function M.appearance_reset()
     if AR.tab_disabled() then return { error = "Argon tab is disabled" } end
-    local settings, err = APPEARANCE.reset()
-    if not settings then return { success = false, error = err } end
-    return { success = true, settings = settings }
+    return appearance_result(APPEARANCE.reset())
 end
 
 function M.appearance_colors_reset()
     if AR.tab_disabled() then return { error = "Argon tab is disabled" } end
-    local settings, err = APPEARANCE.reset_colors()
-    if not settings then return { success = false, error = err } end
-    return { success = true, settings = settings }
+    return appearance_result(APPEARANCE.reset_colors())
 end
 
 function M.theme_check(force_raw)

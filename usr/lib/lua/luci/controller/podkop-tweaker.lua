@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.9.0 | 09.10.2026 | reliable transport, scheduling status and restart confirmation
+-- Podkop Tweaker | v4.10.3 | 17.10.2026 | Shared frontend transport and checked UI lifecycles
 
-local APP_VERSION = "4.9.0"
+local APP_VERSION = "4.10.3"
 -- Bump when UI assets change within the same unpublished release train.
 local ASSET_REVISION = "1"
 

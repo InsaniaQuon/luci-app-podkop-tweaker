@@ -244,6 +244,7 @@ window.PT = {
         backupSingbox: '<%=url("admin/services/podkop-tweaker/api/download_singbox_backup")%>',
         status: '<%=url("admin/services/podkop-tweaker/api/service_status")%>',
         stubbyStatus: '<%=url("admin/services/podkop-tweaker/api/stubby_service_status")%>',
+        singboxStatus: '<%=url("admin/services/podkop-tweaker/api/singbox_service_status")%>',
         rollback: '<%=url("admin/services/podkop-tweaker/api/rollback")%>'
     }
 };
@@ -290,6 +291,12 @@ window.PT = {
     var stubbyWatcher = PT.statusWatcher(PT.urls.stubbyStatus,
         document.getElementById('ps-stubby-dot'),
         document.getElementById('ps-stubby-text'));
+    // Podkop and sing-box observe the same worker, but have independent ACKs.
+    // Separate watchers prevent a second bundle poll from cancelling the first.
+    var singboxWatcher = PT.statusWatcher(PT.urls.singboxStatus || PT.urls.status);
+    var serviceWatchers = { podkop: podkopWatcher, stubby: stubbyWatcher, singbox: singboxWatcher };
+    var serviceNames = { podkop: 'Podkop worker', stubby: 'Stubby', singbox: 'sing-box' };
+    function isService(name) { return Object.prototype.hasOwnProperty.call(serviceWatchers, name); }
 
     function refreshStubbyStatus() {
         stubbyWatcher.refresh();
@@ -361,12 +368,81 @@ window.PT = {
 
     var _pendingBundle = null;
     var _pendingRaw = null;
+    var importPending = false, importUncertain = false, reviewSequence = 0;
+
+    function record(value) { return value && typeof value === 'object' && !Array.isArray(value); }
+
+    function mutationPayload(resp, error) {
+        var data = resp || error && error.data;
+        return record(data) ? data : null;
+    }
+
+    function mutationUncertain(data, error, xhr) {
+        if (data && (data.unknown === true || data.error === 'Internal error')) return true;
+        if (error && error.kind === 'http' && xhr && xhr.status >= 500 &&
+            (!data || typeof data.success !== 'boolean' && typeof data.applied !== 'boolean')) return true;
+        if (error && error.kind === 'http' && xhr && xhr.status >= 400 && xhr.status < 500) return false;
+        return !data || (typeof data.success !== 'boolean' && typeof data.error !== 'string');
+    }
+
+    function mutationDetails(data, error) {
+        var lines = [];
+        if (data && typeof data.error === 'string') lines.push(data.error);
+        else if (error && error.message) lines.push(error.message);
+        if (data && typeof data.details === 'string') lines.push(data.details);
+        else if (error && error.details) lines.push(String(error.details));
+        return lines.join('\n\n');
+    }
+
+    function showNotice(el, text, role, details) {
+        if (details) PT.setErr(el, text, text + '\n\n' + details); else el.textContent = text;
+        el.style.color = PT.color(role);
+    }
+
+    function importControls() {
+        var busy = importPending || importUncertain;
+        importPickBtn.disabled = importFile.disabled = asSelect.disabled = busy;
+        importOpenBtn.disabled = busy || !(importFile.files && importFile.files[0]);
+        reviewConfirmBtn.disabled = reviewRollbackBtn.disabled = busy;
+        reviewList.querySelectorAll('input[type="checkbox"]').forEach(function(box) {
+            if (busy) {
+                if (box.__ptImportDisabled === undefined) box.__ptImportDisabled = box.disabled;
+                box.disabled = true;
+            } else if (box.__ptImportDisabled !== undefined) {
+                box.disabled = box.__ptImportDisabled;
+                delete box.__ptImportDisabled;
+            }
+        });
+    }
+
+    function operationStatus(sequence, text, role, details) {
+        showNotice(importStatus, text, role, details);
+        if (sequence === reviewSequence) showNotice(reviewStatusEl, text, role, details);
+    }
+
+    function finishOperation(sequence, text, role, details, uncertain) {
+        importPending = false;
+        importUncertain = importUncertain || uncertain === true;
+        operationStatus(sequence, text, role, details);
+        if (sequence === reviewSequence) finishImportModal();
+        importControls();
+    }
+
+    function processMessage(name, result) {
+        var label = serviceNames[name];
+        if (result && result.confirmed === true) return label + ': new process instance confirmed.';
+        if (result && result.known === true && result.running === false) return label + ': not running at the latest check; restart unconfirmed.';
+        if (result && result.known === true && result.running === true) return label + ': running, but restart unconfirmed.';
+        return label + ': status unknown; restart unconfirmed.';
+    }
 
     importPickBtn.addEventListener('click', function() {
+        if (importPending || importUncertain) return;
         importFile.click();
     });
 
     importFile.addEventListener('change', function() {
+        if (importPending || importUncertain) return;
         var has = this.files && this.files[0];
         importOpenBtn.disabled = !has;
         importFname.textContent = has ? this.files[0].name : 'No file selected';
@@ -374,6 +450,7 @@ window.PT = {
     });
 
     importOpenBtn.addEventListener('click', function() {
+        if (importPending || importUncertain) return;
         var file = importFile.files && importFile.files[0];
         if (!file) return;
         if (file.size > 4194304) {
@@ -385,10 +462,12 @@ window.PT = {
         importStatus.style.color = PT.color('info');
         var reader = new FileReader();
         reader.onerror = function() {
+            if (importPending || importUncertain) return;
             importStatus.textContent = 'File read failed';
             importStatus.style.color = PT.color('error');
         };
         reader.onload = function() {
+            if (importPending || importUncertain) return;
             importStatus.textContent = '';
             detectAndOpen(reader.result);
         };
@@ -420,6 +499,7 @@ window.PT = {
     }
 
     function resetReviewModal() {
+        ++reviewSequence;
         reviewList.innerHTML = '';
         reviewResults.innerHTML = '';
         reviewSummary.textContent = '';
@@ -431,7 +511,7 @@ window.PT = {
         asRow.style.display = 'none';
         reviewRollbackBtn.style.display = 'none';
         reviewConfirmBtn.style.display = '';
-        reviewConfirmBtn.disabled = false;
+        reviewConfirmBtn.disabled = importPending || importUncertain;
         reviewConfirmBtn.textContent = '\u2B06 Import';
         reviewCancelBtn.style.display = '';
         reviewCloseBtn.style.display = 'none';
@@ -518,9 +598,9 @@ window.PT = {
     }
 
     var RAW_TARGETS = {
-        podkop: { url: function() { return PT.urls.importCfg; }, name: 'Podkop', poll: true, conseq: '/etc/config/podkop, create backup, restart Podkop' },
-        stubby: { url: function() { return PT.urls.importStubby; }, name: 'Stubby', poll: false, conseq: '/etc/config/stubby, create backup, restart Stubby' },
-        singbox: { url: function() { return PT.urls.importSingbox; }, name: 'Sing-box', poll: false, conseq: '/etc/sing-box/config.json, sing-box check, backup, restart sing-box' }
+        podkop: { url: function() { return PT.urls.importCfg; }, name: 'Podkop', conseq: '/etc/config/podkop, create backup, restart Podkop' },
+        stubby: { url: function() { return PT.urls.importStubby; }, name: 'Stubby', conseq: '/etc/config/stubby, create backup, restart Stubby' },
+        singbox: { url: function() { return PT.urls.importSingbox; }, name: 'Sing-box', conseq: '/etc/sing-box/config.json, sing-box check, backup, restart sing-box' }
     };
 
     function openRawReview(text, guess) {
@@ -550,6 +630,7 @@ window.PT = {
     asSelect.addEventListener('change', updateRawSummary);
 
     PT.bindModal(reviewModal, [reviewCancelBtn, reviewCloseBtn], function() {
+        ++reviewSequence;
         _pendingBundle = null;
         _pendingRaw = null;
         reviewList.removeEventListener('change', updateBundleSummary);
@@ -567,38 +648,73 @@ window.PT = {
         setTimeout(refreshStubbyStatus, 4000);
     }
 
-    function modalFail(msg) {
-        reviewStatusEl.textContent = msg;
-        reviewStatusEl.style.color = PT.color('error');
-        finishImportModal();
-    }
-
-    function appendResultLine(cls, text) {
+    function appendResultLine(cls, text, details, role) {
         var div = document.createElement('div');
         div.className = cls;
-        div.textContent = text;
+        showNotice(div, text, role || (cls === 'is-fail' ? 'error' : cls === 'is-ok' ? 'success' : 'warning'), details);
         reviewResults.appendChild(div);
     }
 
-    function renderBundleResults(resp) {
+    function restartAck(name, resp) {
+        var item = record(resp.results) && resp.results[name];
+        if (record(resp.restarts) && Object.prototype.hasOwnProperty.call(resp.restarts, name) && record(resp.restarts[name])) return resp.restarts[name];
+        if (record(item) && record(item.restart)) return item.restart;
+        if (record(item) && (item.restarting === true || item.verification_required === true)) return item;
+        if (name === 'podkop' && resp.restarting === true) return resp;
+        return null;
+    }
+
+    function itemError(item, ack) {
+        if ('error' in item) return String(item.error || 'Item application failed');
+        if (ack && (ack.success === false || 'error' in ack)) return 'Configuration saved, but ' + (ack.error || 'checked service restart failed');
+        if (item.unknown === true || ack && ack.unknown === true) return 'Item finishing result unknown';
+        if (item.restart_required === true) return 'Configuration saved; a service restart is still required';
+        if (item.partial === true) return 'Item was only partially applied';
+        return item.ok === true ? null : 'Item application failed';
+    }
+
+    function skippedItems(resp) {
+        if (resp.skipped === undefined) return [];
+        if (Array.isArray(resp.skipped) && resp.skipped.every(function(name) { return typeof name === 'string'; })) return resp.skipped;
+        if (record(resp.skipped) && Object.keys(resp.skipped).length === 0) return [];
+        return null;
+    }
+
+    function renderBundleResults(resp, proofs, selected) {
         reviewResults.innerHTML = '';
-        var names = Object.keys(resp.results || {});
+        var results = record(resp.results) ? resp.results : {};
+        var names = Object.keys(results), skipped = skippedItems(resp) || [];
         for (var i = 0; i < names.length; i++) {
-            var n = names[i];
-            var r = resp.results[n];
-            if (r && r.ok) {
-                appendResultLine('is-ok', '\u2713 ' + (ITEM_LABELS[n] || n));
-            } else {
-                appendResultLine('is-fail', '\u2717 ' + (ITEM_LABELS[n] || n) + ': ' + ((r && r.error) || 'failed'));
+            var n = names[i], r = results[n];
+            var label = Object.prototype.hasOwnProperty.call(ITEM_LABELS, n) ? ITEM_LABELS[n] : n;
+            if (!record(r)) {
+                appendResultLine('is-fail', '\u2717 ' + label + ': invalid item result');
+                continue;
             }
+            var ack = restartAck(n, resp), error = itemError(r, ack);
+            var details = typeof r.details === 'string' ? r.details : ack && typeof ack.details === 'string' ? ack.details : null;
+            if (error) {
+                appendResultLine('is-fail', '\u2717 ' + label + ': ' + (r.applied === true ? 'changes saved; ' : '') + error, details);
+            } else if (isService(n)) {
+                var proof = proofs[n];
+                appendResultLine(proof && proof.confirmed === true ? 'is-ok' : 'is-skip', label + ': configuration saved. ' +
+                    (proof && proof.pending ? 'Restart requested; verifying process transition...' : processMessage(n, proof)), details);
+            } else {
+                appendResultLine('is-ok', '\u2713 ' + label + ': applied', details);
+            }
+            if (typeof r.warning === 'string') appendResultLine('is-skip', label + ': ' + r.warning);
         }
-        var skipped = resp.skipped || [];
         for (var k = 0; k < skipped.length; k++) {
             appendResultLine('is-skip', '\u2013 skipped: ' + (ITEM_LABELS[skipped[k]] || skipped[k]));
         }
+        selected.forEach(function(name) {
+            if (!Object.prototype.hasOwnProperty.call(results, name) && skipped.indexOf(name) < 0)
+                appendResultLine('is-fail', (ITEM_LABELS[name] || name) + ': no item result returned; outcome unknown');
+        });
     }
 
     reviewConfirmBtn.addEventListener('click', function() {
+        if (importPending || importUncertain || reviewConfirmBtn.style.display === 'none') return;
         if (_pendingBundle) confirmBundleImport();
         else if (_pendingRaw) confirmRawImport();
     });
@@ -610,123 +726,150 @@ window.PT = {
         });
         if (selected.length === 0) return;
 
-        reviewConfirmBtn.disabled = true;
+        var sequence = reviewSequence;
+        importPending = true;
+        importControls();
         reviewConfirmBtn.textContent = 'Importing...';
-        reviewStatusEl.textContent = 'Applying...';
-        reviewStatusEl.style.color = PT.color('info');
+        operationStatus(sequence, 'Applying selected bundle items...', 'info');
 
-        PT.xhrPost(PT.urls.importBundle,
+        PT.postJson(PT.urls.importBundle,
             PT.contentForm(_pendingBundle.raw, { items: selected.join(',') }, 'bundle.json'),
-            function(xhr) {
-                reviewConfirmBtn.disabled = false;
-                reviewConfirmBtn.textContent = '\u2B06 Import';
-                if (!xhr) { modalFail('Network error'); return; }
-                var resp = null;
-                try { resp = JSON.parse(xhr.responseText); } catch (e) {}
-                if (!resp) { modalFail('Import failed'); return; }
-                if (resp.error) { modalFail(resp.error); return; }
-                renderBundleResults(resp);
-                if (resp.restarting) {
-                    reviewStatusEl.textContent = 'Podkop restarting...';
-                    reviewStatusEl.style.color = PT.color('info');
-                    podkopWatcher.poll(
-                        function() {
-                            reviewStatusEl.textContent = 'Imported. Podkop is running.';
-                            reviewStatusEl.style.color = PT.color('success');
-                            finishImportModal();
-                        },
-                        function() {
-                            reviewStatusEl.textContent = 'Podkop did not start after import.';
-                            reviewStatusEl.style.color = PT.color('error');
-                            reviewRollbackBtn.style.display = 'inline-block';
-                            finishImportModal();
-                        }
-                    );
-                } else {
-                    reviewStatusEl.textContent = 'Import finished.';
-                    reviewStatusEl.style.color = PT.color('success');
-                    finishImportModal();
+            function(resp, error, xhr) {
+                var data = mutationPayload(resp, error), details = mutationDetails(data, error);
+                var results = data && record(data.results) ? data.results : {};
+                var names = Object.keys(results), skipped = data && skippedItems(data);
+                var unknown = mutationUncertain(data, error, xhr);
+                if (data && (names.some(function(name) {
+                    var ack = restartAck(name, data);
+                    return record(results[name]) && results[name].unknown === true || ack && ack.unknown === true;
+                }) || record(data.restarts) && Object.keys(data.restarts).some(function(name) {
+                    return record(data.restarts[name]) && data.restarts[name].unknown === true;
+                }))) unknown = true;
+                var typed = data && typeof data.success === 'boolean' && record(data.results) && skipped !== null &&
+                    (data.restarts === undefined || record(data.restarts) && Object.keys(data.restarts).every(function(name) {
+                        return isService(name) && record(data.restarts[name]) && typeof data.restarts[name].success === 'boolean';
+                    })) && names.every(function(name) {
+                        return Object.prototype.hasOwnProperty.call(ITEM_LABELS, name) && record(results[name]) && typeof results[name].ok === 'boolean';
+                    });
+                if (typed && !selected.every(function(name) { return Object.prototype.hasOwnProperty.call(results, name) || skipped.indexOf(name) >= 0; })) unknown = true;
+                if (!typed) {
+                    if (data && record(data.results) && sequence === reviewSequence) renderBundleResults(data, {}, selected);
+                    var applied = data && data.applied === true;
+                    var text = unknown || !error ? (applied ? 'Bundle changes saved; remaining result unknown. ' : 'Bundle result unknown. ') + 'Inspect current configurations and reload before another import; no request was retried.' :
+                        applied ? 'Bundle partially applied; finishing failed. Service restarts are unverified.' : 'Bundle import failed: ' + (data && data.error || error.message);
+                    finishOperation(sequence, text, 'error', details, unknown || !error);
+                    return;
                 }
+                if (names.length === 0 && skipped.length > 0 && !data.error) details = '';
+
+                var proofs = {}, tasks = [];
+                names.forEach(function(name) {
+                    var item = results[name], ack = restartAck(name, data);
+                    if (isService(name) && item.ok === true && !itemError(item, ack) && ack && ack.success !== false &&
+                        (ack.restarting === true || item.restarting === true)) {
+                        proofs[name] = { pending: true };
+                        tasks.push({ name: name, ack: ack });
+                    }
+                });
+                if (sequence === reviewSequence) renderBundleResults(data, proofs, selected);
+                var pending = tasks.length;
+                function finish() {
+                    var completed = 0, failed = 0, applied = data.applied === true, unverified = 0;
+                    names.forEach(function(name) {
+                        var item = results[name];
+                        if (item.ok === true && !itemError(item, restartAck(name, data))) completed++; else failed++;
+                        applied = applied || item.applied === true;
+                        if (isService(name) && (item.ok === true || item.applied === true) && !(proofs[name] && proofs[name].confirmed === true)) unverified++;
+                    });
+                    var transportFailed = error && error.kind !== 'application';
+                    var partial = data.success !== true || data.partial === true || failed > 0 || !!data.error || transportFailed || data.complete === false && completed > 0;
+                    var text = unknown ? (applied || completed > 0 ? 'Bundle partially applied; finishing result incomplete. ' : 'Bundle result incomplete. ') + 'Inspect configurations and reload before another import. ' :
+                        names.length === 0 && skipped.length > 0 && !data.error ? 'No selected items applied: ' :
+                            partial ? (applied || completed > 0 ? 'Bundle partially applied: ' : 'Bundle import failed: ') : 'Bundle item results: ';
+                    text += completed + ' accepted, ' + failed + ' failed, ' + skipped.length + ' skipped.';
+                    if (unverified > 0) text += ' ' + unverified + ' service restart(s) unverified; see per-item results.';
+                    else if (tasks.length > 0) text += ' Requested service process transitions confirmed.';
+                    if (data.error) text += ' ' + data.error;
+                    if (sequence === reviewSequence) {
+                        renderBundleResults(data, proofs, selected);
+                        if (results.podkop && (results.podkop.applied === true || results.podkop.ok === true) &&
+                            (itemError(results.podkop, restartAck('podkop', data)) || !proofs.podkop || proofs.podkop.confirmed !== true)) reviewRollbackBtn.style.display = 'inline-block';
+                    }
+                    finishOperation(sequence, text, unknown || failed > 0 || data.error || transportFailed ? 'error' : partial || unverified > 0 || skipped.length > 0 ? 'warning' : 'success', details, unknown);
+                }
+                if (pending === 0) { finish(); return; }
+                operationStatus(sequence, 'Bundle items saved. Verifying requested service process transitions...', 'info');
+                tasks.forEach(function(task) {
+                    function done(result) {
+                        proofs[task.name] = result && result.confirmed === true ? result : result || { confirmed: false, known: false };
+                        if (sequence === reviewSequence) renderBundleResults(data, proofs, selected);
+                        pending--;
+                        if (pending === 0) finish();
+                    }
+                    serviceWatchers[task.name].poll(done, done, task.ack);
+                });
             });
     }
 
     function confirmRawImport() {
-        var t = RAW_TARGETS[asSelect.value];
+        var name = asSelect.value, t = RAW_TARGETS[name];
         if (!t) return;
-
-        reviewConfirmBtn.disabled = true;
+        var sequence = reviewSequence;
+        importPending = true;
+        importControls();
         reviewConfirmBtn.textContent = 'Importing...';
-        reviewStatusEl.textContent = 'Importing ' + t.name.toLowerCase() + '...';
-        reviewStatusEl.style.color = PT.color('info');
+        operationStatus(sequence, 'Importing ' + t.name + ' configuration...', 'info');
 
-        PT.xhrPost(t.url(), PT.contentForm(_pendingRaw.raw), function(xhr) {
-            reviewConfirmBtn.disabled = false;
-            reviewConfirmBtn.textContent = '\u2B06 Import';
-            if (!xhr) { modalFail('Network error'); return; }
-            var resp = null;
-            try { resp = JSON.parse(xhr.responseText); } catch (e) {}
-            if (!resp) { modalFail('Import failed'); return; }
-            if (resp.error) {
-                modalFail(resp.error);
-                if (resp.details) pushError(resp.error, resp.details);
+        PT.postJson(t.url(), PT.contentForm(_pendingRaw.raw), function(resp, error, xhr) {
+            var data = mutationPayload(resp, error), unknown = mutationUncertain(data, error, xhr);
+            var details = mutationDetails(data, error);
+            if (error || !data || data.success !== true || unknown) {
+                var applied = data && data.applied === true;
+                var text = unknown ? (applied ? t.name + ' configuration saved; finishing result unknown. ' : 'Import result unknown. ') + 'Inspect the configuration and reload before another import; no request was retried.' :
+                    applied ? t.name + ' configuration saved, but import finishing failed; service restart unverified.' :
+                        'Import failed: ' + (data && data.error || error && error.message || 'Invalid response');
+                if (details) pushError(text, details);
+                if (sequence === reviewSequence && name === 'podkop' && applied) reviewRollbackBtn.style.display = 'inline-block';
+                serviceWatchers[name].refresh();
+                finishOperation(sequence, text, 'error', details, unknown);
                 return;
             }
-            if (resp.success && resp.restarting && t.poll) {
-                reviewStatusEl.textContent = 'Restarting ' + t.name.toLowerCase() + '...';
-                podkopWatcher.poll(
-                    function() {
-                        reviewStatusEl.textContent = 'Imported successfully. Podkop is running.';
-                        reviewStatusEl.style.color = PT.color('success');
-                        finishImportModal();
-                    },
-                    function() {
-                        reviewStatusEl.textContent = t.name + ' did not start after import.';
-                        reviewStatusEl.style.color = PT.color('error');
-                        reviewRollbackBtn.style.display = 'inline-block';
-                        finishImportModal();
-                    }
-                );
-            } else {
-                reviewStatusEl.textContent = 'Imported successfully.';
-                reviewStatusEl.style.color = PT.color('success');
-                finishImportModal();
+            function finish(result) {
+                if (sequence === reviewSequence && name === 'podkop' && !(result && result.confirmed === true)) reviewRollbackBtn.style.display = 'inline-block';
+                finishOperation(sequence, t.name + ' configuration imported to disk. ' + processMessage(name, result),
+                    result && result.confirmed === true ? 'success' : 'warning', null, false);
             }
+            if (data.restarting === true) {
+                operationStatus(sequence, t.name + ' configuration saved. Verifying service process transition...', 'info');
+                serviceWatchers[name].poll(finish, finish, data);
+            } else finish(null);
         });
     }
 
     reviewRollbackBtn.addEventListener('click', function() {
+        if (importPending || importUncertain || reviewRollbackBtn.style.display === 'none') return;
+        var sequence = reviewSequence;
+        importPending = true;
+        importControls();
         reviewRollbackBtn.style.display = 'none';
-        reviewStatusEl.textContent = 'Rolling back...';
-        reviewStatusEl.style.color = PT.color('info');
-        PT.xhrPost(PT.urls.rollback, '', function(xhr) {
-            if (!xhr) {
-                reviewStatusEl.textContent = 'Rollback network error';
-                reviewStatusEl.style.color = PT.color('error');
+        operationStatus(sequence, 'Restoring the Podkop backup...', 'info');
+        PT.postJson(PT.urls.rollback, '', function(resp, error, xhr) {
+            var data = mutationPayload(resp, error), unknown = mutationUncertain(data, error, xhr);
+            if (error || !data || data.success !== true || unknown) {
+                var text = unknown ? (data && data.applied === true ? 'Podkop backup restored; finishing result unknown. ' : 'Rollback result unknown. ') + 'Inspect the configuration and reload before another mutation.' : data && data.applied === true ?
+                    'Podkop configuration restored to disk, but service restart failed or is unverified.' : 'Rollback failed: ' + (data && data.error || error && error.message || 'Invalid response');
+                podkopWatcher.refresh();
+                finishOperation(sequence, text, 'error', mutationDetails(data, error), unknown);
                 return;
             }
-            try {
-                var resp = JSON.parse(xhr.responseText);
-                if (resp.success) {
-                    reviewStatusEl.textContent = 'Rolled back. Restarting...';
-                    reviewStatusEl.style.color = PT.color('info');
-                    podkopWatcher.poll(
-                        function() {
-                            reviewStatusEl.textContent = 'Rolled back successfully.';
-                            reviewStatusEl.style.color = PT.color('success');
-                        },
-                        function() {
-                            reviewStatusEl.textContent = 'Rollback done but sing-box still not running.';
-                            reviewStatusEl.style.color = PT.color('warning');
-                        }
-                    );
-                } else {
-                    reviewStatusEl.textContent = 'Rollback failed: ' + (resp.error || '');
-                    reviewStatusEl.style.color = PT.color('error');
-                }
-            } catch (e) {
-                reviewStatusEl.textContent = 'Rollback failed';
-                reviewStatusEl.style.color = PT.color('error');
+            function finish(result) {
+                finishOperation(sequence, 'Podkop configuration restored to disk. ' + processMessage('podkop', result),
+                    result && result.confirmed === true ? 'success' : 'warning', null, false);
             }
+            if (data.restarting === true) {
+                operationStatus(sequence, 'Backup restored. Verifying service process transition...', 'info');
+                podkopWatcher.poll(finish, finish, data);
+            } else finish(null);
         });
     });
 

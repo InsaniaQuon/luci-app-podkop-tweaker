@@ -72,7 +72,7 @@ Author: InsaniaQuon
             <ul style="margin:6px 0 0;padding-left:20px;">
                 <li><strong>Podkop:</strong> Opens a terminal window (ttyd) for interactive update. Backup is created automatically. Click Refresh after completion.</li>
                 <li><strong>Podkop Tweaker:</strong> LuCI will restart during update. Page reloads automatically. Do not power off the router.</li>
-                <li><strong>Argon Theme:</strong> Typography settings are saved before the update and restored (with CSS reinjection) after it. LuCI will restart; the page reloads automatically.</li>
+                <li><strong>Argon Theme:</strong> Updates the theme and its installed companion packages, preserving settings and typography (with CSS reinjection). A saved update plan can be resumed explicitly. LuCI restarts after completion; the page reloads automatically.</li>
                 <li><strong>Clear Cache:</strong> Clears LuCI internal cache and restarts the web interface. Use if the page shows outdated information after an update.</li>
                 <li><strong>Check for updates:</strong> Forces a fresh check for Podkop, Podkop Tweaker and Argon Theme. Otherwise each source is checked automatically once a day.</li>
             </ul>
@@ -117,10 +117,12 @@ window.PT = {
     var tweakerDownloadUrl = '';
     var lastData = null;
     var webPending = false;
+    var webGeneration = 0;
 
     function runWebUpdate(url, params, status, button, expectedVersion, target) {
         if (webPending) return;
         webPending = true;
+        webGeneration++;
         checkUpdatesBtn.disabled = refreshBtn.disabled = clearCacheBtn.disabled = true;
         if (button) button.disabled = true;
         PT.restartAction({ target: target, url: url, params: params, status: status, expectedVersion: expectedVersion,
@@ -129,6 +131,15 @@ window.PT = {
                 webPending = false;
                 checkUpdatesBtn.disabled = refreshBtn.disabled = clearCacheBtn.disabled = false;
                 if (button) button.disabled = false;
+                if (target === 'theme' && error.kind === 'application' && lastData) {
+                    lastData.argon_theme_resume_available = error.resume_available === true;
+                    lastData.argon_theme_phase = error.phase || null;
+                    // Relabel in place: keep the complete installer error/details.
+                    if (button) {
+                        button.textContent = error.resume_available ? 'Resume Theme Update' : 'Update Theme';
+                        button.title = error.phase ? 'Failed stage: ' + error.phase : '';
+                    }
+                }
             }
         });
     }
@@ -159,10 +170,10 @@ window.PT = {
     function renderRows(data) {
         // Podkop: version + "Update available" only when an update exists
         var podkopCell = document.getElementById('ps-info-podkop');
-        var pv = PT.escapeHtml(data.podkop_version || 'unknown');
+        var pv = data.podkop_version || 'unknown';
         var pl = data.podkop_latest_version;
         if (data.update_available && pl && pl !== 'unknown') {
-            podkopCell.innerHTML = pv + ' <span class="ps-ver-outdated">(Update available ' + PT.escapeHtml(pl) + ')</span>';
+            podkopCell.innerHTML = PT.escapeHtml(pv) + ' <span class="ps-ver-outdated">(Update available ' + PT.escapeHtml(pl) + ')</span>';
             updatePodkopBtn.style.display = 'inline-block';
         } else {
             podkopCell.textContent = pv;
@@ -234,6 +245,7 @@ window.PT = {
         var cell = document.getElementById('ps-info-argon');
         var ver = data.argon_theme_version;
         var latest = data.argon_theme_latest;
+        var resume = data.argon_theme_resume_available === true;
 
         // no installed theme -> hide the row entirely, keep the table layout intact
         if (!ver) {
@@ -243,25 +255,36 @@ window.PT = {
         }
         if (row) row.style.display = '';
 
+        // The backend also considers APK revisions, compat/locales and recovery.
+        // Equal theme versions can still need an update; JS semver is not a gate.
         var v = PT.escapeHtml(ver);
-        if (latest && versionLt(ver, latest)) {
-            cell.innerHTML = v + ' <span class="ps-ver-outdated">(Update available ' + PT.escapeHtml(latest) + ')</span>' +
-                ' <button class="btn cbi-button cbi-button-apply" id="ps-argon-update-btn" style="font-size:12px;padding:2px 8px">Update Theme</button>' +
+        if (!data.argon_theme_error && (data.argon_theme_update_available === true || resume)) {
+            var notice = (resume ? 'Resume available' : 'Update available') + (latest ? ' ' + latest : '');
+            if (resume && data.argon_theme_phase) notice += '; phase: ' + data.argon_theme_phase;
+            cell.innerHTML = v + ' <span class="ps-ver-outdated">(' + PT.escapeHtml(notice) + ')</span>' +
+                ' <button class="btn cbi-button cbi-button-apply" id="ps-argon-update-btn" style="font-size:12px;padding:2px 8px">' + (resume ? 'Resume Theme Update' : 'Update Theme') + '</button>' +
                 '<span id="ps-argon-status" style="font-size:12px;margin-left:6px"></span>';
             var btn = document.getElementById('ps-argon-update-btn');
-            if (btn) btn.addEventListener('click', doUpdateArgon);
+            if (btn) { btn.disabled = webPending; btn.addEventListener('click', doUpdateArgon); }
         } else {
-            cell.textContent = v;
+            cell.textContent = ver + (data.argon_theme_error ? ' ' : '');
+            if (data.argon_theme_error) {
+                var status = document.createElement('span');
+                cell.appendChild(status);
+                PT.setErr(status, data.argon_theme_error, data.argon_theme_details);
+            }
         }
     }
 
     function loadInfo() {
+        var generation = webGeneration;
         loadingEl.style.display = 'block';
         tableEl.style.display = 'none';
         errorEl.style.display = 'none';
         actionsEl.style.display = 'none';
 
         PT.getJson(PT.urls.systemInfo, function(data, status) {
+            if (generation !== webGeneration) return;
             if (data) {
                 renderInfo(data);
             } else if (status === 0) {
@@ -273,19 +296,18 @@ window.PT = {
     }
 
     function doCheckUpdates() {
+        if (webPending) return;
+        var generation = webGeneration;
         checkUpdatesBtn.disabled = true;
         setUpdateStatus('Checking for updates...', '#2196f3');
 
-        PT.xhrPost(PT.urls.checkUpdates, '', function(xhr) {
+        PT.postJson(PT.urls.checkUpdates, '', function(resp, error) {
+            // A check begun before installation must not erase its failure or
+            // unlock/replace the read-only verification UI after response loss.
+            if (generation !== webGeneration) return;
             checkUpdatesBtn.disabled = false;
-            if (!xhr || xhr.status !== 200) {
-                setUpdateStatus(xhr ? 'HTTP error' : 'Network error', '#f44336');
-                return;
-            }
-            var resp = null;
-            try { resp = JSON.parse(xhr.responseText); } catch (e) {}
-            if (!resp) {
-                setUpdateStatus('Invalid response', '#f44336');
+            if (error) {
+                PT.setErr(updateStatus, error.message, error.details);
                 return;
             }
 
@@ -303,10 +325,15 @@ window.PT = {
                 lastData.tweaker_download_url = tw.download_url || '';
             }
             var th = resp.theme || {};
-            if (!th.error) {
-                if (th.current_version) lastData.argon_theme_version = th.current_version;
-                lastData.argon_theme_latest = th.latest_version || null;
-            }
+            // Replace the whole decision, including errors/absence and cleared
+            // recovery state. Never retain an actionable stale Argon result.
+            lastData.argon_theme_version = th.current_version || null;
+            lastData.argon_theme_latest = th.latest_version || null;
+            lastData.argon_theme_update_available = th.update_available === true;
+            lastData.argon_theme_resume_available = th.resume_available === true;
+            lastData.argon_theme_phase = th.phase || null;
+            lastData.argon_theme_error = th.error || null;
+            lastData.argon_theme_details = th.details || null;
 
             renderRows(lastData);
             var bits = [];
@@ -315,11 +342,11 @@ window.PT = {
             if (tw.error === 'rate_limited') bits.push('Tweaker: checked just now');
             else if (tw.error) bits.push('Tweaker: error');
             else bits.push('Tweaker: ' + (tw.update_available ? 'update available' : 'up to date'));
-            if (!th.error && lastData.argon_theme_version) {
-                bits.push('Argon: ' + (th.update_available ? 'update available' : 'up to date'));
+            if (lastData.argon_theme_version) {
+                bits.push('Argon: ' + (th.error ? 'error' : th.resume_available ? 'resume available' : th.update_available ? 'update available' : 'up to date'));
             }
-            setUpdateStatus(bits.join('  |  '), '#4caf50');
-        });
+            setUpdateStatus(bits.join('  |  '), th.error && lastData.argon_theme_version ? 'error' : 'success');
+        }, 120000);
     }
 
     function doUpdatePodkop() {
@@ -349,12 +376,16 @@ window.PT = {
     }
 
     function doUpdateArgon() {
-        if (!confirm('Update the Argon theme?\n\nTypography settings are saved and restored automatically (including CSS reinjection).\nThe web interface will restart and the page will reload.')) return;
+        if (webPending || !lastData || lastData.argon_theme_error ||
+            !(lastData.argon_theme_update_available === true || lastData.argon_theme_resume_available === true)) return;
+        var resume = lastData.argon_theme_resume_available === true;
+        if (!confirm((resume ? 'Resume the saved Argon theme update?' : 'Update the Argon theme and its installed companion packages?') +
+            '\n\nSettings and typography are preserved (including CSS reinjection).\nThe web interface will restart after completion and the page will reload.')) return;
 
         var btn = document.getElementById('ps-argon-update-btn');
         var statusEl = document.getElementById('ps-argon-status');
         if (btn) btn.disabled = true;
-        if (statusEl) { statusEl.textContent = 'Updating...'; statusEl.style.color = PT.color('info'); }
+        if (statusEl) { statusEl.textContent = resume ? 'Resuming...' : 'Updating...'; statusEl.style.color = PT.color('info'); }
 
         runWebUpdate(PT.urls.argonThemeUpdate, '', statusEl, btn, lastData && lastData.argon_theme_latest, 'theme');
     }
@@ -363,9 +394,9 @@ window.PT = {
         if (webPending || !tweakerDownloadUrl) return;
         var confirmed;
         if (isDowngrade) {
-            confirmed = confirm('Your version is newer than the repository version (' + tweakerLatest + ').\n\nDowngrade to v' + PT.escapeHtml(tweakerLatest) + '?\n\nThe web interface will restart during the update.');
+            confirmed = confirm('Your version is newer than the repository version (' + tweakerLatest + ').\n\nDowngrade to v' + tweakerLatest + '?\n\nThe web interface will restart during the update.');
         } else {
-            confirmed = confirm('Update Podkop Tweaker to v' + PT.escapeHtml(tweakerLatest) + '?\n\nThe web interface will restart during the update.');
+            confirmed = confirm('Update Podkop Tweaker to v' + tweakerLatest + '?\n\nThe web interface will restart during the update.');
         }
         if (!confirmed) return;
 
@@ -392,6 +423,7 @@ window.PT = {
     checkUpdatesBtn.addEventListener('click', doCheckUpdates);
 
     refreshBtn.addEventListener('click', function() {
+        if (webPending) return;
         setUpdateStatus('', '');
         loadInfo();
     });

@@ -156,6 +156,18 @@ describe("validate_uci_config", function()
         assert.is_true(ok)
     end)
 
+    it("accepts native UCI escaped apostrophes and adjacent quoted fragments across lines", function()
+        local cfg = "config global\n option note 'it'\\''s a multiline\nvalue'\n option other 'a'\"b\"'c'\n"
+        local ok, err = LIB.validate_uci_config(cfg)
+        assert.is_true(ok, err)
+    end)
+
+    it("keeps escaped double quotes inside a multiline quoted value", function()
+        local cfg = 'config global\n option note "say \\"hello\\"\nsecond line" # comment with an unmatched "\n'
+        local ok, err = LIB.validate_uci_config(cfg)
+        assert.is_true(ok, err)
+    end)
+
     it("accepts comment lines containing apostrophes", function()
         local ok = LIB.validate_uci_config("config a\n# it's fine here\n\toption k 'v'\n")
         assert.is_true(ok)

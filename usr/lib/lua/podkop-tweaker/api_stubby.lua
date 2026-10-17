@@ -1,9 +1,8 @@
--- Podkop Tweaker | v4.8.1 | 09.10.2026 | error-only template logging and canonical DNS.SB TLS name
+-- Podkop Tweaker | v4.10.2 | 17.10.2026 | Checked service application and owned init repair
 -- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
-local S = require("pt-subs-lib")
 
 local M = {}
 M.CONFIG_MAX_SIZE = LIB.UCI_MAX_SIZE
@@ -68,21 +67,7 @@ function M.save_config(content)
     if not ok then
         return { error = err }
     end
-    local orig = SRV.read_file(SRV.stubby.config)
-    if orig then
-        if orig == content then
-            return { success = true, unchanged = true }
-        end
-        if not SRV.backup_current(SRV.stubby) then
-            return { error = "Cannot create backup" }
-        end
-    end
-    ok, err = SRV.write_file_atomic(SRV.stubby.config, content)
-    if not ok then
-        return { error = err }
-    end
-    require("luci.sys").exec(SRV.stubby.restart_cmd)
-    return { success = true, restarting = true }
+    return SRV.apply_service(SRV.stubby, content, { skip_unchanged = true })
 end
 
 function M.service_status()
@@ -144,12 +129,12 @@ function M.chain_info()
 end
 
 function M.init_check()
-    local fd = io.open("/etc/init.d/stubby", "r")
-    if not fd then
-        return { status = "not_installed" }
+    local content, err, errno = SRV.read_file("/etc/init.d/stubby", LIB.UCI_MAX_SIZE)
+    if not content then
+        if errno == 2 then return { status = "not_installed" } end
+        return { error = "Cannot read init script", details = err }
     end
-    local content = fd:read("*a")
-    fd:close()
+    if not content:match("%S") then return { error = "Init script is empty" } end
 
     if content:match("procd_set_param user stubby") then
         return { status = "needs_fix" }
@@ -158,36 +143,62 @@ function M.init_check()
 end
 
 function M.init_fix()
-    local sys = require("luci.sys")
+    local function repair_locked()
+        local path = "/etc/init.d/stubby"
+        local source, read_err, errno = SRV.read_file(path, LIB.UCI_MAX_SIZE)
+        if not source then
+            return { error = errno == 2 and "Init script not found" or "Cannot read init script", details = read_err }
+        end
+        if not source:match("%S") then return { error = "Init script is empty" } end
+        if not source:match("procd_set_param user stubby") then
+            return { success = true, message = "Already fixed" }
+        end
 
-    local fd = io.open("/etc/init.d/stubby", "r")
-    if not fd then
-        return { error = "Init script not found" }
-    end
-    local content = fd:read("*a")
-    fd:close()
+        local content = source:gsub("procd_set_param user stubby", "procd_set_param user root")
+        local stage, stage_err = SRV.stage_file(path, content, { suffix = ".tmp-fix", executable = true })
+        if not stage then return { success = false, error = "Cannot write init script", details = stage_err } end
 
-    if not content:match("procd_set_param user stubby") then
-        return { success = true, message = "Already fixed" }
-    end
+        local function fail(message, details)
+            local cleaned, cleanup_err = SRV.discard_stage(stage)
+            if not cleaned then
+                local cleanup = "Cannot remove owned init stage " .. stage .. ": " .. tostring(cleanup_err or "Cleanup failed")
+                details = details and (details .. "\n" .. cleanup) or cleanup
+            end
+            return { success = false, error = message, details = details, cleanup_failed = not cleaned or nil }
+        end
 
-    content = content:gsub("procd_set_param user stubby", "procd_set_param user root")
-    local tmp_path = "/etc/init.d/stubby.tmp-fix"
-    local tmpfd = io.open(tmp_path, "w")
-    if not tmpfd then
-        return { error = "Cannot write init script" }
+        local ok, details = SRV.exec_checked("sh -n " .. LIB.shell_escape(stage))
+        if not ok then
+            return fail("Init script syntax check failed", details)
+        end
+        ok, details = SRV.exec_checked("chmod 755 " .. LIB.shell_escape(stage))
+        if not ok then
+            return fail("Cannot set init script permissions", details)
+        end
+        local current, current_err = SRV.read_file(path, LIB.UCI_MAX_SIZE)
+        if current ~= source then
+            return fail(current and "Init script changed during repair" or "Cannot re-read init script", current_err)
+        end
+        ok, details = SRV.publish_file(stage, path)
+        if not ok then
+            return fail("Cannot apply init script fix", details)
+        end
+        local result = SRV.restart_service(SRV.ops.stubby)
+        result.applied = true
+        return result
     end
-    tmpfd:write(content)
-    tmpfd:close()
-    local output = sys.exec("chmod +x " .. tmp_path .. " && mv " .. tmp_path .. " /etc/init.d/stubby 2>&1; echo EXIT:$?")
-    local exit_code = output:match("EXIT:(%d+)") or "1"
-    if exit_code ~= "0" then
-        os.remove(tmp_path)
-        return { error = "Cannot apply init script fix" }
+    local outcome
+    local resp, lock_err, uncertain = SRV.with_lock("stubby", function()
+        outcome = repair_locked()
+        return outcome
+    end)
+    if not resp then
+        local failure = outcome or {}
+        if failure.error then failure.details = failure.error .. (failure.details and ("\n" .. failure.details) or "") end
+        failure.success, failure.error, failure.unknown = false, lock_err, uncertain or nil
+        return failure
     end
-    sys.exec("/etc/init.d/stubby restart 2>&1")
-
-    return { success = true }
+    return resp
 end
 
 function M.import_config(content)
@@ -198,47 +209,34 @@ function M.import_config(content)
     if not ok then
         return { error = err }
     end
-    if not S.backup_stubby_config() then
-        return { error = "Cannot create backup" }
-    end
-    ok, err = SRV.write_file_atomic(SRV.stubby.config, content)
-    if not ok then
-        return { error = err }
-    end
-    require("luci.sys").exec(SRV.stubby.restart_cmd)
-    return { success = true, restarting = true }
+    return SRV.apply_service(SRV.stubby, content)
 end
 
 function M.apply_recommended()
-    if not S.backup_stubby_config() then
-        return { error = "Cannot create backup" }
-    end
-    local ok, err = SRV.write_file_atomic(SRV.stubby.config, STUBBY_RECOMMENDED)
-    if not ok then
-        return { error = err }
-    end
-    require("luci.sys").exec(SRV.stubby.restart_cmd)
-    return { success = true, restarting = true }
+    return SRV.apply_service(SRV.stubby, STUBBY_RECOMMENDED)
 end
 
 function M.autostart()
-    local links = require("luci.sys").exec("ls /etc/rc.d/S*stubby 2>/dev/null")
-    return {
-        enabled = (links and links ~= "")
-    }
+    local ok, links = SRV.exec_checked("[ -d /etc/rc.d ] && [ -r /etc/rc.d ] && [ -x /etc/rc.d ] || exit 1; " ..
+        "for link in /etc/rc.d/S*stubby; do " ..
+        "if [ -L \"$link\" ] || [ -e \"$link\" ]; then printf '%s\\n' \"$link\"; fi; done")
+    if not ok then return { error = "Cannot read Stubby autostart state", details = links } end
+    return { enabled = links:match("%S") ~= nil }
 end
 
 function M.autostart_toggle(action)
     if action ~= "enable" and action ~= "disable" then
         return { error = "Invalid action" }
     end
-    local sys = require("luci.sys")
-    sys.exec("/etc/init.d/stubby " .. action .. " 2>&1")
-    local links = sys.exec("ls /etc/rc.d/S*stubby 2>/dev/null")
-    return {
-        success = true,
-        enabled = (links and links ~= "")
-    }
+    local ok, details = SRV.exec_checked("/etc/init.d/stubby " .. action)
+    if not ok then return { success = false, error = "Stubby autostart command failed", details = details } end
+    local resp = M.autostart()
+    if resp.error then resp.success = false; return resp end
+    if resp.enabled ~= (action == "enable") then
+        return { success = false, error = "Stubby autostart state did not change as requested", enabled = resp.enabled }
+    end
+    resp.success = true
+    return resp
 end
 
 return M

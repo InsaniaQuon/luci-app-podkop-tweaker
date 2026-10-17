@@ -213,7 +213,9 @@ window.PT = {
         if (PT.openPodkopDiagnostics(this.href)) event.preventDefault();
     });
 
-    var _chainUpstreamNames = [];
+    var DNS_UNKNOWN_RESOLVERS = 16, MAX_DNS_TIMER_DELAY = 2147483647;
+    var _chainUpstreamNames = [], _chainResolverCount = DNS_UNKNOWN_RESOLVERS;
+    var pageHidden = false, runSequence = 0, activeRun = null;
 
     // === Run Log (session-scoped, cleared before each run) ===
     var RUNLOG_KEY = 'pt-diag-run-log';
@@ -348,12 +350,27 @@ window.PT = {
         return '<span class="ps-chain-line" id="' + id + '">' + PT.escapeHtml(text) + '</span>';
     }
 
-    function buildChainHtml(data) {
+    function chainResolvers(data) {
+        if (!envelope(data)) return null;
+        if (emptyObject(data.resolvers)) return [];
+        if (!Array.isArray(data.resolvers)) return null;
+        var rows = data.resolvers;
+        // Visit every index: Array.every skips holes, which cannot establish a
+        // typed resolver count. Array-like objects never supply the count.
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            if (!Object.prototype.hasOwnProperty.call(rows, i) || !object(row) || typeof row.address !== 'string' ||
+                row.tls_auth_name !== undefined && typeof row.tls_auth_name !== 'string') return null;
+        }
+        return rows;
+    }
+
+    function buildChainHtml(data, resolvers) {
         var stubbyListen = data.stubby_listen || '127.0.0.53@53';
         var podkopDns = data.podkop_dns || '127.0.0.53';
-        var resolvers = data.resolvers || [];
+        _chainResolverCount = resolvers.length;
 
-        var grouped = {};
+        var grouped = Object.create(null);
         var orderedNames = [];
         for (var i = 0; i < resolvers.length; i++) {
             var r = resolvers[i];
@@ -390,8 +407,10 @@ window.PT = {
 
     function loadChain() {
         PT.getJson(PT.urls.chainInfo, function(data, status) {
-            if (data) {
-                document.getElementById('ps-chain-content').innerHTML = buildChainHtml(data);
+            if (pageHidden) return;
+            var resolvers = chainResolvers(data);
+            if (resolvers) {
+                document.getElementById('ps-chain-content').innerHTML = buildChainHtml(data, resolvers);
             } else {
                 document.getElementById('ps-chain-content').textContent =
                     (status === 0) ? 'Network error' : 'Failed to load chain info';
@@ -460,267 +479,306 @@ window.PT = {
         }
     }
 
-    function runDnsTest(onDone) {
-        var loading = document.getElementById('ps-dns-loading');
-        var table = document.getElementById('ps-dns-table');
+    function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+    function emptyObject(value) { return object(value) && Object.keys(value).length === 0; }
+    function text(value) { return typeof value === 'string' && value.length > 0; }
+    function nonnegative(value) { return typeof value === 'number' && isFinite(value) && value >= 0; }
+    function diagnosticStatus(value) { return value === 'OK' || value === 'FAIL'; }
+    function envelope(resp) { return object(resp) && resp.error === undefined && resp.unknown !== true && (resp.success === undefined || resp.success === true); }
+    function httpResult(row) {
+        return object(row) && nonnegative(row.http_code) && row.http_code <= 599 && row.http_code % 1 === 0 &&
+            nonnegative(row.time_ms) && diagnosticStatus(row.status) &&
+            (row.status === 'OK') === (row.http_code >= 200 && row.http_code < 400);
+    }
+    function failure(error, xhr, status) {
+        return { status: status || 'ERROR', error: text(error.message) ? error.message : 'Invalid error response', details: error.details,
+            data: object(error.data) ? error.data : (error.details ? { details: error.details } : null),
+            httpStatus: xhr ? xhr.status : 0 };
+    }
+    function invalid(resp, xhr, message) {
+        return failure({ message: message, data: resp, details: resp && resp.details }, xhr);
+    }
+    function failureText(outcome) {
+        var lines = [outcome.error], original = outcome.data && outcome.data.error;
+        if (original && original !== outcome.error) lines.push(formatValue(original));
+        if (outcome.details) lines.push(formatValue(outcome.details));
+        return lines.join('\n');
+    }
+    function dnsOutcome(resp, error, xhr) {
+        if (error) return failure(error, xhr);
+        if (!envelope(resp) || !Array.isArray(resp.results) || !resp.results.length || !resp.results.every(function(row) {
+            return object(row) && text(row.source) && text(row.target) && typeof row.ip === 'string' &&
+                diagnosticStatus(row.status) && (row.status !== 'OK' || text(row.ip));
+        })) return invalid(resp, xhr, 'Invalid DNS response');
+        return { status: resp.results.every(function(row) { return row.status === 'OK'; }) ? 'OK' : 'FAIL', data: { rows: resp.results } };
+    }
+    function proxyOutcome(resp, error, xhr) {
+        // Missing mixed inbound/stopped sing-box are diagnostic FAILs, not transport failures.
+        if (error) return failure(error, xhr, error.kind === 'application' && object(error.data) && text(error.data.error) ? 'FAIL' : 'ERROR');
+        if (!envelope(resp) || !Array.isArray(resp.results) || !resp.results.length || !resp.results.every(function(row) {
+            return httpResult(row) && text(row.source);
+        })) return invalid(resp, xhr, 'Invalid proxy response');
+        var first = resp.results[0];
+        // The legacy summary/top-level fields describe the first result; all
+        // validated rows still belong to the table and exact run-log payload.
+        return { status: first.status,
+            data: { http_code: first.http_code, time_ms: first.time_ms, source: first.source, results: resp.results } };
+    }
+    function e2eOutcome(resp, error, xhr) {
+        if (error) return failure(error, xhr);
+        if (!envelope(resp) || !httpResult(resp) || !text(resp.external_ip)) return invalid(resp, xhr, 'Invalid end-to-end response');
+        return { status: resp.status, data: { external_ip: resp.external_ip, http_code: resp.http_code, time_ms: resp.time_ms } };
+    }
+
+    function errorRow(body, message) {
+        var row = document.createElement('tr'), cell = document.createElement('td');
+        cell.colSpan = 4; cell.style.color = PT.color('error'); cell.style.whiteSpace = 'pre-wrap';
+        cell.style.wordBreak = 'break-word';
+        cell.textContent = message; row.appendChild(cell); body.appendChild(row);
+    }
+    function prepareTable(kind) {
+        document.getElementById('ps-' + kind + '-table').style.display = 'none';
+        document.getElementById('ps-' + kind + '-body').innerHTML = '';
+    }
+    function renderDns(outcome) {
         var body = document.getElementById('ps-dns-body');
-        loading.style.display = 'block';
-        table.style.display = 'none';
-        body.innerHTML = '';
-        var t0 = Date.now();
-
-        PT.xhrPost(PT.urls.diagDns, '', function(xhr) {
-            loading.style.display = 'none';
-            if (!xhr || xhr.status !== 200) {
-                body.innerHTML = '<tr><td colspan="4" style="color:var(--ps-error);">Request failed</td></tr>';
-                table.style.display = '';
-                appendRunLog('DNS Resolution Test', 'ERROR', null, 'Request failed', Date.now() - t0, xhr ? xhr.status : 0);
-                if (onDone) onDone(null);
-                return;
-            }
-            try {
-                var resp = JSON.parse(xhr.responseText);
-                var results = resp.results || [];
-                for (var i = 0; i < results.length; i++) {
-                    var r = results[i];
-                    var tr = document.createElement('tr');
-                    tr.innerHTML = '<td>' + PT.escapeHtml(r.source) + '</td>' +
-                        '<td>' + PT.escapeHtml(r.target) + '</td>' +
-                        '<td>' + PT.escapeHtml(r.ip || '\u2014') + '</td>' +
-                        '<td>' + statusCell(r.status) + '</td>';
-                    body.appendChild(tr);
-                }
-                table.style.display = '';
-                highlightDns(results);
-                var allOk = true;
-                for (var k = 0; k < results.length; k++) {
-                    if (results[k].status !== 'OK') allOk = false;
-                }
-                appendRunLog('DNS Resolution Test', allOk ? 'OK' : 'FAIL', { rows: results }, '', Date.now() - t0);
-                if (onDone) onDone(results);
-            } catch (e) {
-                body.innerHTML = '<tr><td colspan="4" style="color:var(--ps-error);">Parse error</td></tr>';
-                table.style.display = '';
-                appendRunLog('DNS Resolution Test', 'ERROR', null, 'Parse error', Date.now() - t0, xhr.status);
-                if (onDone) onDone(null);
-            }
-        });
+        if (outcome.error) errorRow(body, failureText(outcome));
+        else {
+            outcome.data.rows.forEach(function(r) {
+                var tr = document.createElement('tr');
+                tr.innerHTML = '<td>' + PT.escapeHtml(r.source) + '</td><td>' + PT.escapeHtml(r.target) + '</td><td>' +
+                    PT.escapeHtml(r.ip || '\u2014') + '</td><td>' + statusCell(r.status) + '</td>';
+                body.appendChild(tr);
+            });
+            highlightDns(outcome.data.rows);
+        }
+        document.getElementById('ps-dns-table').style.display = '';
     }
-
-    function runProxyTest(onDone) {
-        var loading = document.getElementById('ps-proxy-loading');
-        var table = document.getElementById('ps-proxy-table');
+    function renderProxy(outcome) {
         var body = document.getElementById('ps-proxy-body');
-        var errorDiv = document.getElementById('ps-proxy-error');
-        loading.style.display = 'block';
-        table.style.display = 'none';
-        errorDiv.style.display = 'none';
-        body.innerHTML = '';
-        var t0 = Date.now();
-
-        PT.xhrPost(PT.urls.diagProxy, '', function(xhr) {
-            loading.style.display = 'none';
-            if (!xhr || xhr.status !== 200) {
-                body.innerHTML = '<tr><td colspan="4" style="color:var(--ps-error);">Request failed</td></tr>';
-                table.style.display = '';
-                appendRunLog('Proxy Connectivity Test', 'ERROR', null, 'Request failed', Date.now() - t0, xhr ? xhr.status : 0);
-                if (onDone) onDone(null);
-                return;
-            }
-            try {
-                var resp = JSON.parse(xhr.responseText);
-                if (resp.error) {
-                    errorDiv.textContent = resp.error;
-                    errorDiv.style.display = '';
-                    highlightProxy([{status: 'FAIL'}]);
-                    appendRunLog('Proxy Connectivity Test', 'FAIL', { error: resp.error }, '', Date.now() - t0);
-                    if (onDone) onDone(null);
-                    return;
-                }
-                var results = resp.results || [];
-                for (var i = 0; i < results.length; i++) {
-                    var r = results[i];
-                    var tr = document.createElement('tr');
-                    tr.innerHTML = '<td>' + PT.escapeHtml(r.source) + '</td>' +
-                        '<td>' + (r.http_code || '\u2014') + '</td>' +
-                        '<td>' + (r.time_ms || '\u2014') + ' ms</td>' +
-                        '<td>' + statusCell(r.status) + '</td>';
-                    body.appendChild(tr);
-                }
-                table.style.display = '';
-                highlightProxy(results);
-                appendRunLog('Proxy Connectivity Test',
-                    (results[0] || {}).status === 'OK' ? 'OK' : 'FAIL',
-                    { http_code: (results[0] || {}).http_code, time_ms: (results[0] || {}).time_ms, source: (results[0] || {}).source, results: results },
-                    '', Date.now() - t0);
-                if (onDone) onDone(results);
-            } catch (e) {
-                body.innerHTML = '<tr><td colspan="4" style="color:var(--ps-error);">Parse error</td></tr>';
-                table.style.display = '';
-                appendRunLog('Proxy Connectivity Test', 'ERROR', null, 'Parse error', Date.now() - t0, xhr.status);
-                if (onDone) onDone(null);
-            }
-        });
+        if (outcome.error) {
+            var errorDiv = document.getElementById('ps-proxy-error');
+            errorDiv.textContent = failureText(outcome); errorDiv.style.whiteSpace = 'pre-wrap'; errorDiv.style.wordBreak = 'break-word'; errorDiv.style.display = '';
+            highlightProxy([{ status: 'FAIL' }]);
+        } else {
+            outcome.data.results.forEach(function(r) {
+                var tr = document.createElement('tr');
+                tr.innerHTML = '<td>' + PT.escapeHtml(r.source) + '</td><td>' + (r.http_code || '\u2014') +
+                    '</td><td>' + (r.time_ms || '\u2014') + ' ms</td><td>' + statusCell(r.status) + '</td>';
+                body.appendChild(tr);
+            });
+            document.getElementById('ps-proxy-table').style.display = '';
+            highlightProxy(outcome.data.results);
+        }
+    }
+    function resetE2e() {
+        document.getElementById('ps-e2e-result').style.display = 'none';
+        ['ip','http','time','status'].forEach(function(field) { document.getElementById('ps-e2e-' + field).textContent = '\u2014'; });
+    }
+    function renderE2e(outcome) {
+        resetE2e();
+        document.getElementById('ps-e2e-ip').textContent = outcome.error ? failureText(outcome) : outcome.data.external_ip;
+        document.getElementById('ps-e2e-ip').style.whiteSpace = outcome.error ? 'pre-wrap' : 'normal';
+        if (!outcome.error) {
+            document.getElementById('ps-e2e-http').textContent = outcome.data.http_code || '\u2014';
+            document.getElementById('ps-e2e-time').textContent = outcome.data.time_ms ? outcome.data.time_ms + ' ms' : '\u2014';
+        }
+        document.getElementById('ps-e2e-status').innerHTML = statusCell(outcome.status);
+        document.getElementById('ps-e2e-result').style.display = '';
+        highlightE2e(outcome.status);
     }
 
-    function runLeakTest(onDone) {
-        var loading = document.getElementById('ps-leak-loading');
-        var result = document.getElementById('ps-leak-result');
-        loading.style.display = 'block';
-        result.style.display = 'none';
-        var t0 = Date.now();
-
-        var images = [], finished = false, probeDone = 0;
-        function finish(resp, error, status) {
-            if (finished) return;
-            finished = true;
+    function currentRun(run) { return !pageHidden && activeRun === run && run.sequence === runSequence; }
+    function beginOperation(run, name, kind, render, onDone) {
+        var finished = false, timers = [], images = [], t0 = Date.now();
+        var loading = document.getElementById('ps-' + kind + '-loading');
+        function current() { return !finished && currentRun(run); }
+        function cleanup() {
+            timers.forEach(function(timer) { clearTimeout(timer); });
             images.forEach(function(image) { image.onload = image.onerror = null; image.src = ''; });
+            timers = []; images = [];
             loading.style.display = 'none';
-            result.style.display = '';
-            var resolvers = resp && resp.resolvers || [];
-            var control = resp && resp.control_request_ips || [];
+        }
+        run.cancelStep = function() { finished = true; cleanup(); };
+        loading.style.display = 'block';
+        return {
+            current: current,
+            later: function(fn, delay) { var timer = setTimeout(function() { if (current()) fn(); }, delay); timers.push(timer); },
+            image: function(image) { images.push(image); },
+            finish: function(outcome) {
+                if (!current()) return;
+                finished = true; cleanup(); run.cancelStep = null;
+                render(outcome);
+                appendRunLog(name, outcome.status, outcome.data, outcome.error, Date.now() - t0, outcome.httpStatus);
+                onDone();
+            }
+        };
+    }
+    function localRequest(run, onDone, name, kind, url, timeout, map, render) {
+        var op = beginOperation(run, name, kind, render, onDone);
+        op.later(function() { op.finish(failure({ message: 'Request timed out' }, null)); }, timeout);
+        PT.postJson(url, '', function(resp, error, xhr) {
+            if (op.current()) op.finish(map(resp, error, xhr));
+        }, timeout);
+    }
+    function dnsTimeout(count) {
+        if (!nonnegative(count) || count % 1 !== 0) count = DNS_UNKNOWN_RESOLVERS;
+        var lookups = Math.max(6, count) + 2;
+        // setTimeout's signed 32-bit maximum also fits XHR.timeout. Saturate
+        // before multiplication, so an extreme count cannot wrap into a short
+        // timer or produce a non-finite delay. This is only a client budget:
+        // it neither proves a native nslookup timeout nor stops router commands.
+        if (lookups > (MAX_DNS_TIMER_DELAY - 10000) / 60000) return MAX_DNS_TIMER_DELAY;
+        return lookups * 60000 + 10000;
+    }
+    function runDnsTest(run, onDone) {
+        prepareTable('dns');
+        // Each configured upstream, then Stubby and dnsmasq, is queried serially.
+        // nslookup has no explicit backend deadline: allow a conservative 60s per
+        // lookup, at least six upstreams (16 if chain GET is unknown), plus 10s IO.
+        // Scale with the ungrouped count; a shared 15/30/120s cap would cut valid runs.
+        var timeout = dnsTimeout(_chainResolverCount);
+        localRequest(run, onDone, 'DNS Resolution Test', 'dns', PT.urls.diagDns, timeout, dnsOutcome, renderDns);
+    }
+    function runProxyTest(run, onDone) {
+        prepareTable('proxy');
+        document.getElementById('ps-proxy-error').style.display = 'none';
+        document.getElementById('ps-proxy-error').textContent = '';
+        // One curl -m 10, with 5s for local config/process IO and HTTP delivery.
+        localRequest(run, onDone, 'Proxy Connectivity Test', 'proxy', PT.urls.diagProxy, 15000, proxyOutcome, renderProxy);
+    }
+    function runE2eTest(run, onDone) {
+        resetE2e();
+        // Two sequential curl -m 10 commands, with 5s for IO/delivery.
+        localRequest(run, onDone, 'End-to-End Test', 'e2e', PT.urls.diagE2e, 25000, e2eOutcome, renderE2e);
+    }
+
+    function observationList(value) { return Array.isArray(value) ? value : (emptyObject(value) ? [] : null); }
+    function observedIp(ip) {
+        if (!text(ip) || ip.length > 45) return false;
+        if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return ip.split('.').every(function(part) { return Number(part) <= 255; });
+        if (!/^[0-9a-fA-F:]+$/.test(ip) || ip.indexOf(':') === -1 || ip.indexOf(':::') !== -1) return false;
+        var groups = ip.split(':').filter(function(part) { return part.length; }), compressed = ip.split('::').length - 1;
+        return groups.every(function(part) { return part.length <= 4; }) &&
+            (compressed === 1 ? groups.length < 8 : compressed === 0 && groups.length === 8 && ip.charAt(0) !== ':' && ip.charAt(ip.length - 1) !== ':');
+    }
+    function observationRows(rows) {
+        return rows && rows.length <= 128 && rows.every(function(row) {
+            return object(row) && observedIp(row.ip) && ['asn','country'].every(function(key) {
+                return row[key] === undefined || typeof row[key] === 'string' && row[key].length <= 200;
+            });
+        });
+    }
+    function observationEnvelope(resp) { return envelope(resp) && resp.success === true && resp.provider === 'bash.ws' && resp.scope === 'current_browser'; }
+    function observationStart(resp) {
+        return observationEnvelope(resp) && typeof resp.id === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$/.test(resp.id) &&
+            resp.id.charAt(resp.id.length - 1) !== '-' && Array.isArray(resp.hosts) && resp.hosts.length === 6 &&
+            resp.hosts.every(function(host, i) { return host === (i + 1) + '.' + resp.id + '.bash.ws'; });
+    }
+    function observationResult(resp, id) {
+        return observationEnvelope(resp) && resp.id === id && resp.control_request_scope === 'router' &&
+            observationRows(observationList(resp.resolvers)) && observationRows(observationList(resp.control_request_ips)) &&
+            typeof resp.complete === 'boolean' && resp.complete === (observationList(resp.resolvers).length > 0) && typeof resp.conclusion === 'string';
+    }
+    function runLeakTest(run, onDone) {
+        var probeDone = 0;
+        var noObservations = 'No resolver observations yet; no conclusion about DNS leaks is possible';
+        document.getElementById('ps-leak-result').style.display = 'none';
+        var op = beginOperation(run, 'External DNS Observation (browser)', 'leak', function(outcome) {
+            var resp = outcome.observation, resolvers = resp ? observationList(resp.resolvers) : [], control = resp ? observationList(resp.control_request_ips) : [];
             document.getElementById('ps-leak-upstream').textContent = resolvers.map(function(row) { return row.ip + (row.asn ? ' / ' + row.asn : '') + (row.country ? ' / ' + row.country : ''); }).join('\n') || 'No observations';
             document.getElementById('ps-leak-dnsmasq').textContent = control.map(function(row) { return row.ip; }).join(', ') || '\u2014';
-            document.getElementById('ps-leak-detail').textContent = error || resp.conclusion;
+            document.getElementById('ps-leak-detail').textContent = outcome.error ? failureText(outcome) : 'Resolver observations collected; compare with your intended DNS/routing policy';
             var label = document.getElementById('ps-leak-status');
-            label.textContent = error ? 'INCONCLUSIVE' : 'OBSERVATIONS COLLECTED';
-            label.style.color = PT.color(error ? 'warning' : 'info');
-            var data = resp || { provider: 'bash.ws', scope: 'current_browser' };
-            data.probes_completed = probeDone;
-            appendRunLog('External DNS Observation (browser)', error ? 'ERROR' : 'OK', data, error, Date.now() - t0, status);
-            if (onDone) onDone(resp);
-        }
-        function parseResponse(xhr) {
-            if (!xhr || xhr.status !== 200) return null;
-            try { return JSON.parse(xhr.responseText); } catch (e) { return null; }
+            label.textContent = outcome.status === 'OK' ? 'OBSERVATIONS COLLECTED' : 'INCONCLUSIVE';
+            label.style.color = PT.color(outcome.status === 'OK' ? 'info' : 'warning');
+            document.getElementById('ps-leak-result').style.display = '';
+        }, onDone);
+        function finish(outcome) {
+            if (!op.current()) return;
+            var data = Object.create(null), original = outcome.data || { provider: 'bash.ws', scope: 'current_browser' };
+            Object.keys(original).forEach(function(key) { data[key] = original[key]; });
+            data.probes_completed = probeDone; outcome.data = data;
+            op.finish(outcome);
         }
         function collect(id, attempt) {
-            PT.xhrPost(PT.urls.dnsObservationResults, 'id=' + encodeURIComponent(id), function(xhr) {
-                var resp = parseResponse(xhr);
-                if (!resp || resp.error) { finish(resp, resp && resp.error || 'Cannot read DNS observations', xhr ? xhr.status : 0); return; }
-                if (!resp.complete && attempt < 3) { setTimeout(function() { collect(id, attempt + 1); }, 1500); return; }
-                finish(resp, resp.complete ? '' : resp.conclusion, xhr.status);
-            });
+            if (!op.current()) return;
+            PT.postJson(PT.urls.dnsObservationResults, 'id=' + encodeURIComponent(id), function(resp, error, xhr) {
+                if (!op.current()) return;
+                if (error) { finish(failure(error, xhr)); return; }
+                if (!observationResult(resp, id)) { finish(invalid(resp, xhr, 'Invalid DNS observation response')); return; }
+                if (!resp.complete && attempt < 3) { op.later(function() { collect(id, attempt + 1); }, 1500); return; }
+                finish({ status: resp.complete ? 'OK' : 'ERROR', data: resp, observation: resp,
+                    error: resp.complete ? '' : noObservations, httpStatus: xhr.status });
+            }, 15000);
         }
-        PT.xhrPost(PT.urls.dnsObservationStart, '', function(xhr) {
-            var resp = parseResponse(xhr);
-            if (!resp || resp.error || !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}$/.test(resp.id || '') || !(resp.hosts instanceof Array) || resp.hosts.length !== 6) {
-                finish(resp, resp && resp.error || 'Cannot start external DNS observation', xhr ? xhr.status : 0);
-                return;
-            }
-            var allowed = resp.hosts.every(function(host, i) { return host === (i + 1) + '.' + resp.id + '.bash.ws'; });
-            if (!allowed) { finish(resp, 'Invalid DNS probe hosts', xhr.status); return; }
+        // Provider curl --max-time 10 + 5s delivery for each request. Total budget:
+        // start 15s + probes 6s + settle 1s + 3 * 15s + 2 * 1.5s = 70s, +5s slack.
+        op.later(function() { finish(failure({ message: 'DNS observation collection timed out' }, null)); }, 75000);
+        PT.postJson(PT.urls.dnsObservationStart, '', function(resp, error, xhr) {
+            if (!op.current()) return;
+            if (error) { finish(failure(error, xhr)); return; }
+            if (!observationStart(resp)) { finish(invalid(resp, xhr, 'Invalid DNS observation start response')); return; }
             var collected = false;
             function afterProbes() {
-                if (collected) return;
+                if (!op.current() || collected) return;
                 collected = true;
-                setTimeout(function() { collect(resp.id, 1); }, 1000);
+                op.later(function() { collect(resp.id, 1); }, 1000);
             }
             resp.hosts.forEach(function(host) {
-                var image = new Image();
-                images.push(image);
+                var image = new Image(), settled = false;
+                op.image(image);
                 image.onload = image.onerror = function() {
-                    image.onload = image.onerror = null;
+                    if (settled || !op.current()) return;
+                    settled = true; image.onload = image.onerror = null;
                     probeDone++;
-                    if (probeDone === resp.hosts.length) afterProbes();
+                    if (probeDone === 6) afterProbes();
                 };
                 image.src = 'https://' + host + '/';
             });
-            setTimeout(afterProbes, 6000);
-        });
+            op.later(afterProbes, 6000);
+        }, 15000);
     }
 
-    function runE2eTest(onDone) {
-        var loading = document.getElementById('ps-e2e-loading');
-        var result = document.getElementById('ps-e2e-result');
-        loading.style.display = 'block';
-        result.style.display = 'none';
-        var t0 = Date.now();
-
-        PT.xhrPost(PT.urls.diagE2e, '', function(xhr) {
-            loading.style.display = 'none';
-            if (!xhr || xhr.status !== 200) {
-                document.getElementById('ps-e2e-ip').textContent = 'Request failed';
-                result.style.display = '';
-                highlightE2e('FAIL');
-                appendRunLog('End-to-End Test', 'ERROR', null, 'Request failed', Date.now() - t0, xhr ? xhr.status : 0);
-                if (onDone) onDone(null);
-                return;
-            }
-            try {
-                var resp = JSON.parse(xhr.responseText);
-                document.getElementById('ps-e2e-ip').textContent = resp.external_ip || '\u2014';
-                document.getElementById('ps-e2e-http').textContent = resp.http_code || '\u2014';
-                document.getElementById('ps-e2e-time').textContent = resp.time_ms ? resp.time_ms + ' ms' : '\u2014';
-                document.getElementById('ps-e2e-status').innerHTML = statusCell(resp.status);
-                result.style.display = '';
-                highlightE2e(resp.status);
-                appendRunLog('End-to-End Test', resp.status === 'OK' ? 'OK' : 'FAIL', {
-                    external_ip: resp.external_ip,
-                    http_code: resp.http_code,
-                    time_ms: resp.time_ms
-                }, '', Date.now() - t0);
-                if (onDone) onDone(resp);
-            } catch (e) {
-                document.getElementById('ps-e2e-ip').textContent = 'Parse error';
-                result.style.display = '';
-                highlightE2e('FAIL');
-                appendRunLog('End-to-End Test', 'ERROR', null, 'Parse error', Date.now() - t0, xhr.status);
-                if (onDone) onDone(null);
-            }
-        });
-    }
-
-    var diagnosticsBusy = false;
     function setDiagnosticsBusy(busy) {
-        diagnosticsBusy = busy;
         ['ps-dns-run','ps-proxy-run','ps-leak-run','ps-e2e-run','ps-run-all'].forEach(function(id) { document.getElementById(id).disabled = busy; });
     }
-    document.getElementById('ps-dns-run').addEventListener('click', function() {
-        if (diagnosticsBusy) return;
+    function startDiagnostics(runners, all) {
+        if (pageHidden || activeRun) return;
+        var run = { sequence: ++runSequence, nextTimer: null, cancelStep: null }, index = 0;
+        activeRun = run;
         setDiagnosticsBusy(true);
         resetRunLog();
-        runDnsTest(function() { setDiagnosticsBusy(false); });
+        if (runners.indexOf(runE2eTest) !== -1) resetE2e();
+        if (all) { resetChainColors(); document.getElementById('ps-run-all').textContent = 'Running...'; }
+        function next() {
+            if (!currentRun(run) || run.cancelStep) return;
+            run.nextTimer = null;
+            runners[index++](run, function() {
+                if (!currentRun(run)) return;
+                if (index < runners.length) { run.nextTimer = setTimeout(next, 500); return; }
+                activeRun = null;
+                setDiagnosticsBusy(false);
+                document.getElementById('ps-run-all').textContent = 'Run All Diagnostics';
+            });
+        }
+        next();
+    }
+    [['ps-dns-run',runDnsTest],['ps-proxy-run',runProxyTest],['ps-e2e-run',runE2eTest],['ps-leak-run',runLeakTest]].forEach(function(item) {
+        document.getElementById(item[0]).addEventListener('click', function() { startDiagnostics([item[1]], false); });
     });
-    document.getElementById('ps-proxy-run').addEventListener('click', function() {
-        if (diagnosticsBusy) return;
-        setDiagnosticsBusy(true);
-        resetRunLog();
-        runProxyTest(function() { setDiagnosticsBusy(false); });
+    document.getElementById('ps-run-all').addEventListener('click', function() { startDiagnostics([runProxyTest, runDnsTest, runE2eTest], true); });
+    window.addEventListener('pagehide', function() {
+        pageHidden = true; runSequence++;
+        if (activeRun) {
+            clearTimeout(activeRun.nextTimer);
+            if (activeRun.cancelStep) activeRun.cancelStep();
+            activeRun = null;
+        }
+        setDiagnosticsBusy(false);
+        document.getElementById('ps-run-all').textContent = 'Run All Diagnostics';
     });
-    document.getElementById('ps-leak-run').addEventListener('click', function() {
-        if (diagnosticsBusy) return;
-        setDiagnosticsBusy(true);
-        resetRunLog();
-        runLeakTest(function() { setDiagnosticsBusy(false); });
-    });
-    document.getElementById('ps-e2e-run').addEventListener('click', function() {
-        if (diagnosticsBusy) return;
-        setDiagnosticsBusy(true);
-        resetRunLog();
-        runE2eTest(function() { setDiagnosticsBusy(false); });
-    });
-
-    document.getElementById('ps-run-all').addEventListener('click', function() {
-        var btn = this;
-        if (diagnosticsBusy) return;
-        setDiagnosticsBusy(true);
-        btn.textContent = 'Running...';
-        resetRunLog();
-        resetChainColors();
-        runProxyTest(function() {
-            setTimeout(function() {
-                runDnsTest(function() {
-                    setTimeout(function() {
-                        runE2eTest(function() {
-                            setDiagnosticsBusy(false);
-                            btn.textContent = 'Run All Diagnostics';
-                        });
-                    }, 500);
-                });
-            }, 500);
-        });
-    });
+    window.addEventListener('pageshow', function() { pageHidden = false; });
 
     loadRunLog();
 })();

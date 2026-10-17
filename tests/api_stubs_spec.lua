@@ -327,19 +327,26 @@ end)
 
 describe("harness integration", function()
     it("services roundtrip through overlay", function()
-        H.begin()
+        H.begin({ strict = true })
         local SRV = H.reload("podkop-tweaker.services")
-        local ok, err = SRV.write_file_atomic("/etc/config/podkop", "config main\n\toption x '1'\n")
-        assert.truthy(ok, err)
-        assert.equal("config main\n\toption x '1'\n", SRV.read_file("/etc/config/podkop"))
+        local svc = SRV.podkop
+        local original = "config podkop 'main'\n\toption enabled '1'\n"
+        local changed = "config podkop 'main'\n\toption enabled '0'\n"
+        local ok, err = SRV.write_file_atomic(svc.config, original)
+        assert.is_true(ok, err)
+        assert.equal(original, SRV.read_file(svc.config))
 
-        local ops = { config = "/etc/config/podkop", backup = "/etc/config/podkop.auto-backup" }
-        assert.truthy(SRV.backup_current(ops))
-        assert.equal("config main\n\toption x '1'\n", SRV.read_file(ops.backup))
+        ok, err = SRV.backup_current(svc)
+        assert.is_true(ok, err)
+        assert.equal(original, SRV.read_file(svc.backup))
 
-        H.vfs_write("/etc/config/podkop", "changed\n")
-        assert.truthy(SRV.restore_backup(ops))
-        assert.equal("config main\n\toption x '1'\n", SRV.read_file("/etc/config/podkop"))
+        H.vfs_write(svc.config, changed)
+        ok, err = SRV.restore_backup(svc)
+        assert.is_true(ok, err)
+        assert.equal(original, SRV.read_file(svc.config))
+        assert.equal(original, SRV.read_file(svc.backup))
+        for _, stage in ipairs(H.stage_paths()) do assert.falsy(H.vfs_exists(stage)) end
+        assert.same({}, H.exec_cmds(), "byte IO, backup and restore alone must not request a service command")
     end)
 
     it("singbox_content_check branches", function()
