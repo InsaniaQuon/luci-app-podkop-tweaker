@@ -1,4 +1,4 @@
--- pt_harness | v1.1.0 | 17.10.2026 | In-memory native IO/owned-stage/lock model + LuCI fakes (Lua 5.1)
+-- pt_harness | v1.2.1 | 19.10.2026 | Clear ST1 observation module between isolated pipe/IO sessions
 -- Failure keys are literal paths, or a literal prefix followed by one final *.
 -- An exact rule wins; otherwise the longest matching prefix wins. No aliases:
 -- failures["/config.tmp-write.*"] = { close = true } targets actual unique stages.
@@ -8,6 +8,13 @@
 -- successful mktemp allocations in order, even after publication/cleanup.
 -- popen accepts a responder list like sys/execute, or the legacy function. In
 -- strict callbacks, return nil for an unhandled command ("" is explicit output).
+-- Pipe descriptors: {content="...", open_error="...", open_errno=24}, or
+-- read_error/read_errno/read_output, close_error/close_errno. *_exception raises
+-- the supplied value instead. Boolean error/exception flags use injected text.
+-- pipe_log records command/mode/acquired, read formats and close_calls; popen_log
+-- contains only actual io.popen commands, never aliases or sys.exec calls.
+-- Explicit checked primitive strings without a canonical final shell code remain
+-- raw pipe evidence and authorize no modeled filesystem effect.
 -- H.begin{strict=true} rejects unmatched critical commands and http.write(nil).
 -- H.finish restores globals BEFORE reporting unexpected calls, so after_each
 -- cannot lose failures swallowed by a production pcall. Legacy defaults remain.
@@ -27,7 +34,7 @@ local CLEAR_LOADED_IDS = {
     "podkop-tweaker.net", "podkop-tweaker.archive", "podkop-tweaker.dns_observation", "podkop-tweaker.web_restart",
     "podkop-tweaker.theme_packages", "podkop-tweaker.theme_config",
     "podkop-tweaker.bundle", "podkop-tweaker.api_diag", "podkop-tweaker.api_argon",
-    "podkop-tweaker.api_stubby", "podkop-tweaker.api_podkop", "podkop-tweaker.api_subs",
+    "podkop-tweaker.api_stubby", "podkop-tweaker.stubby_check", "podkop-tweaker.api_podkop", "podkop-tweaker.api_subs",
     "podkop-tweaker.api_singbox", "podkop-tweaker.api_bundle", "podkop-tweaker.api_update",
     "pt-subs-lib", "pt-auto-update", "luci.sys", "luci.model.uci", "luci.http",
     "luci.jsonc", "luci.json", "cjson", "nixio", "nixio.fs"
@@ -161,6 +168,40 @@ local function make_fd(entry, mode, path, st)
     return fd
 end
 
+local function make_pipe(st, command, mode, response)
+    local descriptor = type(response) == "table" and response or { content = response or "" }
+    local event = { command = command, mode = mode or "r", acquired = false, reads = {}, close_calls = 0 }
+    st.pipe_log[#st.pipe_log + 1] = event
+    local function message(stage, value, exception)
+        return value == true and ("Injected pipe " .. stage .. (exception and " exception" or " failure")) or value
+    end
+    if descriptor.open_exception then error(message("open", descriptor.open_exception, true), 0) end
+    if descriptor.open_error or descriptor.open_errno then
+        return nil, message("open", descriptor.open_error or true), descriptor.open_errno or 5
+    end
+    local fd = make_fd({ content = descriptor.content or "" }, "r")
+    local read, close = fd.read, fd.close
+    event.acquired = true
+    function fd:read(format)
+        event.reads[#event.reads + 1] = format or "*l"
+        if descriptor.read_exception then error(message("read", descriptor.read_exception, true), 0) end
+        if descriptor.read_error or descriptor.read_errno then
+            return descriptor.read_output, message("read", descriptor.read_error or true), descriptor.read_errno or 5
+        end
+        return read(self, format)
+    end
+    function fd:close()
+        event.close_calls = event.close_calls + 1
+        close(self)
+        if descriptor.close_exception then error(message("close", descriptor.close_exception, true), 0) end
+        if descriptor.close_error or descriptor.close_errno then
+            return nil, message("close", descriptor.close_error or true), descriptor.close_errno or 5
+        end
+        return true
+    end
+    return fd
+end
+
 -- === responders ===
 
 local function run_responders(list, cmd)
@@ -263,8 +304,10 @@ end
 local function response_code(response, transport)
     if type(response) == "number" then return response end
     if response == false then return 1 end
-    if transport == "exec" and type(response) == "string" then
-        return tonumber(response:match("\nPT_EXIT:(%d+)\n$"))
+    if (transport == "exec" or transport == "popen") and type(response) == "string" then
+        local code = response:match("\nPT_EXIT:([0-9]+)\n$")
+        local number = code and #code <= 3 and tonumber(code) or nil
+        if number and number <= 255 and tostring(number) == code then return number end
     end
 end
 
@@ -275,8 +318,14 @@ local function modeled_command(st, cmd, scripts, transport)
     -- Snapshot existence before observers: a broad 'return 0' must never make
     -- an already-held directory lock reacquirable or an absent lock removable.
     local existed = st.dirs[path] or st.vfs[path]
-    local response, matched = run_responders(scripts, cmd)
+    local response, matched
+    if type(scripts) == "function" then response = scripts(cmd); matched = response ~= nil
+    else response, matched = run_responders(scripts, cmd) end
     local mock_code = matched and response_code(response, transport)
+    -- Explicit transport faults and malformed checked output own their evidence.
+    -- Do not synthesize a marker or apply a primitive effect from unknown bytes.
+    if transport ~= "execute" and matched and (type(response) == "table" or
+        primitive.checked and type(response) == "string" and mock_code == nil) then return response, true end
     local failure = failure_for(st, path)
     local flag = failure and failure[op]
     local code, details = 0, ""
@@ -314,6 +363,9 @@ local function modeled_command(st, cmd, scripts, transport)
     end
     st.io_log[#st.io_log + 1] = { operation = op, path = path, mode = primitive.mode, success = code == 0 }
     if transport == "execute" then return code, true end
+    -- Keep complete explicit output when it agrees with the native model. A
+    -- claimed exit zero must still lose to exclusive mkdir/rmdir/IO constraints.
+    if matched and type(response) == "string" and primitive.checked and code == mock_code then return response, true end
     if primitive.checked then return details .. "\nPT_EXIT:" .. code .. "\n", true end
     return details, true
 end
@@ -552,7 +604,7 @@ local function install_wraps(st)
             local out, matched = mktemp_output(st, cmd), false
             if out ~= nil then matched = true
             else
-                out, matched = modeled_command(st, cmd, st.popen_scripts, "exec")
+                out, matched = modeled_command(st, cmd, st.popen_fn or st.popen_scripts, "popen")
                 if not matched then
                     if type(st.popen_fn) == "function" then
                         out = st.popen_fn(cmd)
@@ -561,11 +613,9 @@ local function install_wraps(st)
                 end
             end
             if not matched and st.strict and critical_command(cmd) then
-                out = unexpected(st, "io.popen", cmd) .. "\nPT_EXIT:125\n"
+                out = { open_error = unexpected(st, "io.popen", cmd), open_errno = 5 }
             end
-            out = out or ""
-            local e = type(out) == "table" and out or { content = out }
-            return make_fd(e, "r")
+            return make_pipe(st, cmd, mode, out)
         end
         return ORIGINALS["io.popen"](cmd, mode)
     end
@@ -689,7 +739,7 @@ function M.begin(opts)
         strict = opts.strict == true, unexpected = {}, allocations = {}, mktemp_counter = 0,
         legacy_json = opts.legacy_json,
         cjson_fn = opts.cjson,
-        exec_log = {}, popen_log = {}, execute_log = {},
+        exec_log = {}, popen_log = {}, execute_log = {}, pipe_log = {},
         commits = {}
     }
     ST.http = make_http(ST)

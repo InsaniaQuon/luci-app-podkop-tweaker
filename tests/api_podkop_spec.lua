@@ -1,4 +1,4 @@
--- api_podkop_spec | v1.1.0 | 17.10.2026 | Checked service application, process facts and failure preservation
+-- api_podkop_spec | v1.2.0 | 19.10.2026 | Explicit checked pipe responders and actual transport counts
 
 package.path = "./usr/lib/lua/?.lua;./tests/?.lua;" .. package.path
 
@@ -38,10 +38,17 @@ end
 local function begin_podkop(opts)
     opts = opts or {}
     opts.sys = opts.sys or {}
+    local network = opts.popen
+    local pipes = type(network) == "table" and network or {}
+    for _, reply in ipairs(opts.sys) do pipes[#pipes + 1] = reply end
     for _, action in ipairs({ "restart", "start", "stop", "enable", "disable" }) do
-        table.insert(opts.sys, service_reply(action, "\nPT_EXIT:0\n"))
+        table.insert(pipes, service_reply(action, "\nPT_EXIT:0\n"))
     end
-    table.insert(opts.sys, pid_reply("\nPT_EXIT:1\n"))
+    table.insert(pipes, pid_reply("\nPT_EXIT:1\n"))
+    if type(network) == "function" then
+        pipes[#pipes + 1] = { match = function(command) return not command:find("PT_EXIT:", 1, true) end, out = network }
+    end
+    opts.popen = pipes
     H.begin(opts)
     local UPD = H.reload("podkop-tweaker.api_update")
     UPD.init("4.1.0")
@@ -51,8 +58,10 @@ end
 
 local function commands_containing(text)
     local result = {}
-    for _, cmd in ipairs(H.exec_cmds()) do
-        if cmd:find(text, 1, true) then result[#result + 1] = cmd end
+    for _, commands in ipairs({ H.exec_cmds(), H.popen_cmds() }) do
+        for _, cmd in ipairs(commands) do
+            if cmd:find(text, 1, true) then result[#result + 1] = cmd end
+        end
     end
     return result
 end
@@ -60,6 +69,8 @@ end
 local function assert_restart(resp, running, instance)
     assert.is_true(resp.success)
     assert.is_true(resp.restarting)
+    assert.is_true(resp.command_result_known)
+    assert.equal(0, resp.command_exit_code)
     assert.is_true(resp.verification_required)
     assert.equal(running or false, resp.previous_running)
     assert.is_true(resp.previous_identity_known)
@@ -479,6 +490,8 @@ describe("api_podkop.save_config/import_config", function()
         local r = PDK.save_config(VALID)
         assert.is_false(r.success)
         assert.is_true(r.applied)
+        assert.is_true(r.command_result_known)
+        assert.equal(19, r.command_exit_code)
         assert.is_true(r.verification_required)
         assert.is_true(r.previous_running)
         assert.is_true(r.previous_identity_known)

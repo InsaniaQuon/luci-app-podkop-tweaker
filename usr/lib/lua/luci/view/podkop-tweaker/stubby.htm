@@ -22,7 +22,7 @@ Author: InsaniaQuon
         <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <button class="btn cbi-button" id="ps-params-btn">Template</button>
             <button class="btn cbi-button" id="ps-initfix-btn">Fix Init Script</button>
-            <span id="ps-initfix-status" style="font-size:12px;font-weight:600;"></span>
+            <span id="ps-initfix-status" style="font-size:12px;font-weight:600;min-width:0;overflow-wrap:anywhere;"></span>
         </div>
         <div id="ps-stubby-action-status" aria-live="polite" style="display:none;margin-bottom:12px;font-size:12px;"></div>
 
@@ -140,15 +140,24 @@ Author: InsaniaQuon
     <div class="ps-modal-content">
         <h3>Fix Init Script</h3>
         <div style="font-size:13px;line-height:1.6;">
-            <p><strong>Problem:</strong></p>
-            <p>OpenWrt normally runs Stubby as user <code>stubby</code> and prepares its writable data directory. This template uses privileged port 53. If the service cannot bind that port due to insufficient privileges, running it as root is one possible fix.</p>
-            <p><strong>One of the solutions:</strong></p>
-            <p>Replace the user with <code>root</code> in the init script:</p>
-            <pre id="ps-initfix-cmd" style="background:var(--ps-bg-alt);padding:10px;border-radius:4px;font-size:12px;overflow-x:auto;">sed -i 's/procd_set_param user stubby/procd_set_param user root/' /etc/init.d/stubby</pre>
+            <p><strong>Run Stubby as root:</strong> changes the user in <code>/etc/init.d/stubby</code> from <code>stubby</code> to <code>root</code> and requests a Stubby restart.</p>
+            <p>This is an optional workaround for a verified permission problem, such as failure to bind the intended DNS port. Running as a non-root user is not itself an error.</p>
             <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
-                <button class="btn cbi-button cbi-button-apply" id="ps-initfix-apply">Apply Fix</button>
+                <button class="btn cbi-button cbi-button-apply" id="ps-initfix-apply" disabled>Apply Fix</button>
                 <span id="ps-initfix-apply-status" style="font-size:12px;"></span>
             </div>
+            <div id="ps-initfix-reason" style="margin-top:8px;font-size:12px;"></div>
+            <details id="ps-initfix-technical" style="margin-top:12px;">
+                <summary style="cursor:pointer;">Technical details</summary>
+                <div id="ps-initfix-facts" style="margin-top:8px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;"></div>
+                <div id="ps-initfix-read-error" style="display:none;">
+                    <pre id="ps-initfix-check-details" class="ps-error-details"></pre>
+                </div>
+                <p style="font-size:12px;">The init declaration, live UID and process-owned sockets are independent observations. Socket presence does not establish a DNS reply. Manual YAML listeners are not inferred from UCI. The fix replaces only one supported literal user declaration; other layouts require manual review.</p>
+                <button class="btn cbi-button" id="ps-initfix-refresh">Refresh status</button>
+                <p style="font-size:12px;">Read-only procd inspection:</p>
+                <pre id="ps-initfix-cmd" style="background:var(--ps-bg-alt);padding:10px;border-radius:4px;font-size:12px;overflow-x:auto;">ubus call service list '{"name":"stubby"}'</pre>
+            </details>
         </div>
         <div class="ps-modal-footer" style="margin-top:12px;">
             <button class="btn cbi-button" id="ps-initfix-close">Close</button>
@@ -211,9 +220,82 @@ window.PT = {
     // === Fix Init Script ===
     var initfixStatus = document.getElementById('ps-initfix-status');
     var initCheckSequence = 0;
+    var initFacts = null, initPresentation = null;
+
+    function object(value) { return value && typeof value === 'object' && !Array.isArray(value); }
+    function integer(value, max) { return typeof value === 'number' && isFinite(value) && value >= 0 && value <= max && Math.floor(value) === value; }
+    function factList(value, count, max, valid) {
+        if (!integer(count, max)) return false;
+        if (count === 0 && object(value) && Object.keys(value).length === 0) return true;
+        return Array.isArray(value) && value.length === count && value.every(valid);
+    }
+    function unknownFact(value) { return value.state === 'unknown' && typeof value.error === 'string' && value.error.length > 0; }
+    function validInitFacts(r) {
+        if (!object(r) || r.check_version !== 2 || 'error' in r || r.success !== undefined && r.success !== true ||
+            r.unknown !== undefined && r.unknown !== false || !object(r.init) || !object(r.runtime) ||
+            !object(r.listeners) || !object(r.config) || !object(r.repair)) return false;
+        var init = r.init, runtime = r.runtime, sockets = r.listeners, config = r.config, repair = r.repair;
+        if (!(unknownFact(init) || init.state === 'missing' || init.state === 'literal' && typeof init.user === 'string' && /^[\w-]{1,32}$/.test(init.user))) return false;
+        var pids = {}, uids = {};
+        if (!unknownFact(runtime)) {
+            if (['root', 'user', 'mixed', 'stopped'].indexOf(runtime.state) < 0 ||
+                !factList(runtime.processes, runtime.process_count, 16, function(p) {
+                    if (!object(p) || typeof p.pid !== 'string' || !/^[1-9]\d{0,9}$/.test(p.pid) || Number(p.pid) > 2147483647 || pids[p.pid] ||
+                        !integer(p.euid, 4294967294) || typeof p.instance !== 'string' || !new RegExp('^' + p.pid + ':\\d+$').test(p.instance)) return false;
+                    pids[p.pid] = true; uids[p.euid] = true;
+                    return true;
+                })) return false;
+            var keys = Object.keys(uids);
+            if (runtime.state === 'stopped' ? runtime.process_count !== 0 : runtime.process_count < 1) return false;
+            if (runtime.state === 'root' && (keys.length !== 1 || keys[0] !== '0') ||
+                runtime.state === 'user' && (keys.length !== 1 || keys[0] === '0') || runtime.state === 'mixed' && keys.length < 2) return false;
+        }
+        if (!unknownFact(sockets)) {
+            if (runtime.state === 'unknown' || ['observed', 'none'].indexOf(sockets.state) < 0 ||
+                !factList(sockets.entries, sockets.count, 128, function(s) {
+                    return object(s) && (s.protocol === 'tcp' || s.protocol === 'udp') && typeof s.address === 'string' && /^[0-9a-fA-F.:]+$/.test(s.address) &&
+                        s.address.length <= 64 && integer(s.port, 65535) && s.port > 0 && typeof s.pid === 'string' && pids[s.pid] === true;
+                }) || (sockets.state === 'none' ? sockets.count !== 0 : sockets.count < 1)) return false;
+        }
+        if (!(unknownFact(config) || (config.state === 'uci' || config.state === 'manual') &&
+            factList(config.listen_addresses, config.listen_count, 32, function(value) { return typeof value === 'string' && value.length <= 256 && !/[\x00-\x1f\x7f]/.test(value); }))) return false;
+        if (typeof repair.available !== 'boolean' || typeof repair.reason !== 'string' ||
+            repair.available !== (init.state === 'literal' && init.user === 'stubby')) return false;
+        return r.status === (init.state === 'missing' ? 'not_installed' : runtime.state === 'root' ? 'fixed' : 'unknown');
+    }
+
+    function renderInitFacts(r) {
+        var runtime = r.runtime, problems = [r.init, runtime, r.listeners, r.config].filter(function(v) { return v.state === 'unknown'; });
+        var label = r.init.state === 'literal' ? 'Init user: ' + r.init.user : r.init.state === 'missing' ? 'Init script not installed' : 'Init user: Unknown';
+        var lines = ['Read-only snapshot; refresh after service or configuration changes.',
+            'Init declaration: ' + (r.init.state === 'literal' ? 'user ' + r.init.user : r.init.state === 'missing' ? 'not installed' : 'Unknown')];
+        if (runtime.process_count > 0) lines.push('Processes: ' + runtime.processes.map(function(p) { return 'PID ' + p.pid + ', effective UID ' + p.euid; }).join('; '));
+        lines.push(r.listeners.state === 'observed' ? 'Listeners observed: ' + r.listeners.entries.map(function(s) { return s.protocol.toUpperCase() + ' ' + s.address + '@' + s.port + ' (PID ' + s.pid + ')'; }).join('; ') :
+            r.listeners.state === 'none' ? 'No process-owned listening sockets observed' : 'Listeners: Unknown');
+        lines.push(r.config.state === 'manual' ? 'Manual YAML mode; effective listeners are not inferred from UCI' :
+            r.config.state === 'uci' ? 'UCI listen_address: ' + (r.config.listen_count ? r.config.listen_addresses.join(', ') : 'not explicitly set') : 'Configured listeners: Unknown');
+        document.getElementById('ps-initfix-facts').textContent = lines.join('\n');
+        document.getElementById('ps-initfix-reason').textContent = r.repair.available ? 'Available: change stubby to root and restart Stubby.' :
+            r.init.state === 'literal' && (r.init.user === 'root' || r.init.user === '0') ? 'Already configured to use root. No change is needed.' :
+                'This init script cannot be changed automatically. See Technical details.';
+        var diagnostic = document.getElementById('ps-initfix-check-details');
+        diagnostic.textContent = problems.length ? JSON.stringify(r, null, 2) : '';
+        document.getElementById('ps-initfix-read-error').style.display = problems.length ? '' : 'none';
+        initfixStatus.textContent = label;
+        initfixStatus.title = 'Configured init user; live process and socket observations are in Technical details.';
+        initfixStatus.style.color = PT.color(r.init.state === 'unknown' ? 'warning' : r.init.state === 'missing' ? 'dim' :
+            r.init.user === 'root' || r.init.user === '0' ? 'success' : 'info');
+    }
 
     function checkInitFix() {
         var sequence = ++initCheckSequence;
+        var owner = initPresentation && initPresentation.owner();
+        initFacts = null;
+        if (initPresentation) initPresentation.update(owner);
+        document.getElementById('ps-initfix-facts').textContent = '';
+        document.getElementById('ps-initfix-reason').textContent = 'Waiting for current init observations';
+        document.getElementById('ps-initfix-check-details').textContent = '';
+        document.getElementById('ps-initfix-read-error').style.display = 'none';
         var xhr = new XMLHttpRequest(), finished = false;
         initfixStatus.textContent = 'Checking...';
         initfixStatus.style.color = PT.color('info');
@@ -222,19 +304,18 @@ window.PT = {
             finished = true;
             if (sequence !== initCheckSequence) return;
             if (error) {
-                showActionStatus(initfixStatus, 'Unknown — ' + error, 'warning', details);
+                initfixStatus.textContent = 'Init check: Unknown';
+                initfixStatus.title = error;
+                initfixStatus.style.color = PT.color('warning');
+                var diagnostic = document.getElementById('ps-initfix-check-details');
+                diagnostic.textContent = error + (details ? '\n\n' + details : '');
+                document.getElementById('ps-initfix-read-error').style.display = '';
+                document.getElementById('ps-initfix-reason').textContent = 'Current init status is unavailable. See Technical details.';
                 return;
             }
-            if (r.status === 'fixed') {
-                initfixStatus.textContent = 'Running as root';
-                initfixStatus.style.color = PT.color('success');
-            } else if (r.status === 'needs_fix') {
-                initfixStatus.textContent = 'Needs fix';
-                initfixStatus.style.color = PT.color('error');
-            } else if (r.status === 'not_installed') {
-                initfixStatus.textContent = 'Not installed';
-                initfixStatus.style.color = PT.color('dim');
-            }
+            initFacts = r;
+            renderInitFacts(r);
+            if (initPresentation) initPresentation.update(owner);
         }
         xhr.open('GET', PT.urls.initCheck);
         xhr.timeout = 30000;
@@ -244,14 +325,13 @@ window.PT = {
             if (finished) return;
             var r = null, body = xhr.responseText || '';
             try { r = JSON.parse(body); } catch (e) {}
-            var object = r && typeof r === 'object' && !Array.isArray(r);
-            var valid = xhr.status === 200 && object && !('error' in r) &&
-                (r.success === undefined || r.success === true) && (r.unknown === undefined || r.unknown === false) &&
-                (r.status === 'fixed' || r.status === 'needs_fix' || r.status === 'not_installed');
+            var parsedObject = object(r);
+            var valid = xhr.status === 200 && validInitFacts(r);
             if (valid) { finish(r); return; }
-            var message = object && typeof r.error === 'string' && r.error ||
+            var message = parsedObject && typeof r.error === 'string' && r.error ||
                 (xhr.status !== 200 ? 'Init script status HTTP error: ' + xhr.status : 'Invalid init script status response');
-            var details = object && typeof r.details === 'string' ? r.details : body;
+            var details = body;
+            if (parsedObject && typeof r.details === 'string' && r.details !== body) details += '\n\nNative details:\n' + r.details;
             if (xhr.status !== 200) details = 'HTTP ' + xhr.status + (details ? '\n\n' + details : '');
             finish(null, message, details);
         };
@@ -281,6 +361,14 @@ window.PT = {
         var apply = document.getElementById(cfg.apply);
         var status = document.getElementById(cfg.status);
         var opening = 0, closeTimer = null;
+        var acceptedOperation = false;
+        if (cfg.init) initPresentation = {
+            owner: function() { return opening; },
+            update: function(owner) {
+                if (actionPending || actionUnknown || !initFacts || !initFacts.repair.available || acceptedOperation) apply.disabled = true;
+                else if (modal.style.display === 'flex' && (owner === opening || operationSequence === 0)) apply.disabled = false;
+            }
+        };
         function clearClose() {
             if (closeTimer !== null) clearTimeout(closeTimer);
             closeTimer = null;
@@ -293,7 +381,9 @@ window.PT = {
         document.getElementById(cfg.open).addEventListener('click', function() {
             ++opening;
             clearClose();
-            apply.disabled = actionPending || actionUnknown;
+            acceptedOperation = false;
+            if (cfg.init) document.getElementById('ps-initfix-technical').open = false;
+            apply.disabled = actionPending || actionUnknown || !!cfg.init && (!initFacts || !initFacts.repair.available);
             status.textContent = actionUnknown ? 'Result unknown. Reload the page to verify before another operation.' :
                 actionPending ? 'An earlier Stubby operation is in progress. Close and reopen after it completes; see the page result.' : '';
             status.style.color = PT.color('warning');
@@ -301,7 +391,7 @@ window.PT = {
         });
 
         apply.addEventListener('click', function() {
-            if (apply.disabled || actionPending || actionUnknown || modal.style.display === 'none') return;
+            if (apply.disabled || actionPending || actionUnknown || modal.style.display === 'none' || cfg.init && (!initFacts || !initFacts.repair.available)) return;
             if (cfg.confirm && !confirm(cfg.confirm)) return;
             clearClose();
             actionPending = true;
@@ -326,11 +416,12 @@ window.PT = {
                 if (finished) return;
                 finished = true;
                 actionPending = false;
+                acceptedOperation = accepted;
                 present(message, role, details);
                 ctx.refreshStatus();
                 if (!cfg.reload) checkInitFix();
                 if (!ownsOpening(sequence)) return;
-                apply.disabled = actionUnknown || accepted;
+                apply.disabled = actionUnknown || accepted || !!cfg.init && (!initFacts || !initFacts.repair.available);
                 if (cfg.reload && accepted) {
                     var timer = setTimeout(function() {
                         if (closeTimer !== timer || !ownsOpening(sequence)) return;
@@ -405,9 +496,10 @@ window.PT = {
     bindAction({
         open: 'ps-initfix-btn', modal: 'ps-initfix-modal', close: 'ps-initfix-close',
         apply: 'ps-initfix-apply', status: 'ps-initfix-apply-status',
-        url: PT.urls.initFix, label: 'Init script fix', applied: 'Init script fix applied to disk.', reload: false
+        url: PT.urls.initFix, label: 'Init script fix', applied: 'Init script fix applied to disk.', reload: false, init: true
     });
 
+    document.getElementById('ps-initfix-refresh').addEventListener('click', checkInitFix);
     checkInitFix();
 })();
 </script>

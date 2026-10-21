@@ -47,6 +47,62 @@ ORIGINAL = {
 }
 EXTERNAL = {"outbounds": [{"tag": "external", "type": "direct"}], "custom": "new writer"}
 
+# Complete upstream init snapshot, used as inert source bytes only (never sourced
+# or executed): itdoginfo/podkop/main/podkop/files/etc/init.d/podkop, 19.10.2026.
+UPSTREAM_INIT = """#!/bin/sh /etc/rc.common
+# shellcheck disable=SC2034,SC2154
+
+START=99
+USE_PROCD=1
+
+script=$(readlink "$initscript")
+NAME="$(basename ${script:-$initscript})"
+config_load "$NAME"
+
+start_service() {
+    echo "Start podkop"
+
+    config_get enable_badwan_interface_monitoring "settings" "enable_badwan_interface_monitoring"
+    config_get badwan_monitored_interfaces "settings" "badwan_monitored_interfaces"
+
+    procd_open_instance
+    procd_set_param command /usr/bin/podkop start
+    [ "$enable_badwan_interface_monitoring" = "1" ] && [ -n "$badwan_monitored_interfaces" ] &&
+        procd_set_param netdev "$badwan_monitored_interfaces"
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}
+
+stop_service() {
+    /usr/bin/podkop stop
+}
+
+reload_service() {
+    /usr/bin/podkop reload > /dev/null 2>&1
+}
+
+service_triggers() {
+    echo "service_triggers start"
+
+    config_get enable_badwan_interface_monitoring "settings" "enable_badwan_interface_monitoring"
+    config_get badwan_monitored_interfaces "settings" "badwan_monitored_interfaces"
+    config_get badwan_reload_delay "settings" "badwan_reload_delay" "2000"
+
+    PROCD_RELOAD_DELAY=$badwan_reload_delay
+
+    procd_open_trigger
+    procd_add_config_trigger "config.change" "$NAME" "$initscript" restart 'on_config_change'
+
+    if [ "$enable_badwan_interface_monitoring" = "1" ]; then
+        for iface in $badwan_monitored_interfaces; do
+            procd_add_interface_trigger "interface.*.up" "$iface" /etc/init.d/podkop reload
+        done
+    fi
+    procd_close_trigger
+}
+"""
+
 
 def encoded(value):
     return (json.dumps(value, indent=2) + "\n").encode()
@@ -294,13 +350,25 @@ class Fixture:
 
     @property
     def hook(self):
+        return f"\t( sleep 5 && {self.patch} ) </dev/null >/dev/null 2>&1 &\n"
+
+    @property
+    def legacy_hook(self):
         return f"\t( sleep 5 && {self.patch} ) &\n"
 
     def save_state(self):
         self.state_path.write_text(json.dumps(self.state))
 
-    def with_hooks(self, count, base=None):
-        return (self.base if base is None else base).replace("\n}\n", "\n" + self.hook * count + "}\n", 2)
+    def with_hooks(self, count, base=None, body=None):
+        source = self.base if base is None else base
+        hooks = (self.hook if body is None else body) * count
+        # Upstream has stop_service between start/reload: inject only into the
+        # named managed functions, rather than the first two function endings.
+        for name in ("start_service", "reload_service"):
+            start = source.index(name + "() {")
+            end = source.index("\n}", start)
+            source = source[:end] + "\n" + hooks + source[end + 1:]
+        return source
 
     def spawn(self, action="writer"):
         runner = self.root / ("runner-" + str(len(self.children)) + ".sh")
@@ -324,11 +392,11 @@ class Fixture:
         self.no_owned_temps()
         return result
 
-    def no_owned_temps(self):
+    def no_owned_temps(self, preserved=()):
         assert not self.lock.exists(), "patch lock leaked"
         assert not self.wrapper_lock.exists(), "wrapper lock leaked"
-        assert not list((self.root / "live").glob("*.pt-fragment-*")), "owned temp leaked"
-        assert not list(self.root.glob("*.pt-fragment.*")), "owned log temp leaked"
+        assert not (set((self.root / "live").glob("*.pt-fragment-*")) - set(preserved)), "owned temp leaked"
+        assert not (set(self.root.glob("*.pt-fragment.*")) - set(preserved)), "owned log temp leaked"
 
     def events(self, kind):
         path = self.root / "events.jsonl"
@@ -527,8 +595,26 @@ def main():
         assert f.init.read_text() == f.base + added and not f.orig.exists() and not f.link.exists()
         checks += 1
 
+        for name in ("legacy", "mixed"):
+            f = fixture("wrapper-migrate-" + name)
+            body = f.legacy_hook if name == "legacy" else f.hook + f.legacy_hook
+            current = f.with_hooks(3, body=body)
+            f.init.write_text(current)
+            f.orig.write_text(f.with_hooks(4, f.base.replace("'new'", "'old'"), body=f.legacy_hook))
+            for _ in range(2):
+                f.run("enable")
+                assert f.init.read_text() == f.with_hooks(1), name
+                assert f.orig.read_text() == f.base, name
+                assert f.init.read_text().count(f.hook) == 2
+                assert f.legacy_hook not in f.init.read_text()
+            f.run("disable")
+            assert f.init.read_text() == f.base and not f.orig.exists()
+            checks += 1
+
         f = fixture("wrapper-whitespace")
-        spaced = f.with_hooks(3).replace(f.hook, "    " + f.hook.strip() + "  \t\n")
+        spaced = f.with_hooks(2, body=f.hook + f.legacy_hook)
+        for hook in (f.hook, f.legacy_hook):
+            spaced = spaced.replace(hook, "    " + hook.strip() + "  \t\n")
         f.init.write_text(spaced)
         f.orig.write_text(spaced)
         f.run("enable")
@@ -538,15 +624,143 @@ def main():
         checks += 1
 
         f = fixture("wrapper-custom-identical")
-        custom = "\ncustom_refresh() {\n\tlogger keep-custom-function\n" + f.hook + "}\n"
+        custom = "\ncustom_refresh() {\n\tlogger keep-custom-function\n" + f.hook + f.legacy_hook + "}\n"
+        custom += f.legacy_hook + f.hook + "# exact top-level calls above are administrator-owned\n"
         baseline = f.base + custom
-        f.init.write_text(f.with_hooks(3) + custom)
-        f.orig.write_text(f.with_hooks(4) + custom)
+        f.init.write_text(f.with_hooks(3, body=f.legacy_hook + f.hook) + custom)
+        f.orig.write_text(f.with_hooks(4, body=f.legacy_hook) + custom)
         f.run("enable")
         assert f.init.read_text() == f.with_hooks(1) + custom and f.orig.read_text() == baseline
         f.run("disable")
         assert f.init.read_text() == baseline and not f.orig.exists()
         checks += 1
+
+        for final_lf in (False, True):
+            f = fixture("wrapper-unmanaged-bytes-" + str(final_lf))
+            custom = ("\n# " + f.legacy_hook.strip() + "\n# " + f.hook.strip() + "\n"
+                      "custom_refresh() {\n\tlogger 'keep  spaces'\n" + f.hook + f.legacy_hook + "}\n" +
+                      f.hook + f.legacy_hook + "\n# preserve trailing whitespace  \t" + ("\n" if final_lf else ""))
+            baseline = f.base + custom
+            # Nearly identical commands inside start/reload are also unmanaged.
+            near_match = f.hook.rstrip("\n") + " # administrator-owned\n"
+            baseline = baseline.replace("\tprintf '%s\\n' start\n", "\tprintf '%s\\n' start\n" + near_match)
+            current = f.with_hooks(2, baseline, body=f.hook + f.legacy_hook)
+            f.init.write_text(current)
+            f.orig.write_text("old original must not replace the current init\n")
+            f.run("enable")
+            assert f.orig.read_bytes() == baseline.encode()
+            assert f.init.read_bytes() == f.with_hooks(1, baseline).encode()
+            f.run("disable")
+            assert f.init.read_bytes() == baseline.encode() and not f.orig.exists()
+            checks += 1
+
+        for managed in ("start", "reload"):
+            for name in ("quoted-heredoc", "tabbed-heredoc", "single-quote", "double-quote",
+                         "continued-heredoc", "nested-command-quote", "parameter-quote", "escaped-comment-quote",
+                         "ansi-c-quote", "ansi-c-command", "ansi-c-parameter"):
+                for legacy in (False, True):
+                    f = fixture(f"wrapper-refuse-{managed}-{name}-{legacy}")
+                    hook = f.legacy_hook if legacy else f.hook
+                    if name == "quoted-heredoc":
+                        payload = "\tcat <<'EOF'\n" + hook + "EOF\n"
+                    elif name == "tabbed-heredoc":
+                        payload = '\tcat <<-"EOF"\n' + hook + "\tEOF\n"
+                    elif name == "continued-heredoc":
+                        payload = "\tcat <\\\n<'EOF'\n" + hook + "EOF\n"
+                    elif name == "nested-command-quote":
+                        payload = '\tVALUE="$(printf "%s\\n" "payload prefix\n' + hook + 'payload suffix")"\n'
+                    elif name == "parameter-quote":
+                        payload = '\tVALUE="${MISSING:-"payload prefix\n' + hook + 'payload suffix"}"\n'
+                    elif name == "escaped-comment-quote":
+                        payload = "\tVALUE=prefix\\ #literal'payload prefix\n" + hook + "payload suffix'\n"
+                    elif name == "ansi-c-quote":
+                        # In ANSI-C syntax the escaped apostrophe does not close
+                        # the quote; the exact column-zero hook is payload data.
+                        payload = "    PAYLOAD=$'prefix \\'\n" + hook.lstrip("\t") + "suffix' # comment'\n"
+                    elif name == "ansi-c-command":
+                        payload = '\tVALUE="$(printf %s $\'' + hook.strip() + '\')"\n'
+                    elif name == "ansi-c-parameter":
+                        payload = "\tVALUE=${MISSING:-$'" + hook.strip() + "'}\n"
+                    else:
+                        quote = "'" if name == "single-quote" else '"'
+                        payload = "\tPAYLOAD=" + quote + "keep payload prefix\n" + hook + "payload suffix" + quote + "\n"
+                    unknown = ("\t# preserve unrelated comment and whitespace  \t\n"
+                               "\tlogger 'ordinary unknown bytes'\n")
+                    source = f.with_hooks(1).replace(f"\tprintf '%s\\n' {managed}\n", unknown + payload)
+                    original = f.with_hooks(2, f.base.replace("'new'", "'old-original'")) + "# retain existing original  \t\n"
+                    f.init.write_bytes(source.encode())
+                    f.orig.write_bytes(original.encode())
+                    syntax = subprocess.run(["sh", "-n", str(f.init)], capture_output=True)
+                    assert syntax.returncode == 0, syntax.stderr
+                    foreign = f.root / "live/podkop.pt-fragment-new.foreign"
+                    foreign.write_bytes(b"another invocation owns this stage\n")
+                    for action in ("enable", "disable"):
+                        result = f.joined(f.spawn(action))
+                        assert result[0] != 0 and "unsupported Podkop init source" in result[1], result
+                        if name.startswith("ansi-c-"):
+                            assert "ANSI-C quoting" in result[1], result
+                        assert f.init.read_bytes() == source.encode(), (managed, name, legacy, action)
+                        assert f.orig.read_bytes() == original.encode(), (managed, name, legacy, action)
+                        assert foreign.read_bytes() == b"another invocation owns this stage\n"
+                        assert not f.link.exists()
+                        assert not f.events("immediate_patch")
+                        assert not any(call[0] in ("mv", "ln") for call in f.events("before")), "refusal must precede publication"
+                        f.no_owned_temps(preserved=(foreign,))
+                        f.no_restart()
+                    checks += 1
+
+        f = fixture("wrapper-ordinary-inline-source")
+        unknown = ("\t# Quoted examples are ordinary inline data, not multiline payloads.\n"
+                   "\t# Literal $'example' in a comment is not active ANSI-C quoting.\n"
+                   "\tprintf '%s\\n' 'literal <<EOF and \"quotes\"' # keep comment apostrophe: don't\n"
+                   "\tprintf '%s\\n' \"$'ordinary literal'\"\n"
+                   "\tprintf '%s\\n' '$' # dollar before an ordinary closing single quote\n"
+                   "\tprintf '%s\\n' \\$'ordinary quote after a literal dollar'\n"
+                   "\tVALUE=\"$(printf plain)\"\n"
+                   "\tOTHER=\"${VALUE:-default}\"\n"
+                   "\tprintf '%s\\n' \"escaped \\\"quote\\\" and \\\\ byte\"\n")
+        baseline = f.base.replace("\tprintf '%s\\n' start\n", unknown)
+        f.init.write_bytes(f.with_hooks(2, baseline, body=f.legacy_hook + f.hook).encode())
+        f.orig.write_bytes(b"older original\n")
+        f.run("enable")
+        assert f.orig.read_bytes() == baseline.encode()
+        assert f.init.read_bytes() == f.with_hooks(1, baseline).encode()
+        f.run("disable")
+        assert f.init.read_bytes() == baseline.encode() and not f.orig.exists()
+        checks += 1
+
+        for final_lf in (True, False):
+            f = fixture("wrapper-upstream-init-" + str(final_lf))
+            unknown = '''
+administrator_extension() {
+    local resolved="$(readlink "${initscript:-/etc/init.d/podkop}")"
+    local nested="$(basename "$(readlink "${script:-$initscript}")")"
+    local fallback="${NAME:-"$(basename "${resolved:-$initscript}")"}"
+    printf '%s' "$(printf '%s' "${fallback:-"literal ) } # <<EOF"}")"
+    printf '%s' "${nested:-${resolved:-"${NAME:-podkop}"}}" # preserve comment apostrophe: don't
+}
+# Keep administrator bytes and trailing whitespace  \t'''
+            f.base = UPSTREAM_INIT + unknown + ("\n" if final_lf else "")
+            baseline = f.base.encode()
+            f.init.write_bytes(baseline)
+            syntax = subprocess.run(["sh", "-n", str(f.init)], capture_output=True)
+            assert syntax.returncode == 0, syntax.stderr
+            f.run("enable")
+            assert f.orig.read_bytes() == baseline
+            assert f.init.read_bytes() == f.with_hooks(1).encode()
+            # Explicit API Reinstall calls the same shell enable operation. A
+            # stale/nested original must not replace this complete current init.
+            f.init.write_bytes(f.with_hooks(2, body=f.legacy_hook + f.hook).encode())
+            f.orig.write_bytes(b"older original must not replace upstream preamble or extensions\n")
+            for _ in range(2):
+                f.run("enable")
+                assert f.orig.read_bytes() == baseline
+                assert f.init.read_bytes() == f.with_hooks(1).encode()
+            f.run("disable")
+            assert f.init.read_bytes() == baseline and not f.orig.exists() and not f.link.exists()
+            assert f.config.read_bytes() == encoded(ORIGINAL)
+            f.no_restart()
+            checks += 1
 
         f = fixture("source-invalid-service-config")
         invalid = json.loads(encoded(ORIGINAL))

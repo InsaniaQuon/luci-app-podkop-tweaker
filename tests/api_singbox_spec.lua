@@ -1,4 +1,4 @@
--- api_singbox_spec | v1.1.0 | 17.10.2026 | Checked apply, immutable typed outbounds and locked Fragment mutations
+-- api_singbox_spec | v1.2.0 | 19.10.2026 | Direct checked pipes, detached-hook migration/status and UCI-preserving wrapper repair
 
 package.path = "./usr/lib/lua/?.lua;./tests/?.lua;" .. package.path
 
@@ -14,7 +14,8 @@ local FRAGMENT_RAW = "config fragment 'settings'\n\toption fragment 'true'\n\top
 local SB_OK = '{"outbounds":[{"type":"direct"},{"type":"mixed","listen":"127.0.0.1","listen_port":2080}],"route":{"final":"proxy"}}'
 local SB_ORIG = '{"orig":1}'
 local SB_PATCHED = '{"outbounds":[{"tag":"proxy","type":"vless","server":"s","tls":{"enabled":true,"record_fragment":true}}]}'
-local OWNED_HOOK = "( sleep 5 && /usr/bin/podkop-fragment-patch.sh ) &"
+local LEGACY_HOOK = "( sleep 5 && /usr/bin/podkop-fragment-patch.sh ) &"
+local OWNED_HOOK = "( sleep 5 && /usr/bin/podkop-fragment-patch.sh ) </dev/null >/dev/null 2>&1 &"
 local SERVICE_COMMANDS = {
     restart = "/etc/init.d/sing-box restart 2>&1",
     start = "'/etc/init.d/sing-box' start", stop = "'/etc/init.d/sing-box' stop"
@@ -27,10 +28,17 @@ local function service_reply(action, output)
     end, out = output }
 end
 
-local function wrapper_init(start_hooks, reload_hooks)
+local function wrapper_init(start_hooks, reload_hooks, body)
+    body = body or OWNED_HOOK
+    local function lines(hooks)
+        if type(hooks) ~= "table" then return string.rep("\t" .. body .. "\n", hooks) end
+        local out = {}
+        for _, hook in ipairs(hooks) do out[#out + 1] = "\t" .. hook .. "\n" end
+        return table.concat(out)
+    end
     return "#!/bin/sh /etc/rc.common\nUSE_PROCD=1\n\nstart_service() {\n" ..
-        "\tprocd_open_instance\n\tprocd_close_instance\n" .. string.rep("\t" .. OWNED_HOOK .. "\n", start_hooks) ..
-        "}\n\nreload_service() {\n\tstart_service\n" .. string.rep("\t" .. OWNED_HOOK .. "\n", reload_hooks) .. "}\n"
+        "\tprocd_open_instance\n\tprocd_close_instance\n" .. lines(start_hooks) ..
+        "}\n\nreload_service() {\n\tstart_service\n" .. lines(reload_hooks) .. "}\n"
 end
 
 local function pid_reply(output)
@@ -42,12 +50,14 @@ end
 local function begin_sbx(opts)
     opts = opts or {}
     if opts.strict == nil then opts.strict = true end
-    opts.sys = opts.sys or {}
-    table.insert(opts.sys, { match = "sing-box check", out = opts.check or "\nPT_EXIT:0\n" })
+    -- Checked foreground commands use direct io.popen; keep sys.exec responders
+    -- separate so tests retain the real transport and cannot mask a regression.
+    opts.popen = opts.popen or {}
+    table.insert(opts.popen, { match = "sing-box check", out = opts.check or "\nPT_EXIT:0\n" })
     for _, action in ipairs({ "restart", "start", "stop" }) do
-        table.insert(opts.sys, service_reply(action, "\nPT_EXIT:0\n"))
+        table.insert(opts.popen, service_reply(action, "\nPT_EXIT:0\n"))
     end
-    table.insert(opts.sys, pid_reply("\nPT_EXIT:1\n"))
+    table.insert(opts.popen, pid_reply("\nPT_EXIT:1\n"))
     H.begin(opts)
     if opts.seed_cfg == nil then H.vfs_write(CFG, SB_OK) end
     return H.reload("podkop-tweaker.api_singbox")
@@ -59,7 +69,7 @@ end
 
 local function commands_containing(text)
     local result = {}
-    for _, cmd in ipairs(H.exec_cmds()) do
+    for _, cmd in ipairs(H.popen_cmds()) do
         if cmd:find(text, 1, true) then result[#result + 1] = cmd end
     end
     return result
@@ -122,7 +132,7 @@ describe("api_singbox Save/Import integration", function()
     end)
 
     it("publishes checked bytes, keeps a usable backup and forwards process-generation facts", function()
-        local SBX = begin_sbx({ sys = { pid_reply("55\nPT_EXIT:0\n") } })
+        local SBX = begin_sbx({ popen = { pid_reply("55\nPT_EXIT:0\n") } })
         H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
         assert_restart(SBX.save_config('{"new":true}'), true, "55:400")
         assert.equal('{"new":true}', H.vfs_read(CFG))
@@ -152,7 +162,7 @@ describe("api_singbox Save/Import integration", function()
 
     it("retains complete infrastructure-check diagnostics while validating the backup source", function()
         local details = string.rep("native checker infrastructure failure\n", 100)
-        local SBX = begin_sbx({ sys = { { match = function(cmd)
+        local SBX = begin_sbx({ popen = { { match = function(cmd)
             return cmd:find("sing-box check -c ", 1, true) and cmd:find(CFG .. ".tmp-check.", 1, true)
         end, out = details .. "\nPT_EXIT:2\n" } } })
         H.vfs_write(BAK, SB_ORIG)
@@ -190,7 +200,7 @@ describe("api_singbox Save/Import integration", function()
 
     it("reports failed restart as disk-applied, never replays and retains full diagnostics", function()
         local details = string.rep("restart failed\n", 200)
-        local SBX = begin_sbx({ sys = {
+        local SBX = begin_sbx({ popen = {
             service_reply("restart", details .. "\nPT_EXIT:17\n"),
             pid_reply("55\nPT_EXIT:0\n")
         } })
@@ -230,7 +240,7 @@ end)
 
 describe("api_singbox service status/toggle/rollback", function()
     it("exposes a running instance, known absence and failed query distinctly", function()
-        local SBX = begin_sbx({ sys = { pid_reply("55\nPT_EXIT:0\n") } })
+        local SBX = begin_sbx({ popen = { pid_reply("55\nPT_EXIT:0\n") } })
         H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
         local r = SBX.service_status()
         assert.is_true(r.running)
@@ -240,14 +250,14 @@ describe("api_singbox service status/toggle/rollback", function()
         SBX = begin_sbx()
         assert.is_false(SBX.service_status().running)
         H.finish()
-        SBX = begin_sbx({ sys = { pid_reply("\nPT_EXIT:2\n") } })
+        SBX = begin_sbx({ popen = { pid_reply("\nPT_EXIT:2\n") } })
         local unknown = SBX.service_status()
         assert.truthy(unknown.error)
         assert.is_nil(unknown.running)
     end)
 
     it("does not claim success on quiet nonzero toggle commands", function()
-        local SBX = begin_sbx({ sys = { service_reply("start", "\nPT_EXIT:1\n") } })
+        local SBX = begin_sbx({ popen = { service_reply("start", "\nPT_EXIT:1\n") } })
         assert.same({ success = false, error = "Invalid action" }, SBX.service_toggle("reload"))
         local r = SBX.service_toggle("start")
         assert.is_false(r.success)
@@ -258,7 +268,7 @@ describe("api_singbox service status/toggle/rollback", function()
     end)
 
     it("does not label a failed service command applied merely because lock release fails", function()
-        local SBX = begin_sbx({ sys = { service_reply("start", "start failed\n\nPT_EXIT:1\n") },
+        local SBX = begin_sbx({ popen = { service_reply("start", "start failed\n\nPT_EXIT:1\n") },
             failures = { ["/var/lock/podkop-fragment.lock"] = { rmdir = true } } })
         local r = SBX.service_toggle("start")
         assert.is_false(r.success)
@@ -301,7 +311,7 @@ describe("api_singbox service status/toggle/rollback", function()
     }) do
         it("preserves the primary " .. case.name .. " failure evidence when resource release also fails", function()
             local details = string.rep("complete " .. case.name .. " service failure\n", 100)
-            local SBX = begin_sbx({ sys = { service_reply(case.action, details .. "\nPT_EXIT:7\n"), pid_reply("55\nPT_EXIT:0\n") },
+            local SBX = begin_sbx({ popen = { service_reply(case.action, details .. "\nPT_EXIT:7\n"), pid_reply("55\nPT_EXIT:0\n") },
                 failures = { ["/var/lock/podkop-fragment.lock"] = { rmdir = true } } })
             H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
             H.vfs_write(BAK, SB_ORIG)
@@ -329,7 +339,7 @@ end)
 describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)", function()
     for _, empty in ipairs({ '[]', '{}' }) do
         it("accepts explicit count zero with an empty " .. empty .. " container", function()
-            local SBX = begin_sbx({ sys = { jq_out('{"outbound_count":0,"outbounds":' .. empty .. '}') } })
+            local SBX = begin_sbx({ popen = { jq_out('{"outbound_count":0,"outbounds":' .. empty .. '}') } })
             assert.same({ outbound_count = 0, outbounds = {} }, SBX.outbounds())
             assert.equal(SB_OK, H.vfs_read(CFG))
             assert.is_nil(H.vfs_read(BAK))
@@ -344,7 +354,7 @@ describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)
             { tag = "b", type = "vmess", server = "server\\path\nname", tls_enabled = true, has_fragment = true }
         }
         local expected = { outbound_count = 2, outbounds = rows }
-        local SBX = begin_sbx({ sys = { jq_out(H.json.stringify(expected)) } })
+        local SBX = begin_sbx({ popen = { jq_out(H.json.stringify(expected)) } })
         assert.same(expected, SBX.outbounds())
     end)
 
@@ -362,7 +372,7 @@ describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)
         '{"outbound_count":2,"outbounds":[{"tag":"x","type":"vless","server":"s","tls_enabled":true,"has_fragment":false},null]}'
     }) do
         it("does not normalize malformed/non-list jq output into valid empty outbounds: " .. raw, function()
-            local SBX = begin_sbx({ sys = { jq_out(raw) } })
+            local SBX = begin_sbx({ popen = { jq_out(raw) } })
             assert_outbounds_error(SBX.outbounds())
             assert.equal(SB_OK, H.vfs_read(CFG))
             assert_no_stages()
@@ -371,7 +381,7 @@ describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)
 
     it("checks jq status even when stdout looks like a valid empty result", function()
         local details = '{"outbound_count":0,"outbounds":[]}\n' .. string.rep("jq failed\n", 100)
-        local SBX = begin_sbx({ sys = { jq_out(details, 23) } })
+        local SBX = begin_sbx({ popen = { jq_out(details, 23) } })
         local r = SBX.outbounds()
         assert_outbounds_error(r)
         assert.equal(details, r.details)
@@ -379,10 +389,10 @@ describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)
     end)
 
     it("rejects quiet nonzero jq and absent exit evidence", function()
-        local SBX = begin_sbx({ sys = { jq_out("", 4) } })
+        local SBX = begin_sbx({ popen = { jq_out("", 4) } })
         assert_outbounds_error(SBX.outbounds())
         H.finish()
-        SBX = begin_sbx({ sys = { { match = "jq ", out = '{"outbound_count":0,"outbounds":[]}' } } })
+        SBX = begin_sbx({ popen = { { match = "jq ", out = '{"outbound_count":0,"outbounds":[]}' } } })
         assert_outbounds_error(SBX.outbounds())
     end)
 
@@ -419,7 +429,7 @@ describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)
 
     it("reads one immutable bounded snapshot and carries native single-object/array guards", function()
         local changed = '{"outbounds":[]}'
-        local SBX = begin_sbx({ sys = { { match = "jq ", out = function(cmd)
+        local SBX = begin_sbx({ popen = { { match = "jq ", out = function(cmd)
             local stage = cmd:match("'(/etc/sing%-box/config%.json%.tmp%-read%.[^']+)'")
             assert.truthy(stage)
             assert.equal(SB_OK, H.vfs_read(stage))
@@ -438,7 +448,7 @@ describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)
     end)
 
     it("does not report a source-shape jq error as a legitimate empty list", function()
-        local SBX = begin_sbx({ sys = { jq_out("Config outbounds must be an array\n", 5) } })
+        local SBX = begin_sbx({ popen = { jq_out("Config outbounds must be an array\n", 5) } })
         H.vfs_write(CFG, '{"outbounds":{}}')
         assert_outbounds_error(SBX.outbounds())
         assert.equal('{"outbounds":{}}', H.vfs_read(CFG))
@@ -447,7 +457,7 @@ describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)
     for _, jq_failed in ipairs({ false, true }) do
         it("requires owned snapshot cleanup before returning " .. (jq_failed and "a jq failure" or "a successful query"), function()
             local details = jq_failed and string.rep("jq diagnostic\n", 100) or '{"outbound_count":0,"outbounds":[]}'
-            local SBX = begin_sbx({ sys = { jq_out(details, jq_failed and 5 or 0) },
+            local SBX = begin_sbx({ popen = { jq_out(details, jq_failed and 5 or 0) },
                 failures = { [CFG .. ".tmp-read.*"] = { remove = true } } })
             H.vfs_write(CFG .. ".tmp-read.foreign", "another invocation")
             local r = SBX.outbounds()
@@ -505,7 +515,7 @@ describe("api_singbox.patch_fragment resource coordination", function()
         it("does not apply a patch after snapshot cleanup fails" .. (release_failed and " even if lock release also fails" or ""), function()
             local failures = { [CFG .. ".tmp-read.*"] = { remove = true } }
             if release_failed then failures["/var/lock/podkop-fragment.lock"] = { rmdir = true } end
-            local SBX = begin_sbx({ sys = { jq_out(SB_PATCHED) }, failures = failures })
+            local SBX = begin_sbx({ popen = { jq_out(SB_PATCHED) }, failures = failures })
             H.vfs_write(BAK, SB_ORIG)
             local r = SBX.patch_fragment('["proxy"]', "remove")
             assert.is_false(r.success)
@@ -526,7 +536,7 @@ describe("api_singbox.patch_fragment resource coordination", function()
 
     it("holds the shared shell/API resource through snapshot, jq and reentrant checked application", function()
         local competing
-        local SBX = begin_sbx({ sys = { { match = "jq ", out = function(cmd)
+        local SBX = begin_sbx({ popen = { { match = "jq ", out = function(cmd)
             assert.is_true(H.vfs_exists("/var/lock/podkop-fragment.lock"))
             local stage = cmd:match("'(/etc/sing%-box/config%.json%.tmp%-read%.[^']+)'")
             assert.equal(SB_OK, H.vfs_read(stage))
@@ -552,7 +562,7 @@ describe("api_singbox.patch_fragment resource coordination", function()
     end)
 
     it("keeps both-method and record-only transformations and unique repeated snapshots", function()
-        local SBX = begin_sbx({ sys = { jq_out(SB_PATCHED) } })
+        local SBX = begin_sbx({ popen = { jq_out(SB_PATCHED) } })
         assert_restart(SBX.patch_fragment('["proxy"]', "apply", "1", "1", "700ms"))
         local both = commands_containing("jq ")[1]
         assert.truthy(both:find('"fragment": true', 1, true))
@@ -572,7 +582,7 @@ describe("api_singbox.patch_fragment resource coordination", function()
 
     it("does not overwrite an external source change made during jq", function()
         local changed = '{"external":true}'
-        local SBX = begin_sbx({ sys = { { match = "jq ", out = function()
+        local SBX = begin_sbx({ popen = { { match = "jq ", out = function()
             H.vfs_write(CFG, changed)
             return '{"patched":true}\nPT_EXIT:0\n'
         end } } })
@@ -590,7 +600,7 @@ describe("api_singbox.patch_fragment resource coordination", function()
         { name = "non-object jq", output = "[]", code = 0 }, { name = "failed jq with JSON stdout", output = '{"patched":true}', code = 1 }
     }) do
         it("keeps config/backup unchanged on " .. case.name, function()
-            local SBX = begin_sbx({ sys = { jq_out(case.output, case.code) } })
+            local SBX = begin_sbx({ popen = { jq_out(case.output, case.code) } })
             H.vfs_write(BAK, SB_ORIG)
             assert.equal("jq patch failed", SBX.patch_fragment('["proxy"]', "remove").error)
             assert.equal(SB_OK, H.vfs_read(CFG))
@@ -602,7 +612,7 @@ describe("api_singbox.patch_fragment resource coordination", function()
 
     it("retains native check failure details and the previous backup", function()
         local details = string.rep("bad after patch\n", 100)
-        local SBX = begin_sbx({ sys = { jq_out('{"patched":true}') }, check = details .. "\nPT_EXIT:1\n" })
+        local SBX = begin_sbx({ popen = { jq_out('{"patched":true}') }, check = details .. "\nPT_EXIT:1\n" })
         H.vfs_write(BAK, SB_ORIG)
         local r = SBX.patch_fragment('["proxy"]', "remove")
         assert.equal("sing-box check failed after patch", r.error)
@@ -613,7 +623,7 @@ describe("api_singbox.patch_fragment resource coordination", function()
     end)
 
     it("makes one owned backup and rejects a failed backup close before publication/restart", function()
-        local SBX = begin_sbx({ sys = { jq_out('{"patched":true}') } })
+        local SBX = begin_sbx({ popen = { jq_out('{"patched":true}') } })
         assert.is_true(SBX.patch_fragment('["proxy"]', "remove").success)
         local writes = 0
         for _, call in ipairs(H.state().io_log) do
@@ -621,7 +631,7 @@ describe("api_singbox.patch_fragment resource coordination", function()
         end
         assert.equal(1, writes)
         H.finish()
-        SBX = begin_sbx({ sys = { jq_out('{"patched":true}') }, failures = { [BAK .. ".*"] = { close = true } } })
+        SBX = begin_sbx({ popen = { jq_out('{"patched":true}') }, failures = { [BAK .. ".*"] = { close = true } } })
         H.vfs_write(BAK, SB_ORIG)
         assert.truthy(SBX.patch_fragment('["proxy"]', "remove").error)
         assert.equal(SB_OK, H.vfs_read(CFG))
@@ -631,7 +641,7 @@ describe("api_singbox.patch_fragment resource coordination", function()
     end)
 
     it("preserves disk-applied/restart-failed semantics for Fragment too", function()
-        local SBX = begin_sbx({ sys = { jq_out('{"patched":true}'),
+        local SBX = begin_sbx({ popen = { jq_out('{"patched":true}'),
             service_reply("restart", "\nPT_EXIT:1\n") } })
         local r = SBX.patch_fragment('["proxy"]', "remove")
         assert.is_false(r.success)
@@ -656,19 +666,69 @@ describe("api_singbox.wrapper_status", function()
         assert.same({ installed = true, stale = true }, SBX.wrapper_status())
     end)
 
-    it("active when marker present", function()
+    it("does not mistake a marker outside managed service functions for an active wrapper", function()
         local SBX = begin_sbx({})
         H.vfs_write(ORIG, "orig")
         H.vfs_write(INIT_PODKOP, "podkop-fragment-patch.sh\n")
-        assert.same({ installed = true, stale = false }, SBX.wrapper_status())
+        assert.same({ installed = true, stale = true }, SBX.wrapper_status())
     end)
 
-    it("keeps the legacy response shape for the normal start/reload hook pair", function()
+    it("keeps the response shape for the detached start/reload hook pair", function()
         local SBX = begin_sbx({})
         H.vfs_write(ORIG, wrapper_init(0, 0))
         H.vfs_write(INIT_PODKOP, wrapper_init(1, 1))
         assert.same({ installed = true, stale = false }, SBX.wrapper_status())
     end)
+
+    for _, case in ipairs({
+        { name = "legacy pair", start = { LEGACY_HOOK }, reload = { LEGACY_HOOK } },
+        { name = "mixed pair", start = { OWNED_HOOK }, reload = { LEGACY_HOOK } },
+        { name = "reverse mixed pair", start = { LEGACY_HOOK }, reload = { OWNED_HOOK } },
+        { name = "legacy start only", start = { LEGACY_HOOK }, reload = {} },
+        { name = "legacy duplicates", start = { LEGACY_HOOK, LEGACY_HOOK }, reload = { LEGACY_HOOK }, duplicate_hooks = true },
+        { name = "mixed duplicates", start = { LEGACY_HOOK, OWNED_HOOK }, reload = { OWNED_HOOK, LEGACY_HOOK }, duplicate_hooks = true }
+    }) do
+        it("marks " .. case.name .. " stale without mutating or replaying a repair", function()
+            local SBX = begin_sbx()
+            local original, current = wrapper_init(0, 0), wrapper_init(case.start, case.reload)
+            H.vfs_write(ORIG, original)
+            H.vfs_write(INIT_PODKOP, current)
+            local expected = { installed = true, stale = true, duplicate_hooks = case.duplicate_hooks }
+            assert.same(expected, SBX.wrapper_status())
+            assert.same(expected, SBX.wrapper_status())
+            assert.equal(original, H.vfs_read(ORIG))
+            assert.equal(current, H.vfs_read(INIT_PODKOP))
+            assert.same({}, H.exec_cmds())
+            assert.same({}, H.popen_cmds())
+            assert.same({}, H.execute_cmds())
+            assert.same({}, H.commits())
+        end)
+    end
+
+    for _, managed in ipairs({ "start_service", "reload_service" }) do
+        for _, case in ipairs({
+            { name = "one detached hook", hooks = { OWNED_HOOK } },
+            { name = "one legacy hook", hooks = { LEGACY_HOOK } },
+            { name = "two detached hooks", hooks = { OWNED_HOOK, OWNED_HOOK }, duplicate_hooks = true },
+            { name = "two legacy hooks", hooks = { LEGACY_HOOK, LEGACY_HOOK }, duplicate_hooks = true },
+            { name = "mixed hooks", hooks = { OWNED_HOOK, LEGACY_HOOK }, duplicate_hooks = true }
+        }) do
+            it("requires both functions when only " .. managed .. " has " .. case.name, function()
+                local SBX = begin_sbx()
+                local original = wrapper_init(0, 0)
+                local current = wrapper_init(managed == "start_service" and case.hooks or {}, managed == "reload_service" and case.hooks or {})
+                H.vfs_write(ORIG, original)
+                H.vfs_write(INIT_PODKOP, current)
+                assert.same({ installed = true, stale = true, duplicate_hooks = case.duplicate_hooks }, SBX.wrapper_status())
+                assert.equal(current, H.vfs_read(INIT_PODKOP))
+                assert.equal(original, H.vfs_read(ORIG))
+                assert.same({}, H.exec_cmds())
+                assert.same({}, H.popen_cmds())
+                assert.same({}, H.execute_cmds())
+                assert.same({}, H.commits())
+            end)
+        end
+    end
 
     it("reports six generated hook lines as duplicates without changing installed/stale", function()
         local SBX = begin_sbx({})
@@ -677,9 +737,20 @@ describe("api_singbox.wrapper_status", function()
         assert.same({ installed = true, stale = false, duplicate_hooks = true }, SBX.wrapper_status())
     end)
 
-    it("reports an owned hook in the original even when the active wrapper has only two", function()
-        local SBX = begin_sbx({})
-        H.vfs_write(ORIG, wrapper_init(1, 0))
+    for _, managed in ipairs({ "start_service", "reload_service" }) do
+        for _, body in ipairs({ LEGACY_HOOK, OWNED_HOOK }) do
+            it("reports an owned hook in original " .. managed .. " with a normal detached current pair: " .. body, function()
+                local SBX = begin_sbx({})
+                H.vfs_write(ORIG, wrapper_init(managed == "start_service" and 1 or 0, managed == "reload_service" and 1 or 0, body))
+                H.vfs_write(INIT_PODKOP, wrapper_init(1, 1))
+                assert.same({ installed = true, stale = false, duplicate_hooks = true }, SBX.wrapper_status())
+            end)
+        end
+    end
+
+    it("counts mixed owned hooks in the original independently of the current init", function()
+        local SBX = begin_sbx()
+        H.vfs_write(ORIG, wrapper_init({ LEGACY_HOOK, OWNED_HOOK }, {}))
         H.vfs_write(INIT_PODKOP, wrapper_init(1, 1))
         assert.same({ installed = true, stale = false, duplicate_hooks = true }, SBX.wrapper_status())
     end)
@@ -693,7 +764,8 @@ describe("api_singbox.wrapper_status", function()
 
     it("does not classify identical calls in unrelated administrator functions as generated service hooks", function()
         local SBX = begin_sbx({})
-        local custom = "\ncustom_refresh() {\n\t" .. OWNED_HOOK .. "\n}\n"
+        local custom = "\ncustom_refresh() {\n\t" .. LEGACY_HOOK .. "\n\t" .. OWNED_HOOK .. "\n}\n" ..
+            LEGACY_HOOK .. "\n" .. OWNED_HOOK .. "\n"
         H.vfs_write(ORIG, wrapper_init(0, 0) .. custom)
         H.vfs_write(INIT_PODKOP, wrapper_init(1, 1) .. custom)
         assert.same({ installed = true, stale = false }, SBX.wrapper_status())
@@ -701,16 +773,28 @@ describe("api_singbox.wrapper_status", function()
 
     it("does not count comments or manual patch invocations as generated hooks", function()
         local SBX = begin_sbx({})
-        local mentions = "\n# " .. OWNED_HOOK .. "\n/usr/bin/podkop-fragment-patch.sh --manual\n"
+        local mentions = "\n# " .. LEGACY_HOOK .. "\n# " .. OWNED_HOOK .. "\n/usr/bin/podkop-fragment-patch.sh --manual\n"
         H.vfs_write(ORIG, wrapper_init(0, 0) .. mentions)
         H.vfs_write(INIT_PODKOP, wrapper_init(1, 1) .. mentions)
         assert.same({ installed = true, stale = false }, SBX.wrapper_status())
     end)
 
-    it("preserves legacy installed/stale fields when the current init is missing", function()
+    it("trims only surrounding hook whitespace and leaves near-matches unmanaged", function()
+        local SBX = begin_sbx()
+        local current = wrapper_init({ "  " .. OWNED_HOOK .. "\t", LEGACY_HOOK .. " # administrator-owned" }, { OWNED_HOOK })
+        local original = wrapper_init({ OWNED_HOOK .. " # administrator-owned" }, {})
+        H.vfs_write(ORIG, original)
+        H.vfs_write(INIT_PODKOP, current)
+        assert.same({ installed = true, stale = false }, SBX.wrapper_status())
+        assert.equal(current, H.vfs_read(INIT_PODKOP))
+        assert.equal(original, H.vfs_read(ORIG))
+        assert.same({}, H.popen_cmds())
+    end)
+
+    it("marks an installed wrapper stale when the current init is missing", function()
         local SBX = begin_sbx({})
         H.vfs_write(ORIG, wrapper_init(0, 0))
-        assert.same({ installed = true, stale = false }, SBX.wrapper_status())
+        assert.same({ installed = true, stale = true }, SBX.wrapper_status())
     end)
 
     it("does not claim installation from a lone current-init marker without an original", function()
@@ -735,16 +819,19 @@ end)
 
 describe("api_singbox.wrapper_toggle", function()
     local function exit_responder(out)
-        return { match = "podkop-fragment", out = out }
+        return { match = function(cmd)
+            local checked = require("podkop-tweaker.services").checked_command
+            return cmd == checked("/etc/init.d/podkop-fragment enable") or cmd == checked("/etc/init.d/podkop-fragment disable")
+        end, out = out }
     end
 
     local function assert_checked_call(action)
-        assert.equal(1, #H.exec_cmds())
-        local command = H.exec_cmds()[1]
+        assert.equal(1, #H.popen_cmds(), "wrapper mutation must use one direct pipe, without automatic replay")
+        local command = H.popen_cmds()[1]
         assert.equal(require("podkop-tweaker.services").checked_command("/etc/init.d/podkop-fragment " .. action), command)
         assert.truthy(command:find(") </dev/null 2>&1;", 1, true), "stdin must be occupied before the service command starts")
         assert.truthy(command:find("printf '\\nPT_EXIT:%s\\n' \"$?\"", 1, true), "capture the checked command's actual exit status")
-        assert.same({}, H.popen_cmds())
+        assert.same({}, H.exec_cmds(), "checked wrapper commands must not pass through luci.sys.exec")
     end
 
     local function assert_no_lua_mutation()
@@ -760,10 +847,11 @@ describe("api_singbox.wrapper_toggle", function()
         local SBX = begin_sbx({})
         assert.same({ error = "Invalid action" }, SBX.wrapper_toggle("toggle", nil, nil, nil))
         assert.equal(0, #H.exec_cmds())
+        assert.equal(0, #H.popen_cmds())
     end)
 
     it("enable stores uci settings (bad delay coerced) and reports installed", function()
-        local SBX = begin_sbx({ sys = { exit_responder("\nPT_EXIT:0\n") } })
+        local SBX = begin_sbx({ popen = { exit_responder("\nPT_EXIT:0\n") } })
         H.vfs_write(ORIG, "created-by-script")
         local r = SBX.wrapper_toggle("enable", "1", nil, "abc", nil)
         assert.same({ success = true, installed = true }, r)
@@ -776,7 +864,7 @@ describe("api_singbox.wrapper_toggle", function()
     end)
 
     it("disable touches no uci", function()
-        local SBX = begin_sbx({ sys = { exit_responder("\nPT_EXIT:0\n") } })
+        local SBX = begin_sbx({ popen = { exit_responder("\nPT_EXIT:0\n") } })
         local r = SBX.wrapper_toggle("disable", nil, nil, nil)
         assert.same({ success = true, installed = false }, r)
         assert.equal(0, #H.commits())
@@ -784,7 +872,7 @@ describe("api_singbox.wrapper_toggle", function()
     end)
 
     it("reinstall leaves the original and all UCI, including enabled=0, to the shell normalizer", function()
-        local original, current = wrapper_init(0, 0), wrapper_init(3, 3)
+        local original, current = wrapper_init(0, 0), wrapper_init({ LEGACY_HOOK, OWNED_HOOK }, { OWNED_HOOK, LEGACY_HOOK })
         local saved_uci = {
             ["podkop-fragment"] = {
                 H.sec("settings", "fragment", {
@@ -797,7 +885,7 @@ describe("api_singbox.wrapper_toggle", function()
             podkop = { H.sec("main", "settings", { value = "unrelated" }) }
         }
         local called = false
-        local SBX = begin_sbx({ uci = H.json.parse(H.json.stringify(saved_uci)), sys = { exit_responder(function()
+        local SBX = begin_sbx({ uci = H.json.parse(H.json.stringify(saved_uci)), popen = { exit_responder(function()
             called = true
             assert.equal(original, H.vfs_read(ORIG), "the original must still exist when the shell command starts")
             assert.equal(current, H.vfs_read(INIT_PODKOP))
@@ -819,7 +907,7 @@ describe("api_singbox.wrapper_toggle", function()
     end)
 
     it("non-zero exit -> trimmed error message", function()
-        local SBX = begin_sbx({ sys = { exit_responder(" \nwrapper failed badly\n \nPT_EXIT:1\n") } })
+        local SBX = begin_sbx({ popen = { exit_responder(" \nwrapper failed badly\n \nPT_EXIT:1\n") } })
         local r = SBX.wrapper_toggle("enable", nil, nil, nil)
         assert.is_false(r.success)
         assert.equal("wrapper failed badly", r.error)
@@ -833,7 +921,7 @@ describe("api_singbox.wrapper_toggle", function()
         local diagnostics = "normalization refused\nPT_EXIT:0\n" ..
             string.rep("  validation context: retain the original and current init\n", 256) .. "no files published"
         local saved_uci = { ["podkop-fragment"] = { H.sec("settings", "fragment", { enabled = "0", fragment = "true" }) } }
-        local SBX = begin_sbx({ uci = H.json.parse(H.json.stringify(saved_uci)), sys = { exit_responder(function()
+        local SBX = begin_sbx({ uci = H.json.parse(H.json.stringify(saved_uci)), popen = { exit_responder(function()
             assert.equal(original, H.vfs_read(ORIG))
             assert_no_lua_mutation()
             return diagnostics .. "\nPT_EXIT:23\n"
@@ -853,27 +941,93 @@ describe("api_singbox.wrapper_toggle", function()
     end)
 
     it("missing PT_EXIT marker -> treated as failure", function()
-        local SBX = begin_sbx({ sys = { exit_responder("weird output\n") } })
+        local SBX = begin_sbx({ popen = { exit_responder("weird output\n") } })
         local r = SBX.wrapper_toggle("disable", nil, nil, nil)
         assert.is_false(r.success)
-        assert.equal("weird output", r.error)
+        assert.is_true(r.unknown)
+        assert.equal("weird output\n", r.details:sub(1, #"weird output\n"))
+        assert.truthy(r.details:find("Missing or invalid final PT_EXIT marker", 1, true))
+        assert.equal(r.details:match("^%s*(.-)%s*$"), r.error)
         assert_checked_call("disable")
     end)
 
     for _, case in ipairs({
-        { name = "legacy EXIT success", output = "EXIT:0\n", error = "EXIT:0" },
-        { name = "unterminated PT_EXIT success", output = "result\nPT_EXIT:0", error = "result\nPT_EXIT:0" },
-        { name = "non-final PT_EXIT success", output = "\nPT_EXIT:0\nstill running\n", error = "PT_EXIT:0\nstill running" }
+        { name = "legacy EXIT success", output = "EXIT:0\n" },
+        { name = "unterminated PT_EXIT success", output = "result\nPT_EXIT:0" },
+        { name = "non-final PT_EXIT success", output = "\nPT_EXIT:0\nstill running\n" }
     }) do
         it("does not accept " .. case.name .. " as a checked result", function()
-            local SBX = begin_sbx({ sys = { exit_responder(case.output) } })
+            local SBX = begin_sbx({ popen = { exit_responder(case.output) } })
             local r = SBX.wrapper_toggle("disable", nil, nil, nil)
             assert.is_false(r.success)
-            assert.equal(case.error, r.error)
-            assert.equal(case.output, r.details)
+            assert.is_true(r.unknown)
+            assert.equal(case.output, r.details:sub(1, #case.output), "retain all raw output before the unknown-result diagnostic")
+            assert.truthy(r.details:find("Missing or invalid final PT_EXIT marker", 1, true))
+            assert.equal(r.details:match("^%s*(.-)%s*$"), r.error)
             assert_checked_call("disable")
         end)
     end
+
+    for _, case in ipairs({
+        { name = "open failure", pipe = { open_error = "pipe creation failed", open_errno = 24 }, detail = "pipe creation failed", acquired = false },
+        { name = "interrupted read", pipe = { read_error = "Interrupted system call", read_errno = 4 }, detail = "Interrupted system call", acquired = true },
+        { name = "partial interrupted read", pipe = { read_error = "Interrupted system call", read_errno = 4,
+            read_output = "wrapper published\nPT_EXIT:0\n" }, detail = "wrapper published\nPT_EXIT:0\n", acquired = true },
+        { name = "close failure after successful marker", pipe = { content = "wrapper published\nPT_EXIT:0\n",
+            close_error = "close failed", close_errno = 5 }, detail = "close failed", acquired = true }
+    }) do
+        it("keeps UCI/original and reports unknown after " .. case.name .. " without replay", function()
+            local original, current = wrapper_init(0, 0), wrapper_init(1, 1, LEGACY_HOOK)
+            local saved_uci = { ["podkop-fragment"] = { H.sec("settings", "fragment", {
+                enabled = "0", singbox_config = "/etc/sing-box/custom.json", unknown = "keep" }) } }
+            local SBX = begin_sbx({ uci = H.json.parse(H.json.stringify(saved_uci)), popen = { exit_responder(case.pipe) } })
+            H.vfs_write(ORIG, original)
+            H.vfs_write(INIT_PODKOP, current)
+            local r = SBX.wrapper_toggle("reinstall", "1", "1", "1ms")
+            assert.is_false(r.success)
+            assert.is_true(r.unknown)
+            assert.is_nil(r.installed)
+            assert.is_nil(r.settings_saved)
+            assert.truthy(r.details:find(case.detail, 1, true))
+            assert.equal(original, H.vfs_read(ORIG))
+            assert.equal(current, H.vfs_read(INIT_PODKOP))
+            assert.same(saved_uci, H.state().uci)
+            assert_no_lua_mutation()
+            assert_checked_call("enable")
+            local pipes = H.state().pipe_log
+            assert.equal(1, #pipes)
+            assert.equal(case.acquired, pipes[1].acquired)
+            assert.same(case.acquired and { "*a" } or {}, pipes[1].reads)
+            assert.equal(case.acquired and 1 or 0, pipes[1].close_calls)
+        end)
+    end
+
+    it("does not replay a reinstall whose shell publication completed before an interrupted response read", function()
+        local original = wrapper_init(0, 0)
+        local saved_uci = { ["podkop-fragment"] = { H.sec("settings", "fragment", { enabled = "0", unknown = "keep" }) } }
+        local SBX = begin_sbx({ uci = H.json.parse(H.json.stringify(saved_uci)), popen = { exit_responder(function()
+            H.vfs_write(ORIG, original)
+            H.vfs_write(INIT_PODKOP, wrapper_init(1, 1))
+            return { read_error = "Interrupted system call", read_errno = 4 }
+        end) } })
+        H.vfs_write(ORIG, wrapper_init(1, 0, LEGACY_HOOK))
+        H.vfs_write(INIT_PODKOP, wrapper_init({ LEGACY_HOOK, OWNED_HOOK }, { LEGACY_HOOK }))
+        local r = SBX.wrapper_toggle("reinstall")
+        assert.is_false(r.success)
+        assert.is_true(r.unknown)
+        assert.is_nil(r.installed, "an interrupted response cannot confirm shell state")
+        assert.is_nil(r.applied, "transport failure cannot infer a completed mutation")
+        assert.truthy(r.details:find("errno=4", 1, true))
+        assert.equal(original, H.vfs_read(ORIG))
+        assert.equal(wrapper_init(1, 1), H.vfs_read(INIT_PODKOP))
+        assert.same(saved_uci, H.state().uci)
+        assert_no_lua_mutation()
+        assert_checked_call("enable")
+        -- A separate explicit status GET can inspect the published bytes without
+        -- issuing another mutation or changing the complete disabled-master UCI.
+        assert.same({ installed = true, stale = false }, SBX.wrapper_status())
+        assert_checked_call("enable")
+    end)
 
     for _, operation in ipairs({ "set", "commit" }) do
         it("does not invoke the wrapper after a failed UCI " .. operation, function()
@@ -914,12 +1068,12 @@ describe("api_singbox.wrapper_toggle", function()
     end)
 
     it("reports quiet nonzero wrapper exits and post-command state read failures explicitly", function()
-        local SBX = begin_sbx({ sys = { exit_responder("\nPT_EXIT:1\n") } })
+        local SBX = begin_sbx({ popen = { exit_responder("\nPT_EXIT:1\n") } })
         local failed = SBX.wrapper_toggle("disable")
         assert.is_false(failed.success)
         assert.equal("Wrapper command failed", failed.error)
         H.finish()
-        SBX = begin_sbx({ sys = { exit_responder("\nPT_EXIT:0\n") }, failures = { [ORIG] = { close = true } } })
+        SBX = begin_sbx({ popen = { exit_responder("\nPT_EXIT:0\n") }, failures = { [ORIG] = { close = true } } })
         H.vfs_write(ORIG, "original")
         local unknown = SBX.wrapper_toggle("reinstall")
         assert.is_false(unknown.success)
@@ -929,7 +1083,7 @@ describe("api_singbox.wrapper_toggle", function()
     end)
 
     it("does not confirm an enable command whose observed wrapper state is still absent", function()
-        local SBX = begin_sbx({ sys = { exit_responder("\nPT_EXIT:0\n") } })
+        local SBX = begin_sbx({ popen = { exit_responder("\nPT_EXIT:0\n") } })
         local r = SBX.wrapper_toggle("enable", nil, "1", "500ms")
         assert.is_false(r.success)
         assert.is_false(r.installed)
@@ -938,7 +1092,7 @@ describe("api_singbox.wrapper_toggle", function()
     end)
 
     it("creates the native fragment section on first use", function()
-        local SBX = begin_sbx({ sys = { exit_responder("\nPT_EXIT:0\n") } })
+        local SBX = begin_sbx({ popen = { exit_responder("\nPT_EXIT:0\n") } })
         H.vfs_write(ORIG, "original")
         local uci = fragment_rpc_reply(nil, "An absent first-use file must not need an RPC read")
         uci.get_all = function() error("unexpected RPC for absent config") end
@@ -952,7 +1106,7 @@ describe("api_singbox.wrapper_toggle", function()
     it("does not recreate an existing native section and preserves its master/unknown values", function()
         local section = H.sec("settings", "fragment", { enabled = "0", fragment = "false", record_fragment = "true",
             fragment_fallback_delay = "500ms", unknown = "keep", custom_list = { "first", "second" } })
-        local SBX = begin_sbx({ sys = { exit_responder("\nPT_EXIT:0\n") }, uci = { ["podkop-fragment"] = { section } } })
+        local SBX = begin_sbx({ popen = { exit_responder("\nPT_EXIT:0\n") }, uci = { ["podkop-fragment"] = { section } } })
         H.vfs_write(FRAGMENT_CONFIG, FRAGMENT_RAW)
         H.vfs_write(ORIG, "original")
         local uci = fragment_rpc_reply({ settings = section })

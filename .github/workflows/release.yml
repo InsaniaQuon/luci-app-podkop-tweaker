@@ -114,6 +114,9 @@ jobs:
       - name: Check APK hook stdin isolation
         run: lua5.1 tests/native_apk_stdio.lua
 
+      - name: Check native checked-pipe SIGCHLD and wrapper stdio isolation
+        run: python3 -B tests/native_checked_pipe.py
+
       - name: Check atomic Fragment writer and idempotent wrapper
         run: python3 tests/native_fragment.py
 

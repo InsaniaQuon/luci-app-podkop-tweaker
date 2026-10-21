@@ -70,9 +70,10 @@ describe("native-boundary harness model", function()
         begin()
         for _, command in ipairs({ "mktemp '/config.tmp.XXXXXX'",
             "umask 077; mktemp /config.tmp.XXXXXX 2>&1; printf '\\nPT_MKTEMP_EXIT:%s\\n' \"$?\"" }) do
-            local pipe = assert(io.popen(command, "r"))
-            assert.matches("PT_EXIT:125\n$", pipe:read("*a"))
-            assert.is_true(pipe:close())
+            local pipe, err, errno = io.popen(command, "r")
+            assert.is_nil(pipe)
+            assert.matches("Unexpected io.popen", err, 1, true)
+            assert.equal(5, errno)
         end
         assert.same({}, H.allocations())
         assert.equal(2, #H.state().unexpected)
@@ -121,7 +122,8 @@ describe("native-boundary harness model", function()
     for _, path in ipairs({ "/var/lock/podkop-tweaker-podkop.lock", "/var/lock/podkop-fragment.lock" }) do
         local lock = path
         it("models atomic mkdir/rmdir despite broad success observers for " .. lock, function()
-            local S = begin({ popen = function() return "" end, execute = { { match = function() return true end, out = 0 } },
+            local S = begin({ popen = { { match = function() return true end, out = "\nPT_EXIT:0\n" } },
+                execute = { { match = function() return true end, out = 0 } },
                 sys = { { match = function() return true end, out = "\nPT_EXIT:0\n" } } })
             local LIB = require("podkop-tweaker.lib")
             local mkdir = "mkdir '" .. lock .. "' 2>/dev/null"
@@ -177,9 +179,10 @@ describe("native-boundary harness model", function()
         pcall(function()
             assert.matches("PT_EXIT:125\n$", sys.exec(S.checked_command("fixture-write")))
             assert.equal(125, os.execute("flock /var/lock/fixture.lock true"))
-            local pipe = assert(io.popen(S.checked_command("fixture-write"), "r"))
-            assert.matches("PT_EXIT:125\n$", pipe:read("*a"))
-            assert.is_true(pipe:close())
+            local pipe, err, errno = io.popen(S.checked_command("fixture-write"), "r")
+            assert.is_nil(pipe)
+            assert.matches("Unexpected io.popen", err, 1, true)
+            assert.equal(5, errno)
             error("caught by a transport adapter")
         end)
         assert.equal(3, #H.state().unexpected)
@@ -224,6 +227,153 @@ describe("native-boundary harness model", function()
         assert.equal("\nPT_EXIT:0\n", require("luci.sys").exec("fixture; printf '\\nPT_EXIT:%s\\n' \"$?\""))
         assert.same({}, H.state().unexpected)
     end)
+
+    it("does not borrow sys responders or fabricate successful markers for a missing pipe responder", function()
+        local S = begin({ sys = { { match = "fixture-command", out = "\nPT_EXIT:0\n" } } })
+        local accepted, details, code = S.exec_checked("fixture-command")
+        assert.is_false(accepted)
+        assert.is_nil(code)
+        assert.truthy(details:find("Unexpected io.popen", 1, true))
+        assert.same({}, H.exec_cmds())
+        assert.same({ S.checked_command("fixture-command") }, H.popen_cmds())
+        assert.same({}, H.state().pipe_log[1].reads)
+        assert.equal(0, H.state().pipe_log[1].close_calls)
+        local ok, err = pcall(H.finish)
+        assert.is_false(ok)
+        assert.matches("Unexpected harness calls", err)
+    end)
+
+    it("does not replace an explicit primitive pipe fault with modeled success", function()
+        local S = begin({ popen = { { match = "chmod 755 '/script'", out = {
+            content = "returned bytes\nPT_EXIT:0\n", close_error = "pclose failed", close_errno = 10 } } } })
+        H.vfs_write("/script", "script")
+        local ok, details, code = S.exec_checked("chmod 755 '/script'")
+        assert.is_false(ok)
+        assert.is_nil(code)
+        assert.equal("returned bytes\nPT_EXIT:0\n", details:sub(1, #"returned bytes\nPT_EXIT:0\n"))
+        assert.truthy(details:find("pclose failed (errno=10)", 1, true))
+        assert.same({ "*a" }, H.state().pipe_log[1].reads)
+        assert.equal(1, H.state().pipe_log[1].close_calls)
+        assert.same({}, H.exec_cmds())
+    end)
+end)
+
+describe("explicit checked primitive pipe evidence", function()
+    local malformed = {
+        { name = "missing marker", output = "" },
+        { name = "noncanonical zero", output = "\nPT_EXIT:00\n" },
+        { name = "non-final zero", output = "\nPT_EXIT:0\nlate output\n" },
+        { name = "out-of-range 256", output = "\nPT_EXIT:256\n" },
+        { name = "noncanonical 255", output = "\nPT_EXIT:0255\n" },
+        { name = "signed zero", output = "\nPT_EXIT:+0\n" },
+        { name = "unbounded decimal", output = "\nPT_EXIT:" .. string.rep("9", 100) .. "\n" }
+    }
+    for _, case in ipairs(malformed) do
+        local test = case
+        it("preserves " .. test.name .. " from chmod on an existing script as Unknown without a mode effect", function()
+            local command, source = "chmod 755 '/script'", "#!/bin/sh\nprintf '%s' original-bytes\n"
+            local S = begin({ popen = { { match = command, out = test.output } } })
+            H.vfs_write("/script", source)
+            assert.equal(0, os.execute("chmod 644 '/script' 2>/dev/null"))
+            local before = #events("chmod", "/script")
+            local ok, details, code, metadata = S.exec_checked(command)
+            assert.is_false(ok)
+            assert.is_nil(code)
+            assert.same({ unknown = true, errors = {
+                { stage = "marker", error = "Missing or invalid final PT_EXIT marker" }
+            } }, metadata)
+            assert.equal(test.output .. (test.output ~= "" and "\n" or "") ..
+                "Command outcome is unknown: marker failed: Missing or invalid final PT_EXIT marker", details,
+                "the explicit pipe output must remain byte-for-byte raw evidence")
+            assert.equal(source, H.vfs_read("/script"))
+            assert.equal("644", H.vfs_mode("/script"))
+            assert.equal(before, #events("chmod", "/script"), "unknown evidence must not claim primitive success")
+            assert.same({ S.checked_command(command) }, H.popen_cmds())
+            assert.same({}, H.exec_cmds())
+            assert.same({ "*a" }, H.state().pipe_log[1].reads)
+            assert.equal(1, H.state().pipe_log[1].close_calls)
+        end)
+
+        it("preserves " .. test.name .. " from a function responder without claiming a chmod effect", function()
+            local command, source = "chmod 755 '/script'", "original function-responder bytes\n"
+            local S = begin({ popen = function(cmd)
+                if cmd:find(command, 1, true) then return test.output end
+            end })
+            H.vfs_write("/script", source)
+            assert.equal(0, os.execute("chmod 644 '/script' 2>/dev/null"))
+            local before = #events("chmod", "/script")
+            local ok, details, code, metadata = S.exec_checked(command)
+            assert.is_false(ok)
+            assert.is_nil(code)
+            assert.is_true(metadata.unknown)
+            assert.equal(test.output .. (test.output ~= "" and "\n" or "") ..
+                "Command outcome is unknown: marker failed: Missing or invalid final PT_EXIT marker", details)
+            assert.equal(source, H.vfs_read("/script"))
+            assert.equal("644", H.vfs_mode("/script"))
+            assert.equal(before, #events("chmod", "/script"))
+            assert.same({ S.checked_command(command) }, H.popen_cmds())
+            assert.same({}, H.exec_cmds())
+        end)
+    end
+
+    for _, code in ipairs({ 0, 1, 255 }) do
+        local trusted = code
+        it("retains explicit chmod output and models the trusted canonical exit " .. trusted, function()
+            local command, text = "chmod 755 '/script'", "complete primitive diagnostics\n"
+            local S = begin({ popen = { { match = command, out = text .. "\nPT_EXIT:" .. trusted .. "\n" } } })
+            H.vfs_write("/script", "original bytes")
+            assert.equal(0, os.execute("chmod 644 '/script' 2>/dev/null"))
+            local ok, details, actual = S.exec_checked(command)
+            assert.equal(trusted == 0, ok)
+            assert.equal(trusted, actual)
+            assert.equal(text, details)
+            assert.equal("original bytes", H.vfs_read("/script"))
+            assert.equal(trusted == 0 and "755" or "644", H.vfs_mode("/script"))
+            assert.equal(trusted == 0, events("chmod", "/script")[2].success)
+            assert.same({}, H.exec_cmds())
+        end)
+    end
+
+    for _, operation in ipairs({ "mkdir", "rmdir" }) do
+        local verb = operation
+        it("does not apply " .. verb .. " from a noncanonical pipe marker", function()
+            local path = "/var/lock/podkop-tweaker-podkop.lock"
+            local command, raw = verb .. " '" .. path .. "'", "\nPT_EXIT:00\n"
+            local S = begin({ popen = { { match = command, out = raw } } })
+            if verb == "rmdir" then H.vfs_mkdir(path) end
+            local ok, details, code, metadata = S.exec_checked(command)
+            assert.is_false(ok)
+            assert.is_nil(code)
+            assert.is_true(metadata.unknown)
+            assert.equal(raw, details:sub(1, #raw))
+            assert.equal(verb == "rmdir", H.vfs_exists(path))
+            assert.same({}, events(verb, path))
+            assert.same({}, H.exec_cmds())
+        end)
+    end
+
+    for _, case in ipairs({
+        { name = "held mkdir lock", verb = "mkdir", exists = true },
+        { name = "absent rmdir lock", verb = "rmdir", exists = false },
+        { name = "nonempty rmdir lock", verb = "rmdir", exists = true, nonempty = true }
+    }) do
+        local test = case
+        it("rejects explicit canonical success for a " .. test.name, function()
+            local path = "/var/lock/podkop-tweaker-podkop.lock"
+            local command = test.verb .. " '" .. path .. "'"
+            local S = begin({ popen = { { match = command, out = "\nPT_EXIT:0\n" } } })
+            if test.exists then H.vfs_mkdir(path) end
+            if test.nonempty then H.vfs_write(path .. "/owner", "foreign owner") end
+            local ok, details, code = S.exec_checked(command)
+            assert.is_false(ok)
+            assert.equal(1, code)
+            assert.truthy(details:find(test.verb .. ":", 1, true))
+            assert.equal(test.exists, H.vfs_exists(path))
+            if test.nonempty then assert.equal("foreign owner", H.vfs_read(path .. "/owner")) end
+            assert.is_false(events(test.verb, path)[1].success)
+            assert.same({}, H.exec_cmds())
+        end)
+    end
 end)
 
 describe("owned adjacent stages", function()

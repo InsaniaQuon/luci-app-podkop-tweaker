@@ -94,14 +94,6 @@ end
 
 io.popen = function(command, mode)
     assert(mode == nil or mode == "r", "native IO fixture allows read-only command pipes")
-    return native_popen(bridge(command), mode or "r")
-end
-
-os.execute = function(command)
-    return native_execute(bridge(command))
-end
-
-local function capture(command)
     if missing_checker_marker and command:find("sing-box check -c ", 1, true) then
         missing_checker_marker = false
         journal({ operation = "checker-transport-missing-marker", original_command = command })
@@ -110,17 +102,14 @@ local function capture(command)
         -- production exec_checked, not this fixture, must classify the failure.
         command = ":"
     end
-    local fd = assert(native_popen(bridge(command), "r"))
-    local bytes, err = fd:read("*a")
-    local closed = fd:close()
-    assert(bytes, err)
-    -- Lua 5.1 popen close does not portably expose the child's exit. Production
-    -- exec_checked must use the real shell PT_EXIT marker, not this close result.
-    assert(closed, "cannot close native command pipe")
-    return bytes
+    -- Return the real handle; production owns its read and single close.
+    return native_popen(bridge(command), mode or "r")
 end
 
-package.preload["luci.sys"] = function() return { exec = capture } end
+os.execute = function(command)
+    return native_execute(bridge(command))
+end
+
 package.preload["luci.jsonc"] = function() return JSON end
 
 local SRV = require("podkop-tweaker.services")

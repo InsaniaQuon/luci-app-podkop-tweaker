@@ -22,6 +22,7 @@ local function begin(opts)
         return "\nPT_EXIT:0\n"
     end }
     opts.sys[#opts.sys + 1] = { match = "(mkdir -p /etc/hotplug.d/iface)", out = "\nPT_EXIT:0\n" }
+    opts.popen = opts.sys
     opts.execute = opts.execute or {}
     opts.execute[#opts.execute + 1] = { match = function(command) return command:match("^test %-x ") ~= nil end,
         out = function(command)
@@ -54,7 +55,7 @@ describe("subscription scheduler setup and observation", function()
         assert.equal("foreign fixed-path input", H.vfs_read(CRON_INPUT))
         assert.equal(1, #H.stage_paths(CRON_STAGES))
         cleaned_inputs()
-        for _, command in ipairs(H.exec_cmds()) do
+        for _, command in ipairs(H.popen_cmds()) do
             if command:find("crontab ", 1, true) then assert.matches("</dev/null", command, 1, true) end
         end
         assert.falsy(H.vfs_exists(LOCK))
@@ -87,7 +88,7 @@ describe("subscription scheduler setup and observation", function()
         assert.is_true(r.launcher.matches)
         assert.is_true(r.launcher.executable)
         assert.is_true(r.hotplug.matches)
-        assert.same({ ts = "08:00 09.10.2026", updated = 0, unchanged = 2, failed = 1 }, r.last_auto)
+        assert.same({ ts = "08:00 09.10.2026", updated = 0, unchanged = 2, failed = 1, legacy = true }, r.last_auto)
     end)
 
     it("reports duplicate jobs, altered hooks and non-executable launchers truthfully", function()
@@ -149,6 +150,112 @@ describe("subscription scheduler setup and observation", function()
         begin({ fs = { ["/log"] = "partial-prefix" .. header .. "\n" .. string.rep(" ", 65536 - #header - 1) } })
         assert.is_nil(H.reload("podkop-tweaker.subsched").status({}, "/log").last_auto)
     end)
+
+    it("separates the latest completed auto event from the latest outstanding pending event", function()
+        local id_a, id_b = string.rep("a", 32), string.rep("b", 32)
+        local completed = "12:00 19.10.2026|auto|updated=1|unchanged=0|failed=0|id=" .. id_a ..
+            "|state=finished|service=failed|skipped=2|outcome=partial\n"
+        local pending = "12:00 19.10.2026|auto|updated=1|unchanged=0|failed=0|outcome=pending|id=" .. id_b ..
+            "|service=pending|state=pending|skipped=0\n"
+        begin({ fs = { ["/log"] = "11:00 19.10.2026|auto|updated=0|unchanged=1|failed=0\n" .. completed .. pending } })
+        local r = H.reload("podkop-tweaker.subsched").status({}, "/log")
+        assert.same({ ts = "12:00 19.10.2026", updated = 1, unchanged = 0, failed = 0, id = id_a,
+            state = "finished", service = "failed", skipped = 2, outcome = "partial" }, r.last_auto)
+        assert.same({ ts = "12:00 19.10.2026", updated = 1, unchanged = 0, failed = 0, id = id_b,
+            state = "pending", service = "pending", skipped = 0, outcome = "pending" }, r.last_auto_pending)
+    end)
+
+    for _, terminal in ipairs({
+        { name = "legacy", suffix = "" },
+        { name = "finished ok", suffix = "|id=" .. string.rep("b", 32) .. "|state=finished|service=requested|skipped=0|outcome=ok" },
+        { name = "finished partial", suffix = "|id=" .. string.rep("b", 32) .. "|state=finished|service=failed|skipped=0|outcome=partial" },
+        { name = "finished failed", suffix = "|id=" .. string.rep("b", 32) .. "|state=finished|service=failed|skipped=0|outcome=failed" },
+        { name = "finished disk-applied", suffix = "|id=" .. string.rep("b", 32) .. "|state=finished|service=pending|skipped=0|outcome=partial" }
+    }) do
+        for _, later_pending in ipairs({ false, true }) do
+            it("orders pending strictly after " .. terminal.name .. "; later pending=" .. tostring(later_pending), function()
+                local base = "12:00 19.10.2026|auto|updated=1|unchanged=0|failed=0"
+                local older = base .. "|id=" .. string.rep("a", 32) .. "|state=pending|service=pending|skipped=0|outcome=pending\n"
+                local completed = base .. terminal.suffix .. "\n"
+                local newer = base .. "|id=" .. string.rep("c", 32) .. "|state=pending|service=pending|skipped=0|outcome=pending\n"
+                begin({ fs = { ["/log"] = older .. completed .. (later_pending and newer or "") } })
+                local r = H.reload("podkop-tweaker.subsched").status({}, "/log")
+                assert.equal("12:00 19.10.2026", r.last_auto.ts)
+                if terminal.name == "legacy" then assert.is_true(r.last_auto.legacy)
+                else
+                    assert.equal(string.rep("b", 32), r.last_auto.id)
+                    assert.equal("finished", r.last_auto.state)
+                end
+                if later_pending then
+                    assert.equal(string.rep("c", 32), r.last_auto_pending.id)
+                    assert.equal("pending", r.last_auto_pending.state)
+                else assert.is_nil(r.last_auto_pending) end
+            end)
+        end
+    end
+
+    it("returns the latest pending in file order when no auto completion is accepted", function()
+        local function pending(ts, id)
+            return ts .. "|auto|updated=1|unchanged=0|failed=0|id=" .. string.rep(id, 32) ..
+                "|state=pending|service=pending|skipped=0|outcome=pending\n"
+        end
+        begin({ fs = { ["/log"] = pending("13:00 19.10.2026", "a") .. pending("12:00 19.10.2026", "b") } })
+        local r = H.reload("podkop-tweaker.subsched").status({}, "/log")
+        assert.is_nil(r.last_auto)
+        assert.equal(string.rep("b", 32), r.last_auto_pending.id)
+        assert.equal("12:00 19.10.2026", r.last_auto_pending.ts)
+    end)
+
+    it("does not let a malformed extension or manual completion hide the latest auto pending", function()
+        local base = "12:00 19.10.2026|auto|updated=1|unchanged=0|failed=0"
+        local pending = base .. "|id=" .. string.rep("a", 32) .. "|state=pending|service=pending|skipped=0|outcome=pending\n"
+        begin({ fs = { ["/log"] = pending .. base .. "|state=finished\n" ..
+            "12:00 19.10.2026|manual|updated=1|unchanged=0|failed=0\n" } })
+        local r = H.reload("podkop-tweaker.subsched").status({}, "/log")
+        assert.is_nil(r.last_auto)
+        assert.equal(string.rep("a", 32), r.last_auto_pending.id)
+    end)
+
+    it("discards a cut extended pending header at the start of the bounded tail", function()
+        local pending = "12:00 19.10.2026|auto|updated=1|unchanged=0|failed=0|id=" .. string.rep("a", 32) ..
+            "|state=pending|service=pending|skipped=0|outcome=pending"
+        begin({ fs = { ["/log"] = "partial-prefix" .. pending .. "\n" .. string.rep(" ", 65536 - #pending - 1) } })
+        local r = H.reload("podkop-tweaker.subsched").status({}, "/log")
+        assert.is_nil(r.last_auto)
+        assert.is_nil(r.last_auto_pending)
+        assert.equal(65536, r.log_window_bytes)
+    end)
+
+    it("accepts a fatal finished disk-applied event with service pending as completion, never as successful service work", function()
+        begin({ fs = { ["/log"] = "12:00 19.10.2026|auto|updated=1|unchanged=0|failed=1|id=" .. string.rep("a", 32) ..
+            "|state=finished|service=pending|skipped=0|outcome=partial\n" } })
+        local r = H.reload("podkop-tweaker.subsched").status({}, "/log")
+        assert.equal("finished", r.last_auto.state)
+        assert.equal("pending", r.last_auto.service)
+        assert.equal("partial", r.last_auto.outcome)
+        assert.is_nil(r.last_auto_pending)
+    end)
+
+    it("does not promote malformed/incomplete extended headers to legacy completions or pending facts", function()
+        local old = "11:00 19.10.2026|auto|updated=0|unchanged=1|failed=0\n"
+        local base = "12:00 19.10.2026|auto|updated=1|unchanged=0|failed=0"
+        begin({ fs = { ["/log"] = old .. base .. "|state=finished\n" .. base .. "|id=" .. string.rep("a", 32) ..
+            "|state=pending|service=pending|skipped=0|outcome=pending|outcome=ok\n" } })
+        local r = H.reload("podkop-tweaker.subsched").status({}, "/log")
+        assert.equal("11:00 19.10.2026", r.last_auto.ts)
+        assert.is_true(r.last_auto.legacy)
+        assert.is_nil(r.last_auto_pending)
+    end)
+
+    for _, operation in ipairs({ "read", "close" }) do
+        it("keeps both history facts unknown on bounded-tail " .. operation .. " failure", function()
+            begin({ fs = { ["/log"] = "12:00 19.10.2026|auto|updated=0|unchanged=1|failed=0\n" },
+                failures = { ["/log"] = { [operation] = true } } })
+            local r = H.reload("podkop-tweaker.subsched").status({}, "/log")
+            assert.is_nil(r.last_auto)
+            assert.is_nil(r.last_auto_pending)
+        end)
+    end
 
     it("does not require crontab or allocate an input when the installed job is unchanged", function()
         local current = "# retain\n30 1,5,9,13,17,21 * * * /usr/bin/pt-auto-update\n"

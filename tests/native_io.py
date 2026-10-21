@@ -848,7 +848,8 @@ def checked_exit(run):
     require(result.get("kind") == "invalid", "basic whitespace validation lost invalid kind")
     result = a.call("validate", service="singbox", content=GOOD.decode(), checker_transport="missing-marker")
     rejected(result)
-    require(result.get("kind") == "io" and result.get("details") == "",
+    require(result.get("kind") == "io" and "Command outcome is unknown" in result.get("details", "")
+            and "final PT_EXIT marker" in result.get("details", ""),
             "missing PT_EXIT evidence was not classified as IO failure: " + repr(result))
     faults = [event for event in f.records("a", "io") if event.get("operation") == "checker-transport-missing-marker"]
     require(len(faults) == 1, "missing-marker transport fault was not exercised")

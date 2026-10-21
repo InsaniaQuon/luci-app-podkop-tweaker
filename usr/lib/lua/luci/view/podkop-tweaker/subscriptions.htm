@@ -59,6 +59,7 @@ Author: InsaniaQuon
                 <div class="ps-log-settings-note">
                     <strong>&#9888; Note:</strong> The log panel has a fixed height. Displaying many entries with details may require scrolling. On smaller screens or with browser zoom enabled, the layout may shift — reduce the number of displayed entries if needed.
                 </div>
+                <div class="ps-sysinfo-error" id="ps-log-error" role="status" style="display:none;"></div>
                 <div class="ps-log-viewer-wrap" id="ps-log-wrap">
                     <div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">Loading log...</div>
                 </div>
@@ -88,6 +89,7 @@ Author: InsaniaQuon
 <div class="ps-modal" id="ps-full-log-modal" style="display:none;">
     <div class="ps-modal-content ps-modal-wide">
         <h3>Full Update Log</h3>
+        <div class="ps-sysinfo-error" id="ps-full-log-error" role="status" style="display:none;"></div>
         <div class="ps-log-viewer-full" id="ps-full-log-body"></div>
         <div class="ps-modal-footer">
             <button class="btn cbi-button" id="ps-full-log-close">Close</button>
@@ -152,7 +154,14 @@ window.PT = {
 
     function showNotice(el, text, role, details) {
         if (!el) return;
-        if (details) PT.setErr(el, text, text + '\n\n' + details); else el.textContent = text;
+        if (details && (role === 'error' || role === 'warning')) {
+            PT.setErr(el, text, text + '\n\n' + details);
+            // setErr owns error styling; only this notice's summary follows
+            // its warning role, without changing the shared error component.
+            var summary = el.querySelector('summary');
+            if (summary) summary.style.color = PT.color(role);
+        } else el.textContent = text;
+        el.style.whiteSpace = 'normal';
         el.style.color = PT.color(role);
     }
 
@@ -163,22 +172,115 @@ window.PT = {
         return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
     }
 
+    function hasField(record, key) {
+        return Object.prototype.hasOwnProperty.call(record, key);
+    }
+
+    function validJournalResult(journal) {
+        return objectRecord(journal) && typeof journal.recorded === 'boolean' && typeof journal.finalized === 'boolean' &&
+            (!hasField(journal, 'unknown') || typeof journal.unknown === 'boolean') &&
+            (!hasField(journal, 'error') || typeof journal.error === 'string') &&
+            (!hasField(journal, 'details') || typeof journal.details === 'string') &&
+            !(journal.finalized === true && journal.recorded === false);
+    }
+
+    function mutationMetadataIssue(data) {
+        if (!data) return '';
+        // Missing additive fields belong to the legacy contract. Present fields
+        // must retain their actual types; null and string booleans are not facts.
+        if (hasField(data, 'outcome') && (typeof data.outcome !== 'string' || ['pending', 'ok', 'partial', 'failed'].indexOf(data.outcome) === -1)) return 'Invalid result metadata: outcome.';
+        if (hasField(data, 'unknown') && typeof data.unknown !== 'boolean') return 'Invalid result metadata: unknown.';
+        if (hasField(data, 'service') && (typeof data.service !== 'string' || ['pending', 'requested', 'failed', 'unknown', 'not_required'].indexOf(data.service) === -1)) return 'Invalid result metadata: service.';
+        if (hasField(data, 'operation_id') && (typeof data.operation_id !== 'string' || data.operation_id.length !== 32 || !/^[a-f0-9]{32}$/.test(data.operation_id))) return 'Invalid result metadata: operation_id.';
+        if (hasField(data, 'journal') && !validJournalResult(data.journal)) return 'Invalid result metadata: journal.';
+        // A pending outcome is a valid observation, never a terminal mutation ACK.
+        return data.outcome === 'pending' ? 'Completion pending/not recorded.' : '';
+    }
+
     function mutationUncertain(data, error, xhr) {
-        if (data && (data.unknown === true || data.error === 'Internal error')) return true;
+        if (data && (mutationMetadataIssue(data) || data.unknown === true || data.error === 'Internal error')) return true;
         if (error && error.kind === 'http' && xhr && xhr.status >= 500 &&
             (!data || typeof data.success !== 'boolean' && typeof data.applied !== 'boolean')) return true;
         if (error && error.kind === 'http' && xhr && xhr.status >= 400 && xhr.status < 500) return false;
         return !data || (typeof data.success !== 'boolean' && typeof data.error !== 'string');
     }
 
-    function mutationDetails(data, error) {
+    function mutationDetails(data, error, verification) {
         var lines = [];
         if (data && typeof data.error === 'string') lines.push(data.error);
         else if (error && error.message) lines.push(error.message);
         if (data && typeof data.details === 'string') lines.push(data.details);
         else if (error && error.details) lines.push(String(error.details));
-        if (data && data.outcomes !== undefined) lines.push('Slot outcomes:\n' + JSON.stringify(data.outcomes, null, 2));
+        var issue = mutationMetadataIssue(data);
+        if (issue) lines.push(issue);
+        // Construct complete technical facts only for a problem notice. Keep
+        // the received body intact, including applied and prior-instance facts.
+        if (data) lines.push('Response:\n' + JSON.stringify(data, null, 2));
+        if (verification) lines.push('Restart verification:\n' + JSON.stringify(verification, null, 2));
         return lines.join('\n\n');
+    }
+
+    function journalNotice(data) {
+        if (!data || data.journal === undefined) return '';
+        var j = data.journal;
+        if (!validJournalResult(j)) return ' Journal result unknown: invalid journal metadata.';
+        if (j.unknown === true) return ' Journal result unknown; the displayed log may be incomplete.';
+        if (j.recorded === false) return ' Journal recording failed; the operation may be missing from the log.';
+        if (j.finalized === false) return ' Journal finalization failed; a pending record may remain.';
+        if (j.error !== undefined) return ' Journal reported an error; inspect the complete diagnostics.';
+        return '';
+    }
+
+    function journalFailure(data) {
+        var j = data.journal;
+        return validJournalResult(j) && j.unknown !== true && (j.recorded === false || j.finalized === false || hasField(j, 'error'));
+    }
+
+    function restartRequested(data) {
+        if (data.service !== undefined) return data.service === 'requested';
+        return data.restarting === true || data.restarted === true;
+    }
+
+    function restartEvidence(data) {
+        return data.restart && typeof data.restart === 'object' && !Array.isArray(data.restart) ? data.restart : data;
+    }
+
+    function serviceFailure(data) {
+        if (data.service === 'failed') return true;
+        var restart = data.restart;
+        return data.service !== 'unknown' && objectRecord(restart) && restart.unknown !== true &&
+            (restart.success === false || restart.error !== undefined);
+    }
+
+    function operationFailure(data) {
+        return serviceFailure(data) || journalFailure(data) || data.outcome === 'failed';
+    }
+
+    function mutationProblemRole(data, unknown) {
+        if (data && mutationMetadataIssue(data)) return 'warning';
+        return unknown && !(data && (serviceFailure(data) || journalFailure(data))) ? 'warning' : 'error';
+    }
+
+    function operationPartial(data) {
+        return data.partial === true || data.outcome === 'partial' || data.skipped > 0;
+    }
+
+    function serviceUnverified(data) {
+        return data.service !== undefined && data.service !== 'not_required' && data.service !== 'requested' ||
+            data.restart !== undefined && (!objectRecord(data.restart) || data.restart.unknown === true || data.restart.command_result_known === false);
+    }
+
+    function serviceMessage(data, result) {
+        if (data.service === undefined) return processMessage(result);
+        if (serviceUnverified(data) && (data.service === 'requested' || data.service === 'not_required')) return 'Service restart result unknown.';
+        var labels = {
+            pending: 'Restart completion not recorded.',
+            requested: processMessage(result),
+            failed: 'Service restart failed.',
+            unknown: 'Service restart result unknown.',
+            not_required: ''
+        };
+        return Object.prototype.hasOwnProperty.call(labels, data.service) ? labels[data.service] : 'Service metadata unknown; restart unconfirmed.';
     }
 
     function globalOutcome(text, role, details) {
@@ -488,10 +590,10 @@ window.PT = {
     }
 
     function processMessage(result) {
-        if (result && result.confirmed === true) return 'A new service process instance is running.';
-        if (result && result.known === true && result.running === false) return 'Service is not running at the latest check; restart is unconfirmed.';
-        if (result && result.known === true && result.running === true) return 'Service is running, but restart is unconfirmed.';
-        return 'Service status is unknown; restart is unconfirmed.';
+        if (result && result.confirmed === true) return 'Restart confirmed.';
+        if (result && result.known === true && result.running === false) return 'Service not running; restart unconfirmed.';
+        if (result && result.known === true && result.running === true) return 'Service running; restart unconfirmed.';
+        return 'Service status unknown; restart unconfirmed.';
     }
 
     function finishAttachment(section, index, resp, error, xhr, generation) {
@@ -500,25 +602,34 @@ window.PT = {
         var unknown = mutationUncertain(data, error, xhr);
         var success = !error && data && data.success === true && !('error' in data) && !unknown;
         var applied = data && data.applied === true;
-        var details = mutationDetails(data, error);
 
         function finish(result) {
             slotBusy(section, index, false);
-            var text = data.unchanged === true ? 'Association saved; proxy link unchanged. No service restart requested.' :
-                'Changes saved. ' + processMessage(result);
-            var role = data.unchanged === true || result && result.confirmed === true ? 'success' : 'warning';
-            setSlotStatus(section, index, text, role);
-            if (modal) globalOutcome(text, role);
+            var unchanged = data.unchanged === true && !restartRequested(data);
+            var text = unchanged ? 'Association saved; proxy link unchanged.' : 'Changes saved. ' + (serviceMessage(data, result) || processMessage(result));
+            if (unchanged && serviceUnverified(data)) text += ' ' + serviceMessage(data, result);
+            if (data.restart_required === true) text += ' A service restart is still required.';
+            var journal = journalNotice(data);
+            var unverified = serviceUnverified(data) || data.restart_required === true || !unchanged && (!result || result.confirmed !== true);
+            var role = operationFailure(data) ? 'error' : operationPartial(data) || journal || unverified ? 'warning' : unchanged ? 'muted' : 'success';
+            if (operationPartial(data)) text = 'Partial result: ' + text;
+            var details = role === 'error' || role === 'warning' ? mutationDetails(data, error, result) : null;
+            setSlotStatus(section, index, text + journal, role, details);
+            if (modal) globalOutcome(text + journal, role, details);
             loadSectionState(section);
             loadUpdateLog();
         }
 
         if (success) {
             if (modal && generation === modalGeneration) closeModal();
-            if (data.restarting === true || data.restarted === true) {
-                setSlotStatus(section, index, 'Changes saved. Verifying service process transition...', 'info');
-                if (modal) setGlobalStatus('Changes saved. Verifying service process transition...', 'info');
-                waitForRestart(data, finish);
+            if (restartRequested(data) && !serviceFailure(data)) {
+                var journal = journalNotice(data);
+                var role = operationFailure(data) ? 'error' : operationPartial(data) || journal || serviceUnverified(data) ? 'warning' : 'info';
+                var text = (operationPartial(data) ? 'Partial result: ' : '') + 'Changes saved. Restart requested; verifying...' + journal;
+                var details = role === 'info' ? null : mutationDetails(data, error);
+                setSlotStatus(section, index, text, role, details);
+                if (modal) globalOutcome(text, role, details);
+                waitForRestart(restartEvidence(data), finish);
             } else finish(null);
             return;
         }
@@ -527,9 +638,13 @@ window.PT = {
         var text = unknown ? (applied ? 'Changes saved, but finishing result unknown. ' : 'Result unknown. ') + 'Inspect refreshed sections/logs and reload before another change; no request was retried.' :
             applied ? 'Partially applied: changes were saved, but finishing failed.' : 'Change failed: ' + (data && data.error || error && error.message || 'Invalid response');
         if (data && data.restart_required === true) text += ' A service restart is still required; no process transition was confirmed.';
-        if (applied || unknown) globalOutcome(text, 'error', details);
-        setSlotStatus(section, index, text, 'error', details);
-        if (modal && generation === modalGeneration) showNotice(subFetchStatus, text, 'error', details);
+        if (data && data.service !== undefined) text += ' ' + serviceMessage(data, null);
+        text += journalNotice(data);
+        var role = mutationProblemRole(data, unknown);
+        var details = mutationDetails(data, error);
+        if (applied || unknown) globalOutcome(text, role, details);
+        setSlotStatus(section, index, text, role, details);
+        if (modal && generation === modalGeneration) showNotice(subFetchStatus, text, role, details);
         if (applied || unknown) { loadSectionState(section); loadUpdateLog(); }
     }
 
@@ -607,14 +722,18 @@ window.PT = {
                 var data = mutationPayload(resp, error), unknown = mutationUncertain(data, error, xhr);
                 if (!unknown) slotBusy(section, index, false);
                 if (!error && data && data.success === true && !unknown) {
-                    setSlotStatus(section, index, 'Subscription association removed; proxy link retained.', 'success');
+                    var journal = journalNotice(data);
+                    var role = operationFailure(data) ? 'error' : journal ? 'warning' : 'success';
+                    setSlotStatus(section, index, 'Subscription association removed; proxy link retained.' + journal, role, journal ? mutationDetails(data, error) : null);
                     loadSectionState(section);
                 } else {
                     var message = unknown ? (data && data.applied === true ? 'Detach applied; finishing result unknown. ' : 'Detach result unknown. ') + 'Inspect sections and reload before another change.' :
                         data && data.applied === true ? 'Detach was applied, but finishing failed.' : data && data.error || error && error.message || 'Invalid response';
-                    setSlotStatus(section, index, message, 'error', mutationDetails(data, error));
+                    message += journalNotice(data);
+                    var role = mutationProblemRole(data, unknown), details = mutationDetails(data, error);
+                    setSlotStatus(section, index, message, role, details);
                     if (unknown || data && data.applied === true) {
-                        globalOutcome(message, 'error', mutationDetails(data, error));
+                        globalOutcome(message, role, details);
                         loadSectionState(section); loadUpdateLog();
                     }
                 }
@@ -782,30 +901,34 @@ window.PT = {
                 return typeof data[key] === 'number' && isFinite(data[key]) && data[key] >= 0 && Math.floor(data[key]) === data[key];
             }) && (data.skipped === undefined || typeof data.skipped === 'number' && isFinite(data.skipped) && data.skipped >= 0 && Math.floor(data.skipped) === data.skipped);
             var unknown = mutationUncertain(data, error, xhr) || !error && !counters;
-            var countSummary = counters ? data.updated + ' updated, ' + data.unchanged + ' unchanged, ' + data.failed + ' failed, '
-                + (data.skipped === undefined ? 0 : data.skipped) + ' skipped.' : '';
-            var details = mutationDetails(data, error);
+            var countSummary = counters ? data.updated + ' updated, ' + data.unchanged + ' unchanged, ' + data.failed + ' failed'
+                + (data.skipped > 0 ? ', ' + data.skipped + ' skipped' : '') + '.' : '';
             var partial = data && (data.applied === true || counters && data.updated > 0);
             var refreshed = false;
             function refreshResult() {
                 if (refreshed) return;
                 refreshed = true;
-                loadStateSilent(); loadUpdateLog();
+                loadStateSilent(); loadUpdateLog(); loadAutoStatus();
             }
 
             function finish(result) {
-                var failed = !!error || data.success !== true || data.failed > 0 || data.partial === true;
-                var text = (failed ? partial ? 'Partial result: ' : 'Update failed: ' : 'Update results: ') + countSummary;
-                var requested = data.restarting === true || data.restarted === true;
+                var failed = !!error || data.success !== true || data.failed > 0 || operationFailure(data);
+                var incomplete = operationPartial(data) || failed && (partial || data.unchanged > 0);
+                var knownFailure = operationFailure(data) || failed && !incomplete;
+                var requested = restartRequested(data);
+                var unverified = serviceUnverified(data) || (requested || data.updated > 0 || data.restart_required === true) && (!result || result.confirmed !== true);
+                var text = (failed || incomplete ? partial || incomplete ? 'Partial result: ' : 'Update failed: ' :
+                    data.updated > 0 ? unverified ? 'Changes saved: ' : 'Update complete: ' : 'No proxy changes: ') + countSummary;
+                if (requested || serviceUnverified(data)) text += ' ' + serviceMessage(data, result);
                 if (data.restart_required === true) text += ' A service restart is still required; no process transition was confirmed.';
-                else if (requested || data.updated > 0) text += ' ' + processMessage(result);
-                else text += ' No service restart requested.';
+                else if (!requested && !serviceUnverified(data) && data.updated > 0) text += ' ' + processMessage(result);
                 if (data.error) text += ' ' + data.error;
-                var unverified = (requested || data.updated > 0 || data.restart_required === true) && (!result || result.confirmed !== true);
-                var role = failed ? 'error' : unverified || data.skipped > 0 ? 'warning' : 'success';
+                var journal = journalNotice(data);
+                text += journal;
+                var role = knownFailure ? 'error' : incomplete || unverified || journal ? 'warning' : data.updated > 0 ? 'success' : 'muted';
                 allPending = false;
                 slotBusy('', -1, false);
-                globalOutcome(text, role, details);
+                globalOutcome(text, role, role === 'error' || role === 'warning' ? mutationDetails(data, error, result) : null);
                 refreshResult();
             }
 
@@ -815,62 +938,369 @@ window.PT = {
                     ' Inspect refreshed sections/logs and reload before another update; no request was retried.' :
                     partial ? 'Partial result: changes were saved, but the update failed.' : 'Update failed: ' + (data && data.error || error && error.message || 'Invalid response');
                 if (data && data.restart_required === true) text += ' A service restart is still required.';
-                globalOutcome(text, 'error', details);
+                if (data && data.service !== undefined) text += ' ' + serviceMessage(data, null);
+                text += journalNotice(data);
+                globalOutcome(text, mutationProblemRole(data, unknown), mutationDetails(data, error));
                 if (unknown || partial) refreshResult();
                 return;
             }
-            if (!error && data.success === true && (data.restarting === true || data.restarted === true)) {
-                globalOutcome((data.failed > 0 || data.partial === true ? 'Partial result: ' : 'Update results: ') + countSummary + ' Changes saved; verifying service process transition...',
-                    data.failed > 0 ? 'error' : 'info', details);
+            if (!error && data.success === true && restartRequested(data) && !serviceFailure(data)) {
+                var journal = journalNotice(data);
+                var incomplete = data.failed > 0 || operationPartial(data);
+                var role = operationFailure(data) ? 'error' : incomplete || journal || serviceUnverified(data) ? 'warning' : 'info';
+                globalOutcome((incomplete ? 'Partial result: ' : 'Update results: ') + countSummary + ' Restart requested; verifying...' + journal,
+                    role, role === 'info' ? null : mutationDetails(data, error));
                 refreshResult();
-                waitForRestart(data, finish);
+                waitForRestart(restartEvidence(data), finish);
             } else finish(null);
         }, 300000);
     });
 
-    refreshBtn.addEventListener('click', function() { loadStateSilent(); loadAutoStatus(); if (!optionsLoaded) loadOptions(); });
+    refreshBtn.addEventListener('click', function() { loadStateSilent(); loadAutoStatus(); loadUpdateLog(); if (!optionsLoaded) loadOptions(); });
 
+    // These fixed tables own all lifecycle labels and roles. Journal text never
+    // supplies a class, style, service verdict or process-transition evidence.
+    var journalFields = {
+        id: /^[a-f0-9]{32}$/,
+        state: /^(pending|finished)$/,
+        service: /^(pending|requested|failed|unknown|not_required)$/,
+        skipped: /^\d{1,10}$/,
+        outcome: /^(pending|ok|partial|failed)$/
+    };
+    var journalLabels = {
+        service: {
+            pending: ['Restart completion not recorded.', 'warning'],
+            failed: ['Service restart failed.', 'error'],
+            unknown: ['Service restart result unknown.', 'warning']
+        },
+        outcome: {
+            partial: ['Partial update.', 'warning'],
+            failed: ['Update failed.', 'error']
+        }
+    };
+
+    function objectRecord(value) {
+        return value && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    function validJournalTimestamp(value) {
+        return typeof value === 'string' && value.length === 16 && /^\d{2}:\d{2} \d{2}\.\d{2}\.\d{4}$/.test(value);
+    }
+
+    function validLogCounter(value) {
+        return typeof value === 'string' && value.length > 0 && value.length <= 10 && !/[^0-9]/.test(value);
+    }
+
+    function validJournalFields(record) {
+        return Object.keys(journalFields).every(function(key) {
+            var match = typeof record[key] === 'string' && record[key].match(journalFields[key]);
+            return match && match[0] === record[key];
+        }) && (record.state === 'pending' ? record.service === 'pending' && record.outcome === 'pending' :
+            record.outcome !== 'pending');
+    }
+
+    function eventStats(e) {
+        return 'updated=' + e.updated + ' unchanged=' + e.unchanged + ' failed=' + e.failed +
+            (e.kind === 'extended' && /[1-9]/.test(e.skipped) ? ' skipped=' + e.skipped : '');
+    }
+
+    function eventFacts(e) {
+        if (e.kind === 'unknown') return [['Unknown lifecycle — invalid or incomplete journal metadata', 'warning']];
+        var facts = [];
+        if (e.kind === 'extended') {
+            if (e.state === 'pending') facts.push(['Completion pending/not recorded', 'muted']);
+            else {
+                if (Object.prototype.hasOwnProperty.call(journalLabels.service, e.service)) facts.push(journalLabels.service[e.service]);
+                if (Object.prototype.hasOwnProperty.call(journalLabels.outcome, e.outcome)) facts.push(journalLabels.outcome[e.outcome]);
+            }
+            if (/[1-9]/.test(e.skipped)) facts.push(['Some slots were skipped.', 'warning']);
+        }
+        if (Number(e.failed) > 0 && !(e.kind === 'extended' && e.state === 'finished' && (e.outcome === 'partial' || e.outcome === 'failed'))) {
+            facts.push(['Some proxy updates failed.', Number(e.updated) > 0 || Number(e.unchanged) > 0 ? 'warning' : 'error']);
+        }
+        return facts;
+    }
+
+    function eventRole(e) {
+        var facts = eventFacts(e);
+        if (facts.some(function(fact) { return fact[1] === 'error'; })) return 'error';
+        return facts.some(function(fact) { return fact[1] === 'warning'; }) ? 'warning' : 'muted';
+    }
+
+    function problemDetails(text, role) {
+        // A plain details body keeps the enclosing log's Copy source free of
+        // nested copy-button labels and follows the currently displayed text.
+        return '<details class="ps-err-details"><summary style="color:' + PT.color(role) + '">Details</summary>' +
+            '<div class="ps-error-details" style="margin:0;font-weight:400">' + PT.escapeHtml(text) + '</div></details>';
+    }
+
+    function numericCount(value) {
+        return typeof value === 'number' && isFinite(value) && value >= 0 && value <= 9999999999 && Math.floor(value) === value;
+    }
+
+    function automaticEvent(record, state) {
+        if (!objectRecord(record)) return null;
+        var e = { kind: 'unknown', ts: typeof record.ts === 'string' ? record.ts : '',
+            updated: typeof record.updated === 'string' || numericCount(record.updated) ? String(record.updated) : JSON.stringify(record.updated),
+            unchanged: typeof record.unchanged === 'string' || numericCount(record.unchanged) ? String(record.unchanged) : JSON.stringify(record.unchanged),
+            failed: typeof record.failed === 'string' || numericCount(record.failed) ? String(record.failed) : JSON.stringify(record.failed) };
+        if (!validJournalTimestamp(record.ts) || !['updated', 'unchanged', 'failed'].every(function(key) { return numericCount(record[key]); })) return e;
+        var hasMetadata = Object.keys(journalFields).some(function(key) { return record[key] !== undefined; });
+        if (record.legacy === true && !hasMetadata && state === 'finished') { e.kind = 'legacy'; return e; }
+        if (record.legacy !== undefined && record.legacy !== false) return e;
+        Object.keys(journalFields).forEach(function(key) { e[key] = record[key]; });
+        // Native JSON counters are numbers; log-file counters remain exact text.
+        if (!numericCount(record.skipped)) return e;
+        e.skipped = String(record.skipped);
+        if (validJournalFields(e) && e.state === state) e.kind = 'extended';
+        return e;
+    }
+
+    function automaticSummary(record, state) {
+        var e = automaticEvent(record, state);
+        var role = e ? eventRole(e) : 'warning';
+        var facts = e && eventFacts(e).map(function(fact) { return fact[0]; }).join(' ');
+        return {
+            text: !e || e.kind === 'unknown' ? 'Unknown automatic journal metadata' : e.ts + ' — ' + eventStats(e) + (facts ? '; ' + facts : ''),
+            role: role,
+            details: role === 'error' || role === 'warning' ? JSON.stringify(record, null, 2) : null
+        };
+    }
+
+    function autoComponentRole(component, booleanFields, stringFields) {
+        if (!objectRecord(component)) return 'warning';
+        if (hasField(component, 'error')) return typeof component.error === 'string' ? 'error' : 'warning';
+        if (hasField(component, 'unknown') && (typeof component.unknown !== 'boolean' || component.unknown === true) ||
+            hasField(component, 'details') && typeof component.details !== 'string' ||
+            booleanFields.some(function(key) { return hasField(component, key) && typeof component[key] !== 'boolean'; }) ||
+            stringFields.some(function(key) { return hasField(component, key) && typeof component[key] !== 'string'; })) return 'warning';
+        return '';
+    }
+
+    function autoSetupRow(label, text, role, component, context) {
+        var details = null;
+        if (role === 'error' || role === 'warning') {
+            var lines = [];
+            if (objectRecord(component) && typeof component.error === 'string') lines.push(component.error);
+            if (objectRecord(component) && typeof component.details === 'string') lines.push(component.details);
+            if (component === undefined) lines.push('Component missing from response.');
+            lines.push(context ? 'Context:\n' + JSON.stringify(context, null, 2) : 'Component:\n' + JSON.stringify(component, null, 2));
+            details = lines.join('\n\n');
+        }
+        return [label, text, role, details];
+    }
+
+    function autoSetupRows(cron, launcher, hook) {
+        // These are launch-setup problems, not a second operation history. Keep
+        // unknown mode settings distinct from disabled modes and skip unused
+        // launcher/daemon facts. Cron/hook reads still guard against old wiring.
+        var rows = [], text;
+        var context = { cron: cron, launcher: launcher, hotplug: hook };
+        var cronMode = objectRecord(cron) && typeof cron.enabled === 'boolean' ? cron.enabled : null;
+        var wanMode = objectRecord(hook) && typeof hook.enabled === 'boolean' ? hook.enabled : null;
+        var actual = objectRecord(cron) && hasField(cron, 'actual') ? cron.actual : undefined;
+        var actualValid = Array.isArray(actual) && actual.every(function(line) { return typeof line === 'string'; }) || objectRecord(actual) && Object.keys(actual).length === 0;
+        var actualCount = actualValid ? Array.isArray(actual) ? actual.length : 0 : null;
+        var role = autoComponentRole(cron, ['enabled', 'matches'], ['expected']);
+        if (role === 'error') text = 'Cannot read crontab';
+        else if (role || cronMode === null || typeof cron.matches !== 'boolean' ||
+            hasField(cron, 'actual') && !actualValid || cronMode === true && typeof cron.expected === 'string' && !cron.expected.trim()) {
+            text = 'Cannot confirm scheduled auto-update setup'; role = 'warning';
+        } else if (cronMode === false && (cron.matches === false || actualCount > 0)) {
+            text = actualCount === 0 ? 'Cannot confirm cron cleanup while scheduling is disabled' : 'Scheduling is disabled, but an unexpected cron entry may still trigger updates';
+            role = 'warning';
+        } else if (cronMode === true && (cron.matches === false || actualCount === 0 || actualCount > 1 ||
+            actualCount === 1 && typeof cron.expected === 'string' && actual[0] !== cron.expected)) {
+            text = 'Scheduled auto-update entry is missing or different'; role = 'warning';
+        }
+        if (role) rows.push(autoSetupRow('Schedule', text, role, cron, context));
+
+        if (cronMode === true) {
+            // pidof supplies presence, not process health or query-error evidence.
+            if (typeof cron.running !== 'boolean' || hasField(cron, 'unknown') && (typeof cron.unknown !== 'boolean' || cron.unknown === true)) {
+                rows.push(autoSetupRow('Cron daemon', 'Cannot confirm scheduled auto-update: daemon status unknown', 'warning', cron, context));
+            } else if (cron.running === false) {
+                rows.push(autoSetupRow('Cron daemon', 'Cron daemon not detected; cannot confirm scheduled auto-update', 'warning', cron, context));
+            }
+        }
+
+        if (cronMode === true || wanMode === true) {
+            role = autoComponentRole(launcher, ['exists', 'matches', 'executable'], []);
+            if (role === 'error') text = 'Cannot read auto-update launcher';
+            else if (role || launcher.exists === false && (launcher.matches === true || launcher.executable === true)) {
+                text = 'Cannot confirm the auto-update launcher'; role = 'warning';
+            } else if (launcher.exists === false || launcher.matches === false || launcher.executable === false) {
+                text = 'Auto-update launcher is missing, changed or not executable'; role = 'warning';
+            } else if (launcher.exists !== true || launcher.matches !== true || launcher.executable !== true) {
+                text = 'Cannot confirm the auto-update launcher'; role = 'warning';
+            }
+            if (role) rows.push(autoSetupRow('Launcher', text, role, launcher, context));
+        }
+
+        role = autoComponentRole(hook, ['enabled', 'exists', 'matches', 'executable'], []);
+        if (role === 'error') text = 'Cannot read hotplug hook';
+        else if (role || wanMode === null || hook.exists === false && (hook.matches === true || hook.executable === true)) {
+            text = 'Cannot confirm WAN auto-update setup'; role = 'warning';
+        } else if (wanMode === false && hook.exists === true) {
+            text = 'WAN auto-update is disabled, but its hook may still trigger updates'; role = 'warning';
+        } else if (wanMode === false && hook.exists !== false) {
+            text = 'Cannot confirm WAN hook cleanup while auto-update is disabled'; role = 'warning';
+        } else if (wanMode === true && (hook.exists === false || hook.matches === false || hook.executable === false)) {
+            text = 'WAN auto-update hook is missing, changed or not executable'; role = 'warning';
+        } else if (wanMode === true && (hook.exists !== true || hook.matches !== true || hook.executable !== true)) {
+            text = 'Cannot confirm the WAN auto-update hook'; role = 'warning';
+        }
+        if (role) rows.push(autoSetupRow('WAN trigger', text, role, hook, context));
+        return rows;
+    }
+
+    function getAutoStatus(callback) {
+        var xhr = null, finished = false, deadline = null;
+        function finish(event, reason) {
+            if (finished) return;
+            finished = true;
+            if (deadline !== null) { clearTimeout(deadline); deadline = null; }
+
+            var status = 0, statusKnown = false, body = '', bodyKnown = false, captureErrors = [];
+            try {
+                var observedStatus = xhr && xhr.status;
+                if (typeof observedStatus === 'number' && isFinite(observedStatus) && observedStatus >= 0 && Math.floor(observedStatus) === observedStatus) {
+                    status = observedStatus; statusKnown = true;
+                } else captureErrors.push('HTTP status unavailable.');
+            } catch (e) { captureErrors.push('Cannot read HTTP status: ' + String(e)); }
+            try {
+                var observedBody = xhr && xhr.responseText;
+                if (typeof observedBody === 'string') { body = observedBody; bodyKnown = true; }
+                else captureErrors.push('Response body unavailable.');
+            } catch (e) { captureErrors.push('Cannot read response body: ' + String(e)); }
+
+            var data = null, parsed = false, parseError = '';
+            if (bodyKnown) {
+                try { data = JSON.parse(body); parsed = true; }
+                catch (e) { parseError = String(e); }
+            }
+            var kind = statusKnown && status > 0 && status !== 200 ? 'http' : event !== 'load' ? event :
+                captureErrors.length ? 'response' : !statusKnown || status !== 200 ? 'network' : !parsed ? 'parse' : 'ok';
+            var message = kind === 'http' ? 'Auto-update setup HTTP error: ' + status : kind === 'parse' ? 'Invalid JSON in auto-update setup response' :
+                kind === 'response' ? 'Cannot capture the complete auto-update setup response' : reason || (kind === 'network' ? 'No HTTP response received' : '');
+            var lines = ['HTTP status: ' + (statusKnown ? status : 'unavailable'), 'Completion: ' + event];
+            if (reason) lines.push(reason);
+            if (captureErrors.length) lines.push(captureErrors.join('\n'));
+            if (parseError) lines.push('JSON parse error: ' + parseError);
+            if (objectRecord(data) && typeof data.error === 'string') lines.push('Server error: ' + data.error);
+            if (objectRecord(data) && typeof data.details === 'string') lines.push(data.details);
+            lines.push(bodyKnown ? 'Response body:\n' + body : 'Response body unavailable.');
+            callback(data, { status: statusKnown ? status : null, kind: kind, message: message, details: lines.join('\n\n') });
+        }
+
+        try {
+            xhr = new XMLHttpRequest();
+            xhr.onreadystatechange = function() {
+                if (finished || xhr.readyState !== 4) return;
+                // Status 0 precedes error/timeout/abort events in real XHR.
+                // Let that event retain its cause instead of guessing here.
+                var completedStatus;
+                try { completedStatus = xhr.status; }
+                catch (e) { finish('response', 'Cannot read HTTP completion status: ' + String(e)); return; }
+                if (completedStatus > 0) finish('load');
+            };
+            xhr.onload = function() { finish('load'); };
+            xhr.onerror = function() { finish('network', 'Network error while reading auto-update setup'); };
+            xhr.ontimeout = function() { finish('timeout', 'Auto-update setup read did not complete within 30 seconds.'); };
+            xhr.onabort = function() { finish('abort', 'Auto-update setup read was aborted.'); };
+            xhr.open('GET', PT.urls.auto_status);
+            xhr.timeout = 30000;
+            // Each read owns its deadline. A newer trigger never aborts an older
+            // read; generation checks below decide which result may be shown.
+            deadline = setTimeout(function() {
+                if (finished) return;
+                try { finish('timeout', 'Auto-update setup read did not complete within 30 seconds.'); }
+                finally { try { xhr.abort(); } catch (e) {} }
+            }, 30000);
+            xhr.send();
+        } catch (e) { finish('request', 'Cannot start auto-update setup read: ' + String(e)); }
+    }
+
+    var autoStatusGeneration = 0;
     function loadAutoStatus() {
-        var el = document.getElementById('ps-auto-status');
-        PT.getJson(PT.urls.auto_status, function(r) {
-            if (!r || !r.cron || !r.launcher || !r.hotplug) { PT.setErr(el, 'Cannot read auto-update status'); return; }
-            var cron = r.cron, launcher = r.launcher, hook = r.hotplug;
-            var enabled = cron.enabled || hook.enabled;
-            var rows = [
-                ['Schedule', cron.error ? 'Cannot read crontab' : cron.matches ? (cron.enabled ? 'Expected cron entry found' : 'Disabled; no cron entry') : 'Missing or different cron entry'],
-                ['Cron daemon', cron.running ? 'Running' : cron.enabled ? 'Not running; scheduled checks cannot start' : 'Not running'],
-                ['Launcher', launcher.error ? 'Cannot read launcher' : launcher.matches && launcher.executable ? 'Expected executable script found' : enabled ? 'Missing, changed or not executable' : 'Not required while auto-update is disabled'],
-                ['WAN trigger', hook.error ? 'Cannot read hotplug hook' : hook.enabled ? (hook.matches && hook.executable ? 'Expected executable WAN hook found' : 'Missing, changed or not executable') : hook.exists ? 'Disabled in settings, but hook is still present' : 'Disabled; no hook'],
-                ['Last completed automatic check', r.last_auto ? r.last_auto.ts + ' — updated=' + r.last_auto.updated + ', unchanged=' + r.last_auto.unchanged + ', failed=' + r.last_auto.failed : 'No completion found in the recent log window']
-            ];
-            if (cron.expected) rows.splice(1, 0, ['Expected entry (router time)', cron.expected]);
-            el.innerHTML = '<h4>Actual Auto-Update Status</h4><table class="ps-sysinfo-table"><tbody>' + rows.map(function(row) {
-                return '<tr><th>' + PT.escapeHtml(row[0]) + '</th><td>' + PT.escapeHtml(row[1]) + '</td></tr>';
-            }).join('') + '</tbody></table><p class="ps-auto-status-note">Current setup facts and the last journaled completion; they do not guarantee a future run. Cron and WAN checks share the auto log label.</p>';
+        var el = document.getElementById('ps-auto-status'), generation = ++autoStatusGeneration;
+        if (generation === 1) { el.textContent = ''; el.style.display = 'none'; }
+        getAutoStatus(function(r, receipt) {
+            if (generation !== autoStatusGeneration) return;
+            var malformed = !objectRecord(r) || hasField(r, 'error') && typeof r.error !== 'string' ||
+                hasField(r, 'details') && typeof r.details !== 'string' || hasField(r, 'unknown') && typeof r.unknown !== 'boolean' ||
+                hasField(r, 'success') && typeof r.success !== 'boolean';
+            var readError = !malformed && hasField(r, 'error');
+            if (receipt.kind !== 'ok' || malformed || readError || r.unknown === true || r.success === false) {
+                var role = receipt.kind === 'http' || receipt.kind === 'ok' && readError ? 'error' : 'warning';
+                var message = receipt.kind !== 'ok' ? receipt.message : readError ? r.error || 'Auto-update setup read failed' : 'Invalid or unknown auto-update setup response';
+                el.style.display = '';
+                showNotice(el, 'Cannot check auto-update setup', role, message + '\n\n' + receipt.details);
+                return;
+            }
+            var rows = autoSetupRows(r.cron, r.launcher, r.hotplug);
+            if (r.last_auto_pending !== undefined && r.last_auto_pending !== null) {
+                var finished = automaticEvent(r.last_auto, 'finished'), pending = automaticEvent(r.last_auto_pending, 'pending');
+                var conflict = finished && finished.kind === 'extended' && pending && finished.id === pending.id;
+                var finishedUnknown = r.last_auto !== undefined && r.last_auto !== null && (!finished || finished.kind === 'unknown');
+                var context = { last_auto: r.last_auto, last_auto_pending: r.last_auto_pending };
+                if (!pending || pending.kind !== 'extended') {
+                    rows.push(autoSetupRow('Automatic update', automaticSummary(r.last_auto_pending, 'pending').text, 'warning', r.last_auto_pending, context));
+                } else if (conflict || finishedUnknown) {
+                    rows.push(autoSetupRow('Automatic update', conflict ? 'Pending automatic record conflicts with a finished record' : 'Cannot confirm newer pending automatic record', 'warning', r.last_auto_pending, context));
+                } else {
+                    rows.push(autoSetupRow('Automatic update', pending.ts + ' — Completion pending/not recorded', 'muted', r.last_auto_pending));
+                }
+            }
+            el.style.color = '';
+            el.style.display = rows.length ? '' : 'none';
+            el.innerHTML = rows.map(function(row) {
+                if (row[2] === 'muted' && !row[3]) {
+                    return '<p class="ps-auto-status-note" style="white-space:normal;overflow-wrap:anywhere;color:' + PT.color('muted') + '">' + PT.escapeHtml(row[0] + ': ' + row[1]) + '</p>';
+                }
+                return '<div style="margin:8px 0;white-space:normal;overflow-wrap:anywhere;color:' + PT.color(row[2]) + '">' +
+                    PT.escapeHtml(row[0] + ': ' + row[1]) + (row[3] ? problemDetails(row[3] + '\n\n' + receipt.details, row[2]) : '') + '</div>';
+            }).join('');
         });
     }
 
-    var allLogLines = [];
+    var allLogEvents = [], logLoaded = false, logGeneration = 0;
+
+    function parseLogHeader(line) {
+        var parts = line.split('|');
+        var e = { summary: line, ts: parts[0] || '', mode: parts[1] || '', kind: 'unknown', detailLines: [] };
+        var countersValid = true;
+        ['updated', 'unchanged', 'failed'].forEach(function(key, i) {
+            var field = parts[i + 2] || '', prefix = key + '=';
+            e[key] = field.indexOf(prefix) === 0 ? field.slice(prefix.length) : field;
+            if (field.indexOf(prefix) !== 0 || !validLogCounter(e[key])) countersValid = false;
+        });
+        if (!countersValid || !validJournalTimestamp(e.ts) || e.mode !== 'auto' && e.mode !== 'manual') return e;
+        if (parts.length === 5) { e.kind = 'legacy'; return e; }
+        var seen = Object.create(null);
+        for (var i = 5; i < parts.length; i++) {
+            var match = parts[i].match(/^([^=]+)=(.*)$/);
+            if (!match || !Object.prototype.hasOwnProperty.call(journalFields, match[1]) || seen[match[1]]) return e;
+            seen[match[1]] = true;
+            e[match[1]] = match[2];
+        }
+        if (validJournalFields(e)) e.kind = 'extended';
+        return e;
+    }
 
     function parseEvents(lines) {
-        var events = [];
-        var current = null;
+        var records = [], current = null;
         for (var i = 0; i < lines.length; i++) {
             var line = lines[i];
             if (line && !line.match(/^  /)) {
-                if (current) events.push(current);
-                var parts = line.split('|');
-                current = { summary: line, ts: parts[0] || '', mode: parts[1] || '',
-                    updated: (parts[2] || '').replace('updated=', ''),
-                    unchanged: (parts[3] || '').replace('unchanged=', ''),
-                    failed: (parts[4] || '').replace('failed=', ''),
-                    detailLines: [] };
-            } else if (current && line) {
-                current.detailLines.push(line);
-            }
+                if (current) records.push(current);
+                current = parseLogHeader(line);
+            } else if (current && line) current.detailLines.push(line);
         }
-        if (current) events.push(current);
-        return events;
+        if (current) records.push(current);
+        // The backend snapshot owns replacement and ordering. An ID is a
+        // recorded fact, never a reason to merge, suppress or finish a block.
+        return records;
     }
 
     function renderEvents(container, events, maxCount) {
@@ -878,56 +1308,67 @@ window.PT = {
         var html = '';
         for (var i = 0; i < show.length; i++) {
             var e = show[i];
+            var detailLines = e.detailLines;
+            // The writer appends this exact pair after every section. Remove
+            // only that final success footer, never a section named service.
+            if (e.kind === 'extended' && e.state === 'finished' && e.service === 'requested' &&
+                detailLines.length >= 2 && detailLines[detailLines.length - 2] === '  service:' && detailLines[detailLines.length - 1] === '    podkop: requested') {
+                detailLines = detailLines.slice(0, -2);
+            }
+            var role = eventRole(e);
             var num = '<span class="ps-log-num">' + (i + 1) + '.</span>';
-            var modeClass = e.mode === 'auto' ? 'ps-log-mode-auto' : 'ps-log-mode-manual';
+            var modeClass = e.kind === 'extended' && e.state === 'pending' || role === 'warning' || role === 'error' ? 'ps-log-ts' : e.mode === 'auto' ? 'ps-log-mode-auto' : 'ps-log-mode-manual';
             html += '<div class="ps-log-event">';
             html += '<div class="ps-log-summary">' + num + ' ' +
                 '<span class="ps-log-ts">' + PT.escapeHtml(e.ts) + '</span> ' +
                 '<span class="' + modeClass + '">' + PT.escapeHtml(e.mode) + '</span> ' +
-                '<span class="ps-log-stats">updated=' + PT.escapeHtml(e.updated) + ' unchanged=' + PT.escapeHtml(e.unchanged) + ' failed=' + PT.escapeHtml(e.failed) + '</span></div>';
-            if (e.detailLines.length > 0) {
-                html += '<div class="ps-log-details">';
-                for (var j = 0; j < e.detailLines.length; j++) {
-                    var cls = 'ps-log-detail-line';
-                    if (e.detailLines[j].indexOf(': updated') !== -1) cls += ' ps-status-updated';
-                    else if (e.detailLines[j].indexOf(': failed') !== -1) cls += ' ps-status-failed';
-                    else if (e.detailLines[j].indexOf(': unchanged') !== -1) cls += ' ps-status-unchanged';
-                    else cls += ' ps-log-detail-section';
-                    html += '<div class="' + cls + '">' + PT.escapeHtml(e.detailLines[j]) + '</div>';
-                }
-                html += '</div>';
+                '<span class="ps-log-stats">' + PT.escapeHtml(eventStats(e)) + '</span></div>';
+            html += '<div class="ps-log-details">' + eventFacts(e).map(function(fact) {
+                return '<div class="ps-log-detail-line" style="white-space:normal;overflow-wrap:anywhere;color:' + PT.color(fact[1]) + '">' + PT.escapeHtml(fact[0]) + '</div>';
+            }).join('');
+            for (var j = 0; j < detailLines.length; j++) {
+                var cls = 'ps-log-detail-line';
+                if (detailLines[j].indexOf(': updated') !== -1) cls += e.kind === 'extended' && e.state === 'pending' || role === 'warning' || role === 'error' ? ' ps-status-unchanged' : ' ps-status-updated';
+                else if (detailLines[j].indexOf(': failed') !== -1) cls += ' ps-status-failed';
+                else if (detailLines[j].indexOf(': unchanged') !== -1) cls += ' ps-status-unchanged';
+                else cls += ' ps-log-detail-section';
+                html += '<div class="' + cls + '">' + PT.escapeHtml(detailLines[j]) + '</div>';
             }
-            html += '</div>';
+            if (role === 'warning' || role === 'error') html += problemDetails(e.summary + (e.detailLines.length ? '\n' + e.detailLines.join('\n') : ''), role);
+            html += '</div></div>';
         }
         container.innerHTML = html || '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">No update log entries yet</div>';
     }
 
-    function loadUpdateLog() {
-        var wrap = document.getElementById('ps-log-wrap');
-        var fullLogBtn = document.getElementById('ps-full-log-btn');
-        PT.getJson(PT.urls.read_log, function(resp) {
-            if (!resp || !Array.isArray(resp.lines) || !resp.lines.every(function(line) { return typeof line === 'string'; })) {
-                wrap.innerHTML = '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">Failed to load log</div>';
-                fullLogBtn.style.display = 'none';
-                allLogLines = [];
-                return;
-            }
-            allLogLines = resp.lines || [];
-            var events = parseEvents(allLogLines);
-            if (events.length === 0) {
-                wrap.innerHTML = '<div style="padding:10px;font-size:13px;color:var(--ps-text-dim)">No update log entries yet</div>';
-                fullLogBtn.style.display = 'none';
-                return;
-            }
-            var logSel = document.getElementById('ps-log-display-count');
-            var count = logSel ? parseInt(logSel.value) || 10 : 10;
-            renderEvents(wrap, events, count);
+    function logReadFailure(message, details) {
+        ['ps-log-error', 'ps-full-log-error'].forEach(function(id) {
+            var el = document.getElementById(id);
+            el.style.display = '';
+            PT.setErr(el, 'Cannot read update log: ' + message + (logLoaded ? ' Showing the last successfully loaded snapshot.' : ''), details);
+        });
+        if (!logLoaded) document.getElementById('ps-log-wrap').textContent = 'Update log unavailable. Use Refresh Sections to retry.';
+    }
 
-            if (events.length > count) {
-                fullLogBtn.style.display = '';
-            } else {
-                fullLogBtn.style.display = 'none';
+    function loadUpdateLog() {
+        var wrap = document.getElementById('ps-log-wrap'), generation = ++logGeneration;
+        PT.getJson(PT.urls.read_log, function(resp, status, reason) {
+            if (generation !== logGeneration) return;
+            if (!objectRecord(resp) || resp.error !== undefined || resp.success !== undefined && resp.success !== true || resp.unknown === true ||
+                !Array.isArray(resp.lines) || !resp.lines.every(function(line) { return typeof line === 'string'; })) {
+                logReadFailure(resp && typeof resp.error === 'string' ? resp.error : status && status !== 200 ? 'HTTP error: ' + status : reason || 'Invalid response',
+                    resp && typeof resp.details === 'string' ? resp.details : null);
+                return;
             }
+            allLogEvents = parseEvents(resp.lines);
+            logLoaded = true;
+            ['ps-log-error', 'ps-full-log-error'].forEach(function(id) {
+                var el = document.getElementById(id); el.textContent = ''; el.style.display = 'none';
+            });
+            var logSel = document.getElementById('ps-log-display-count');
+            var count = logSel ? parseInt(logSel.value, 10) || 10 : 10;
+            renderEvents(wrap, allLogEvents, count);
+            fullLogBtn.style.display = allLogEvents.length > count ? '' : 'none';
+            if (fullLogModal.style.display === 'flex') renderEvents(fullLogBody, allLogEvents, allLogEvents.length);
         });
     }
 
@@ -956,8 +1397,8 @@ window.PT = {
     var fullLogClose = document.getElementById('ps-full-log-close');
 
     fullLogBtn.addEventListener('click', function() {
-        var events = parseEvents(allLogLines);
-        renderEvents(fullLogBody, events, events.length);
+        if (!logLoaded) return;
+        renderEvents(fullLogBody, allLogEvents, allLogEvents.length);
         fullLogModal.style.display = 'flex';
     });
     PT.bindModal(fullLogModal, fullLogClose);

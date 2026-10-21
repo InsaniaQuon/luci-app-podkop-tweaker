@@ -491,30 +491,119 @@ function M.update_subs_timestamp(subs_file, section_name, slot_index, mode)
     end)
 end
 
-local LOG_MAX_SIZE = 4194304
+M.LOG_MAX_SIZE = 4194304
+local completion_contexts = setmetatable({}, { __mode = "k" })
+local MAIN = {}
+local function invocation_owner() return coroutine.running() or MAIN end
+
+function M.new_operation_id()
+    local opened, fd, open_err = pcall(io.open, "/dev/urandom", "rb")
+    if not opened or not fd then return nil, "Cannot open operation ID source: " .. tostring(opened and open_err or fd) end
+    local read_ok, bytes, read_err = pcall(fd.read, fd, 16)
+    local close_ok, closed, close_err = pcall(fd.close, fd)
+    local errors = {}
+    if not read_ok or type(bytes) ~= "string" or #bytes ~= 16 or read_err ~= nil then
+        errors[#errors + 1] = "Cannot read exactly 16 operation ID bytes: " .. tostring(read_ok and (read_err or "Short random read") or bytes)
+    end
+    if not close_ok or not closed then
+        errors[#errors + 1] = "Cannot close operation ID source: " .. tostring(close_ok and close_err or closed)
+    end
+    if #errors > 0 then return nil, table.concat(errors, "\n") end
+    return (bytes:gsub(".", function(byte) return string.format("%02x", byte:byte()) end))
+end
+
+local function counter(value)
+    return type(value) == "string" and #value <= 10 and value:match("^%d+$") and tonumber(value) or nil
+end
+
+-- An extension is accepted only as a complete keyed schema. A malformed new
+-- header must never acquire the historical meaning of a five-field header.
+function M.parse_log_header(line)
+    if type(line) ~= "string" then return nil end
+    local fields = {}
+    for field in (line .. "|"):gmatch("(.-)|") do fields[#fields + 1] = field end
+    if #fields < 5 or not fields[1]:match("^%d%d:%d%d %d%d%.%d%d%.%d%d%d%d$") or
+        (fields[2] ~= "manual" and fields[2] ~= "auto") then return nil end
+    local updated = counter(fields[3]:match("^updated=(.*)$"))
+    local unchanged = counter(fields[4]:match("^unchanged=(.*)$"))
+    local failed = counter(fields[5]:match("^failed=(.*)$"))
+    if not updated or not unchanged or not failed then return nil end
+    local event = { ts = fields[1], mode = fields[2], updated = updated, unchanged = unchanged, failed = failed }
+    if #fields == 5 then event.legacy = true; return event end
+    if #fields ~= 10 then return nil end
+    local values, allowed = {}, { id = true, state = true, service = true, skipped = true, outcome = true }
+    for i = 6, #fields do
+        local key, value = fields[i]:match("^([a-z_]+)=(.+)$")
+        if not allowed[key] or values[key] then return nil end
+        values[key] = value
+    end
+    if type(values.id) ~= "string" or #values.id ~= 32 or not values.id:match("^[0-9a-f]+$") or
+        (values.state ~= "pending" and values.state ~= "finished") or
+        not ({ pending = true, requested = true, failed = true, unknown = true, not_required = true })[values.service] or
+        not counter(values.skipped) or
+        not ({ pending = true, ok = true, partial = true, failed = true })[values.outcome] then return nil end
+    if values.state == "pending" then
+        if values.service ~= "pending" or values.outcome ~= "pending" then return nil end
+    elseif values.outcome == "pending" then return nil end
+    event.id, event.state, event.service = values.id, values.state, values.service
+    event.skipped, event.outcome = tonumber(values.skipped), values.outcome
+    return event
+end
 
 local function log_bytes(log_file)
-    local data, err, errno = SRV.read_file(log_file, LOG_MAX_SIZE)
+    local data, err, errno = SRV.read_file(log_file, M.LOG_MAX_SIZE)
     if data then return data end
     if errno == 2 then return "" end
     return nil, "Cannot read subscription log: " .. tostring(err)
 end
 
-local function trim_log(data, max_events)
-    if max_events <= 0 then return "" end
-    local starts = {}
+local function log_blocks(data)
+    local starts, blocks = {}, {}
     for first, line in data:gmatch("()([^\n]+)") do
         if not line:match("^%s") then starts[#starts + 1] = first end
     end
-    if #starts <= max_events then return data end
-    return data:sub(starts[#starts - max_events + 1])
+    if #starts == 0 then return data ~= "" and { data } or {} end
+    if starts[1] > 1 then blocks[#blocks + 1] = data:sub(1, starts[1] - 1) end
+    for i, first in ipairs(starts) do blocks[#blocks + 1] = data:sub(first, (starts[i + 1] or (#data + 1)) - 1) end
+    return blocks
+end
+
+local function header_of(block) return (block:match("^([^\n]*)") or ""):gsub("\r$", "") end
+
+local function header_has(block, key, value)
+    local index = 0
+    for field in (header_of(block) .. "|"):gmatch("(.-)|") do
+        index = index + 1
+        if index > 5 and field == key .. "=" .. value then return true end
+    end
+    return false
+end
+
+local function retained_limit(value)
+    return math.min(25, math.max(0, math.floor(tonumber(value) or 0)))
+end
+
+local function trim_log(data, max_events)
+    local blocks, completed, out = log_blocks(data), 0, {}
+    for i = #blocks, 1, -1 do
+        -- Preserve even a malformed pending extension for inspection. It is not
+        -- parsed as a completed/legacy event by any reader.
+        if header_has(blocks[i], "state", "pending") then out[i] = blocks[i]
+        else
+            completed = completed + 1
+            if completed <= max_events then out[i] = blocks[i] end
+        end
+    end
+    local kept = {}
+    for i = 1, #blocks do if out[i] then kept[#kept + 1] = out[i] end end
+    return table.concat(kept)
 end
 
 function M.rotate_log(log_file, max_events)
     return locked_publication("subscriptions", function()
         local data, read_err = log_bytes(log_file)
         if not data then return false, read_err end
-        local trimmed = trim_log(data, math.max(0, math.floor(tonumber(max_events) or 0)))
+        local trimmed = trim_log(data, retained_limit(max_events))
         if trimmed == data then return true end
         local written, write_err = SRV.write_file_atomic(log_file, trimmed)
         return written, write_err, written
@@ -526,13 +615,170 @@ function M.append_log(log_file, max_events, text)
     return locked_publication("subscriptions", function()
         local data, read_err = log_bytes(log_file)
         if not data then return false, read_err end
-        data = trim_log(data, math.max(1, math.floor(tonumber(max_events) or 1)) - 1)
+        local event = M.parse_log_header(header_of(text))
+        if event and event.id then
+            for _, block in ipairs(log_blocks(data)) do
+                if header_has(block, "id", event.id) then return false, "Duplicate subscription operation ID" end
+            end
+        end
         if data ~= "" and data:sub(-1) ~= "\n" then data = data .. "\n" end
-        data = data .. text .. "\n"
-        if #data > LOG_MAX_SIZE then return false, "Subscription log exceeds size limit" end
+        data = trim_log(data .. text .. "\n", math.max(1, retained_limit(max_events)))
+        if #data > M.LOG_MAX_SIZE then return false, "Subscription log exceeds size limit" end
         local written, write_err = SRV.write_file_atomic(log_file, data)
         return written, write_err, written
     end)
+end
+
+local function diagnostics(existing, extra)
+    if not extra or extra == "" then return existing end
+    return existing and (existing .. "\n" .. tostring(extra)) or tostring(extra)
+end
+
+local function operation_outcome(result)
+    if result.success == true and result.failed == 0 and result.skipped == 0 then return "ok" end
+    if result.applied or result.updated > 0 or result.unchanged > 0 or result.skipped > 0 then return "partial" end
+    return "failed"
+end
+
+local function admit_operation(result, log_file, log_max, mode)
+    local id, err = M.new_operation_id()
+    if type(id) ~= "string" or #id ~= 32 or not id:match("^[0-9a-f]+$") then
+        result.success, result.error = false, "Cannot generate subscription operation ID"
+        result.error_details = err or "Invalid operation ID"
+        return nil
+    end
+    result.operation_id = id
+    local context = { owner = invocation_owner(), id = id, ts = os.date("%H:%M %d.%m.%Y"),
+        mode = mode, log_file = log_file, log_max = log_max }
+    completion_contexts[result] = context
+    return context
+end
+
+local function event_text(context, result, state)
+    local text = context.ts .. "|" .. context.mode .. "|updated=" .. result.updated .. "|unchanged=" .. result.unchanged
+        .. "|failed=" .. result.failed .. "|id=" .. context.id .. "|state=" .. state .. "|service=" .. result.service
+        .. "|skipped=" .. result.skipped .. "|outcome=" .. result.outcome
+    local by_section, names = {}, {}
+    for _, detail in ipairs(result.details) do
+        if not by_section[detail.section] then by_section[detail.section] = {}; names[#names + 1] = detail.section end
+        by_section[detail.section][#by_section[detail.section] + 1] = detail
+    end
+    table.sort(names)
+    for _, name in ipairs(names) do
+        text = text .. "\n  " .. M.clean_log_field(name) .. ":"
+        for _, detail in ipairs(by_section[name]) do
+            text = text .. "\n    " .. M.clean_log_field(detail.proxy) .. ": " .. M.clean_log_field(detail.status)
+            if detail.error or detail.reason then text = text .. " (" .. M.clean_log_field(detail.error or detail.reason) .. ")" end
+        end
+    end
+    if result.error then
+        text = text .. "\n  operation:\n    " .. M.clean_log_field(result.error)
+        if result.error_details then text = text .. " (" .. M.clean_log_field(result.error_details) .. ")" end
+    end
+    if result.restart then
+        text = text .. "\n  service:\n    podkop: " .. result.service
+        if result.restart.error then text = text .. " (" .. M.clean_log_field(result.restart.error) .. ")" end
+        if result.restart.details then text = text .. " (" .. M.clean_log_field(result.restart.details) .. ")" end
+    end
+    return text
+end
+
+local function journal_failure(result, summary, err, unknown)
+    result.success = false
+    if result.error then result.error_details = diagnostics(result.error_details, summary .. ": " .. tostring(err))
+    else result.error, result.error_details = summary, err end
+    result.unknown = result.unknown or unknown or nil
+    result.outcome = operation_outcome(result)
+    result.journal.error, result.journal.details = summary, err
+    result.journal.unknown = result.journal.unknown or unknown or nil
+    result.restart_required = result.need_restart and result.service ~= "requested" or nil
+end
+
+local function record_operation(result)
+    local context = completion_contexts[result]
+    local pending = result.success == true and result.need_restart
+    result.service = result.need_restart and "pending" or "not_required"
+    result.outcome = pending and "pending" or operation_outcome(result)
+    result.restart_required = result.success ~= true and result.need_restart or nil
+    local text = event_text(context, result, pending and "pending" or "finished")
+    local logged, err, published, unknown = M.append_log(context.log_file, context.log_max, text)
+    local recorded = logged or published == true
+    result.log_applied = recorded or nil
+    result.journal = { recorded = recorded, finalized = recorded and not pending }
+    if not logged then journal_failure(result, "Cannot write subscription update log", err, unknown)
+    elseif pending then context.pending, context.ready = text .. "\n", true end
+    return result
+end
+
+local function finalize_event(context, text)
+    return locked_publication("subscriptions", function()
+        local data, read_err = log_bytes(context.log_file)
+        if not data then return false, read_err end
+        local blocks, found = log_blocks(data), nil
+        for i, block in ipairs(blocks) do
+            if header_has(block, "id", context.id) then
+                if found then return false, "Duplicate subscription operation ID during finalization" end
+                found = i
+            end
+        end
+        if not found then return false, "Subscription operation ID missing during finalization" end
+        if blocks[found] == text then return true, nil, true end
+        if blocks[found] ~= context.pending then return false, "Subscription pending event changed during finalization" end
+        table.remove(blocks, found)
+        local current = table.concat(blocks)
+        if current ~= "" and current:sub(-1) ~= "\n" then current = current .. "\n" end
+        current = trim_log(current .. text, math.max(1, retained_limit(context.log_max)))
+        if #current > M.LOG_MAX_SIZE then return false, "Subscription log exceeds size limit" end
+        local written, err = SRV.write_file_atomic(context.log_file, current)
+        return written, err, written
+    end)
+end
+
+-- Only the exact invocation's private context can consume its restart right.
+-- Durable pending records are observations, never restart/recovery commands.
+function M.finish_subscription_update(result)
+    local context = completion_contexts[result]
+    if not context or context.owner ~= invocation_owner() or context.consumed or not context.ready then return result end
+    context.consumed = true
+    local observed, called
+    local ran, restart, lock_err, uncertain = pcall(SRV.with_lock, "podkop", function()
+        called = true
+        local ok, response = pcall(SRV.restart_service, "podkop")
+        observed = ok and type(response) == "table" and response or {
+            success = false, error = "Cannot capture Podkop restart result", details = tostring(response),
+            command_result_known = false, unknown = true }
+        return observed
+    end)
+    if not ran then lock_err, restart, uncertain = restart, nil, true end
+    if not restart then
+        restart = observed or { command_result_known = false }
+        restart.success = false
+        restart.error = restart.error or (restart.restarting and "Podkop restart requested, but lock release failed" or "Podkop restart lock failed")
+        restart.details = diagnostics(restart.details, lock_err)
+        restart.unknown = restart.unknown or uncertain or nil
+    end
+    result.restart = restart
+    if restart.command_result_known == true and type(restart.command_exit_code) == "number" then
+        result.service = restart.command_exit_code == 0 and "requested" or "failed"
+    else result.service = called and "unknown" or "failed" end
+    if result.service == "unknown" then restart.unknown = true end
+    for key, value in pairs(restart) do
+        if key ~= "success" and key ~= "error" and key ~= "details" and key ~= "unknown" and key ~= "applied" then result[key] = value end
+    end
+    result.unknown = result.unknown or restart.unknown or nil
+    if restart.success ~= true or result.service ~= "requested" then
+        result.success = false
+        result.error = result.error or restart.error or "Podkop restart result is unknown"
+        result.error_details = diagnostics(result.error_details, restart.details)
+    end
+    result.restarted = restart.success == true and result.service == "requested"
+    result.restart_required = result.service ~= "requested" or nil
+    result.outcome = operation_outcome(result)
+    local text = event_text(context, result, "finished") .. "\n"
+    local finalized, err, published, unknown = finalize_event(context, text)
+    result.journal.finalized = finalized or published == true
+    if not finalized then journal_failure(result, "Cannot finalize subscription update log", err, unknown) end
+    return result
 end
 
 function M.write_sub_backup()
@@ -541,7 +787,12 @@ end
 
 function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
     local result = { success = true, updated = 0, unchanged = 0, failed = 0,
-        skipped = 0, need_restart = false, details = {} }
+        skipped = 0, need_restart = false, details = {}, service = "not_required", outcome = "failed",
+        journal = { recorded = false, finalized = false }, restarted = false }
+    if mode ~= "manual" and mode ~= "auto" then
+        result.success, result.error = false, "Invalid subscription update mode"
+        return result
+    end
     local function read_jobs()
         local subs, read_err = M.read_subs(subs_file)
         if not subs then return nil, read_err end
@@ -573,13 +824,14 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
         result.unknown = snapshot_unknown or nil
         return result
     end
+    if not admit_operation(result, log_file, log_max, mode) then return result end
 
     local need_backup = true
     for _, job in ipairs(jobs) do
         -- HTTP waits/retries never hold a state/config lock. A successful manual
         -- Detach/Attach/Save during this wait is authoritative at reconciliation.
-        local proxy, fetch_err, attempt = M.do_update_subscription(job.section, job.slot, job.url, job.name)
         local config_applied, state_applied = false, false
+        local proxy, fetch_err, attempt
         local function reconcile_current()
             local subs, read_err = M.read_subs(subs_file)
             if not subs then return { fatal = true, error = read_err } end
@@ -637,24 +889,30 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
             end)
             if not applied then
                 observed = observed or {}
-                observed.fatal, observed.status = true, nil
+                observed.fatal = true
                 observed.error = observed.error and (observed.error .. "\n" .. tostring(config_err)) or config_err
                 observed.unknown = config_uncertain or observed.unknown or nil
                 return observed
             end
             return applied
         end
-        local observed
-        local outcome, lock_err, uncertain = SRV.with_lock("subscriptions", function()
-            observed = reconcile_current()
-            return observed
+        local ran, outcome = pcall(function()
+            proxy, fetch_err, attempt = M.do_update_subscription(job.section, job.slot, job.url, job.name)
+            local observed
+            local reconciled, lock_err, uncertain = SRV.with_lock("subscriptions", function()
+                observed = reconcile_current()
+                return observed
+            end)
+            if not reconciled then
+                reconciled = observed or {}
+                reconciled.fatal = true
+                reconciled.error = diagnostics(reconciled.error, lock_err)
+                reconciled.unknown = uncertain or reconciled.unknown or nil
+            end
+            return reconciled
         end)
-        if not outcome then
-            outcome = observed or {}
-            outcome.fatal, outcome.status = true, nil
-            outcome.error = outcome.error and (outcome.error .. "\n" .. tostring(lock_err)) or lock_err
-            outcome.unknown = uncertain or outcome.unknown or nil
-        end
+        if not ran then outcome = { fatal = true, error = tostring(outcome), unknown = true,
+            status = state_applied and (config_applied and "updated" or "unchanged") or nil } end
         if config_applied then
             need_backup = false
             result.need_restart, result.applied = true, true
@@ -667,43 +925,128 @@ function M.update_all_subscriptions(subs_file, log_file, log_max, mode)
             detail.status = detail.status .. " (retry " .. attempt .. ")"
         end
         result.details[#result.details + 1] = detail
+        if outcome.status == "unchanged" then result.unchanged = result.unchanged + 1
+        elseif outcome.status == "skipped" then result.skipped = result.skipped + 1
+        elseif outcome.status == "failed" or not outcome.status then result.failed = result.failed + 1 end
         if outcome.fatal then
             result.success, result.error = false, outcome.error or "Subscription update failed"
-            result.failed = result.failed + 1
             result.unknown = outcome.unknown or nil
             result.restart_required = result.need_restart
-            return result
-        elseif outcome.status == "unchanged" then result.unchanged = result.unchanged + 1
-        elseif outcome.status == "skipped" then result.skipped = result.skipped + 1
-        elseif outcome.status == "failed" then result.failed = result.failed + 1 end
-    end
-
-    local log_text = os.date("%H:%M %d.%m.%Y") .. "|" .. M.clean_log_field(mode) .. "|updated=" .. result.updated
-        .. "|unchanged=" .. result.unchanged .. "|failed=" .. result.failed
-    local by_section = {}
-    for _, d in ipairs(result.details) do
-        if not by_section[d.section] then by_section[d.section] = {} end
-        by_section[d.section][#by_section[d.section] + 1] = d
-    end
-    local sec_names = {}
-    for k, _ in pairs(by_section) do sec_names[#sec_names + 1] = k end
-    table.sort(sec_names)
-    for _, sname in ipairs(sec_names) do
-        log_text = log_text .. "\n  " .. sname .. ":"
-        for _, d in ipairs(by_section[sname]) do
-            log_text = log_text .. "\n    " .. d.proxy .. ": " .. d.status
-            if d.error or d.reason then log_text = log_text .. " (" .. M.clean_log_field(d.error or d.reason) .. ")" end
+            return record_operation(result)
         end
     end
-    local logged, log_err, log_applied, log_unknown = M.append_log(log_file, log_max, log_text)
-    if not logged then
-        result.success, result.error = false, "Cannot write subscription update log"
-        result.error_details = log_err
-        result.log_applied = log_applied
-        result.unknown = log_unknown
-        result.restart_required = result.need_restart
+
+    return record_operation(result)
+end
+
+function M.attach_subscription(subs_file, log_file, log_max, section_name, slot_index, subscription_url, proxy_name, new_link)
+    slot_index = tonumber(slot_index or "-1")
+    if not slot_index or slot_index < 0 or slot_index > 999 or slot_index ~= math.floor(slot_index) or
+        section_name == "" or new_link == "" then return { error = "Missing required parameters" } end
+    if not LIB.sanitize_section_name(section_name) then return { error = "Invalid section name" } end
+    local valid, link_err = M.validate_proxy_link(new_link)
+    if not valid then return { error = link_err } end
+    if not NET.valid_url(subscription_url) then return { error = "Only HTTP(S) URLs allowed" } end
+    if proxy_name == nil then proxy_name = "" end
+    if type(proxy_name) ~= "string" or #proxy_name > 1024 then return { error = "Invalid proxy name" } end
+
+    local admission
+    local snapshot, lock_err, lock_unknown = SRV.with_lock("subscriptions", function()
+        local subs, read_err = M.read_subs(subs_file)
+        if not subs then admission = { error = read_err }; return admission end
+        local slots, slots_err = M.subscription_slots(subs, section_name)
+        if not slots then admission = { error = slots_err }; return admission end
+        local section
+        for _, sec in ipairs(M.get_proxy_sections()) do if sec.name == section_name then section = sec; break end end
+        if not section then admission = { error = "Section not found or not a proxy section" }; return admission end
+        local current = section.proxy_links[slot_index + 1]
+        if type(current) ~= "string" then admission = { error = "Proxy slot not found" }; return admission end
+        local live, err = M.current_proxy_link(section_name, section.proxy_config_type, slot_index)
+        if not live then admission = { error = err }; return admission end
+        if live ~= current then admission = { error = "Proxy slot changed; refresh before attaching" }; return admission end
+        admission = { link = current, proxy_type = section.proxy_config_type }
+        return admission
+    end)
+    if not snapshot then
+        admission = admission or {}
+        admission.success, admission.error = false, admission.error or "Subscription lock failed"
+        admission.error_details = diagnostics(admission.error_details, lock_err)
+        admission.unknown = lock_unknown or nil
+        return admission
     end
-    return result
+    if snapshot.error then return snapshot end
+
+    local result = { success = true, updated = 0, unchanged = 0, failed = 0, skipped = 0, need_restart = false,
+        details = {}, service = "not_required", outcome = "failed", journal = { recorded = false, finalized = false }, restarted = false }
+    if not admit_operation(result, log_file, log_max, "manual") then return result end
+    local config_applied, state_applied, observed = false, false, nil
+    local ran, outcome, err, unknown = pcall(SRV.with_lock, "subscriptions", function()
+        local function attach_current()
+            local subs, read_err = M.read_subs(subs_file)
+            if not subs then return { error = read_err } end
+            local slots, slots_err = M.subscription_slots(subs, section_name)
+            if not slots then return { error = slots_err } end
+            local function publish()
+                local live, live_err = M.current_proxy_link(section_name, snapshot.proxy_type, slot_index)
+                if not live then return { error = live_err } end
+                if live ~= snapshot.link then return { error = "Proxy slot changed; refresh before attaching" } end
+                local entry = type(slots[slot_index + 1]) == "table" and slots[slot_index + 1] or {}
+                entry.subscription_url, entry.proxy_name = subscription_url, proxy_name
+                entry.last_updated = os.date("%H:%M %d.%m.%Y") .. " (manual)"
+                for i = 1, slot_index do if slots[i] == nil then slots[i] = false end end
+                slots[slot_index + 1], subs[section_name] = entry, slots
+                local stage, stage_err = M.stage_subs(subs, subs_file)
+                if not stage then return { error = "Failed to save data", details = stage_err } end
+                local changed = live ~= new_link
+                if changed then
+                    local replaced, replace_err, published, uncertain = M.replace_proxy_link(section_name, snapshot.proxy_type,
+                        slot_index, new_link, "/etc/config/podkop.sub-backup", live)
+                    config_applied = replaced or published == true
+                    if not replaced then
+                        SRV.discard_stage(stage)
+                        return { error = replace_err, unknown = uncertain }
+                    end
+                end
+                local saved, save_err = SRV.publish_file(stage, subs_file)
+                if not saved then
+                    SRV.discard_stage(stage)
+                    return { error = "Failed to save data", details = save_err }
+                end
+                state_applied = true
+                return { status = changed and "updated" or "unchanged" }
+            end
+            local applied
+            local saved, config_err, uncertain = SRV.with_lock("podkop", function() applied = publish(); return applied end)
+            if not saved then
+                applied = applied or {}
+                applied.error = applied.error or "Podkop lock failed"
+                applied.details = diagnostics(applied.details, config_err)
+                applied.unknown = applied.unknown or uncertain or nil
+                return applied
+            end
+            return saved
+        end
+        observed = attach_current()
+        return observed
+    end)
+    if not ran then err, outcome, unknown = outcome, nil, true end
+    if not outcome then
+        outcome = observed or {}
+        outcome.status = outcome.status or (state_applied and (config_applied and "updated" or "unchanged") or nil)
+        outcome.error = outcome.error or "Subscription lock failed"
+        outcome.details = diagnostics(outcome.details, err)
+        outcome.unknown = outcome.unknown or unknown or nil
+    end
+    result.applied = config_applied or state_applied or nil
+    result.need_restart = config_applied
+    result.updated = config_applied and 1 or 0
+    if outcome.status == "unchanged" then result.unchanged = 1
+    elseif not outcome.status then result.failed = 1 end
+    if outcome.error then result.success, result.error, result.error_details = false, outcome.error, outcome.details end
+    result.unknown = outcome.unknown
+    result.details[1] = { section = section_name, slot = slot_index, proxy = M.clean_log_field(proxy_name),
+        status = outcome.status or "failed", error = outcome.error and M.clean_log_field(outcome.error) }
+    return record_operation(result)
 end
 
 function M.apply_files_from_dir(extract_dir, relaxed, paths)

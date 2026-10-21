@@ -1,9 +1,9 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.10.3 | 17.10.2026 | Shared frontend transport and checked UI lifecycles
+-- Podkop Tweaker | v4.10.4 | 19.10.2026 | Compact Stubby init UI, asset revision 6
 
-local APP_VERSION = "4.10.3"
+local APP_VERSION = "4.10.4"
 -- Bump when UI assets change within the same unpublished release train.
-local ASSET_REVISION = "1"
+local ASSET_REVISION = "6"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")

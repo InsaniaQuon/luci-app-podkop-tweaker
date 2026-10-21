@@ -49,10 +49,12 @@ for _, entry in ipairs(manifest.entries) do
 end
 assert(next(required) == nil, "release omits a deployable source file: " .. tostring(next(required)))
 
--- Optional first-delivery check executes the actual installed receiver modules,
+-- Optional delivery check executes the actual installed receiver modules,
 -- not the candidate's new upload/copy implementation. Only transport/processes
 -- and filesystem are virtual; no network or router operation is performed.
-local receiver_modules, receiver_version, receiver_git_limit
+-- Exact version equality requires explicit Local Reinstall; unforced Git is
+-- checked only for newer candidates, never treated as an equal-version update.
+local receiver_modules, receiver_version, receiver_git_limit, receiver_same_version
 if arg[3] then
     local function read_member(name)
         local fd = assert(io.popen("tar --wildcards -xOzf " .. LIB.shell_escape(arg[3]) .. " " .. LIB.shell_escape("*" .. name)))
@@ -61,6 +63,7 @@ if arg[3] then
         return content
     end
     receiver_version = assert(read_member(ARCH.CONTROLLER):match('local%s+APP_VERSION%s*=%s*"([^"]+)"'), "installed version missing")
+    receiver_same_version = receiver_version == expected
     receiver_modules = {}
     for _, name in ipairs({ "lib", "services", "net", "archive", "web_restart", "api_update" }) do
         local module_name = "podkop-tweaker." .. name
@@ -102,9 +105,35 @@ assert(applied.success and applied.reinstalled and preserved, "real archive rein
 print("Release archive: PASS (" .. #bytes .. " bytes, " .. #manifest.entries .. " members, " .. count .. " source-matched files, version " .. expected .. "; upload/reinstall in VFS)")
 
 if receiver_modules then
+    -- Fixed internal cleanup paths may be quoted or inside a checked shell
+    -- wrapper. A recorded request matters even when the VFS does not model rm.
+    local function requests_staging_cleanup(command, staged)
+        for body in command:gsub("['\"]", ""):gmatch("[^;&|()\n]+") do
+            local operation, args = body:match("^%s*(%S+)%s+(.*)")
+            operation = operation and operation:match("([^/]+)$")
+            if operation == "exec" or operation == "busybox" then
+                operation, args = args:match("^(%S+)%s+(.*)")
+                operation = operation and operation:match("([^/]+)$")
+            end
+            if operation == "rm" or operation == "rmdir" or operation == "remove" then
+                for target in args:gmatch("[^%s<>]+") do
+                    target = target:gsub("/+$", ""):gsub("/%.$", "")
+                    local prefix = target:match("^(.-)%*") or target:match("^(.-)%?") or target:match("^(.-)%[")
+                    for path in pairs(staged) do
+                        if path == target or path:sub(1, #target + 1) == target .. "/" or
+                            prefix and prefix:sub(1, 1) == "/" and path:sub(1, #prefix) == prefix then
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+        return false
+    end
     local url = "https://github.com/InsaniaQuon/luci-app-podkop-tweaker/releases/download/v" .. expected ..
         "/luci-app-podkop-tweaker-v" .. expected .. ".tar.gz"
-    for _, transport in ipairs({ "local", "git" }) do
+    local transports = receiver_same_version and { "local" } or { "local", "git" }
+    for _, transport in ipairs(transports) do
         local tmp_dir, downloads = transport == "local" and "/tmp/pt-update" or "/tmp/pt-git-update", 0
         H.begin({
             popen = function(command)
@@ -125,10 +154,16 @@ if receiver_modules then
         for name, chunk in pairs(receiver_modules) do package.preload[name] = chunk end
         local installed = require("podkop-tweaker.api_update")
         installed.init(receiver_version)
-        assert(require("podkop-tweaker.lib").version_lt(receiver_version, expected), "installed receiver does not consider candidate newer")
+        if receiver_same_version then
+            assert(#bytes <= installed.UPLOAD_MAX_SIZE, "candidate exceeds the installed Local Reinstall upload limit")
+        else
+            assert(require("podkop-tweaker.lib").version_lt(receiver_version, expected), "installed receiver does not consider candidate newer")
+        end
         local saved = {
-            ["etc/config/podkop-tweaker"] = "config settings 'settings'\n\toption show_argon_tab '1'\n\toption unknown 'retain'\n",
-            ["etc/config/podkop-fragment"] = "config fragment 'settings'\n\toption enabled '0'\n\toption singbox_config '/custom/config.json'\n\toption log_file '/custom/fragment.log'\n\toption unknown 'retain'\n"
+            ["etc/config/podkop-tweaker"] = "config settings 'settings'\n\toption show_argon_tab '1'\n\toption unknown 'retain'\n" ..
+                "config appearance 'appearance'\n\toption profile 'contrast'\n\toption mono_font_size '17'\n\toption color_success_light '#123456'\n\toption unknown_appearance 'retain'\n",
+            ["etc/config/podkop-fragment"] = "config fragment 'settings'\n\toption enabled '0'\n\toption fragment 'false'\n\toption record_fragment 'true'\n" ..
+                "\toption fragment_fallback_delay '750ms'\n\toption singbox_config '/custom/config.json'\n\toption log_file '/custom/fragment.log'\n\toption log_max_lines '317'\n\toption unknown 'retain'\n"
         }
         for path, content in pairs(saved) do H.vfs_write("/" .. path, content) end
         if transport == "local" and #bytes > installed.UPLOAD_MAX_SIZE then
@@ -141,17 +176,61 @@ if receiver_modules then
             local result
             if transport == "local" then
                 local preview = installed.upload_binary(bytes, "luci-app-podkop-tweaker-v" .. expected .. ".tar.gz")
-                assert(preview.success and preview.can_update and not preview.same_version, "installed receiver Local preview failed")
-                result = installed.apply()
+                if receiver_same_version then
+                    assert(preview.success == true and preview.same_version == true and preview.can_update == false and
+                        preview.current_version == receiver_version and preview.archive_version == expected,
+                        "installed receiver same-version Local preview failed")
+                    local before = {}
+                    for path in pairs(payloads) do before[path] = H.vfs_read("/" .. path) end
+                    local staged = {}
+                    for path in pairs(H.state().vfs) do
+                        if path:sub(1, #tmp_dir + 1) == tmp_dir .. "/" then staged[path] = H.vfs_read(path) end
+                    end
+                    local command_logs = {
+                        { source = "sys.exec", commands = H.exec_cmds() },
+                        { source = "os.execute", commands = H.execute_cmds() },
+                        { source = "io.popen", commands = H.popen_cmds() }
+                    }
+                    for _, log in ipairs(command_logs) do log.before = #log.commands end
+                    local rejected = installed.apply()
+                    assert(not rejected.success and not rejected.applied and rejected.error == "Archive version is not newer than installed",
+                        "installed receiver accepted equal-version Local apply without explicit reinstall")
+                    for path in pairs(payloads) do
+                        assert(H.vfs_read("/" .. path) == before[path], "equal-version default apply changed installed bytes: " .. path)
+                    end
+                    assert(H.vfs_exists(tmp_dir .. "/.pt-manifest.json"), "equal-version rejection discarded validated staging")
+                    for path, content in pairs(staged) do
+                        assert(H.vfs_read(path) == content, "equal-version default apply changed validated staging bytes: " .. path)
+                    end
+                    for _, log in ipairs(command_logs) do
+                        for index = log.before + 1, #log.commands do
+                            local command = log.commands[index]
+                            assert(not requests_staging_cleanup(command, staged),
+                                "equal-version default apply requested staging cleanup via " .. log.source .. ": " .. command)
+                        end
+                        for _, command in ipairs(log.commands) do
+                            assert(not command:find("uhttpd restart", 1, true), "equal-version default apply requested a web restart")
+                        end
+                    end
+                    result = installed.apply("1")
+                else
+                    assert(preview.success and preview.can_update and not preview.same_version, "installed receiver Local preview failed")
+                    result = installed.apply()
+                end
             else result = installed.git_update(url) end
             assert(result.success and result.new_version == expected, "installed receiver " .. transport .. " application failed: " .. tostring(result.error) .. " " .. tostring(result.details))
+            if receiver_same_version then assert(result.reinstalled == true, "installed receiver did not report explicit Local Reinstall") end
             assert(downloads == (transport == "git" and 1 or 0), "installed receiver used an unexpected download")
             for path, content in pairs(payloads) do
                 assert(H.vfs_read("/" .. path) == (saved[path] or content), "installed receiver lost source/settings bytes: " .. path)
             end
             H.finish()
-            print("Installed receiver: PASS (" .. receiver_version .. " -> " .. expected .. ", " .. transport .. ", " .. #bytes .. " bytes" ..
+            local delivery = receiver_same_version and "local explicit Reinstall; same-version preview/default rejection verified" or transport
+            print("Installed receiver: PASS (" .. receiver_version .. " -> " .. expected .. ", " .. delivery .. ", " .. #bytes .. " bytes" ..
                 "; source-matched files and both full UCI preserved; VFS, no live network/router)")
         end
+    end
+    if receiver_same_version then
+        print("Installed Git equality: SKIP (unforced equal-version update is not supported; use explicit Local Reinstall)")
     end
 end

@@ -252,15 +252,11 @@ function M.clear_cache(restart_id)
 end
 
 function M.read_log()
+    local bytes, err, errno = SRV.read_file(SRV.UPDATE_LOG_FILE, S.LOG_MAX_SIZE)
+    if not bytes and errno ~= 2 then return { error = "Cannot read subscription update log", details = err } end
     local lines = {}
-    local n = 0
-    local fd = io.open(SRV.UPDATE_LOG_FILE, "r")
-    if fd then
-        for line in fd:lines() do
-            n = n + 1
-            lines[n] = line
-        end
-        fd:close()
+    if bytes and bytes ~= "" then
+        for line in (bytes:gsub("\n$", "") .. "\n"):gmatch("([^\n]*)\n") do lines[#lines + 1] = line:gsub("\r$", "") end
     end
     return { lines = lines }
 end

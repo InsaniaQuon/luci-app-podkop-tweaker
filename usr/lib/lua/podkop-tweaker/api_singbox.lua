@@ -192,35 +192,42 @@ function M.wrapper_status()
     local original, original_err, original_errno = SRV.read_file("/etc/init.d/podkop.orig", LIB.UCI_MAX_SIZE)
     if not original and original_errno ~= 2 then return { error = "Cannot read wrapper original", details = original_err } end
     local installed = original ~= nil
-    local stale = false
-    local hooks = 0
     local function count_hooks(content)
-        local count = 0
-        local managed = false
+        local counts = { start_service = { detached = 0, legacy = 0 }, reload_service = { detached = 0, legacy = 0 } }
+        local managed
         for line in (content or ""):gmatch("[^\r\n]+") do
             if line:match("^[A-Za-z_][A-Za-z_0-9]*%s*%(%)") then
-                managed = line:match("^start_service%(%)") ~= nil or line:match("^reload_service%(%)") ~= nil
+                managed = line:match("^(start_service)%(%)") or line:match("^(reload_service)%(%)")
             end
-            if managed and line:match("^%s*(.-)%s*$") == "( sleep 5 && /usr/bin/podkop-fragment-patch.sh ) &" then count = count + 1 end
-            if line:match("^}") then managed = false end
+            if managed then
+                local body = line:match("^%s*(.-)%s*$")
+                if body == "( sleep 5 && /usr/bin/podkop-fragment-patch.sh ) &" then
+                    counts[managed].legacy = counts[managed].legacy + 1
+                elseif body == "( sleep 5 && /usr/bin/podkop-fragment-patch.sh ) </dev/null >/dev/null 2>&1 &" then
+                    counts[managed].detached = counts[managed].detached + 1
+                end
+            end
+            if line:match("^}") then managed = nil end
         end
-        return count
+        return counts
     end
+    local stale, hooks = false, count_hooks()
     if installed then
         local content, init_err, init_errno = SRV.read_file("/etc/init.d/podkop", LIB.UCI_MAX_SIZE)
         if not content and init_errno ~= 2 then return { error = "Cannot read current Podkop init", details = init_err } end
-        if content then
-            if not content:find("podkop-fragment-patch.sh", 1, true) then
-                stale = true
-            end
-            hooks = count_hooks(content)
-        end
+        hooks = count_hooks(content)
+        stale = hooks.start_service.detached == 0 or hooks.reload_service.detached == 0 or
+            hooks.start_service.legacy > 0 or hooks.reload_service.legacy > 0
     end
     local response = {
         installed = installed,
         stale = stale
     }
-    if hooks > 2 or count_hooks(original) > 0 then response.duplicate_hooks = true end
+    local original_hooks = count_hooks(original)
+    for _, name in ipairs({ "start_service", "reload_service" }) do
+        if hooks[name].detached + hooks[name].legacy > 1 or
+            original_hooks[name].detached + original_hooks[name].legacy > 0 then response.duplicate_hooks = true end
+    end
     return response
 end
 
@@ -303,11 +310,12 @@ function M.wrapper_toggle(action, fragment_raw, record_fragment_raw, fallback_de
     end
     local settings_saved = action == "enable"
     if action == "reinstall" then action = "enable" end
-    local ok, details = SRV.exec_checked("/etc/init.d/podkop-fragment " .. action)
+    local ok, details, _, outcome = SRV.exec_checked("/etc/init.d/podkop-fragment " .. action)
     if not ok then
         local err_msg = (details or ""):match("^%s*(.-)%s*$")
         if err_msg == "" then err_msg = "Wrapper command failed" end
-        return { success = false, error = err_msg, details = details, settings_saved = settings_saved or nil }
+        return { success = false, error = err_msg, details = details, settings_saved = settings_saved or nil,
+            unknown = outcome and outcome.unknown or nil }
     end
     local original, read_err, errno = SRV.read_file("/etc/init.d/podkop.orig", LIB.UCI_MAX_SIZE)
     if not original and errno ~= 2 then

@@ -1,8 +1,9 @@
--- Podkop Tweaker | v4.10.2 | 17.10.2026 | Checked service application and owned init repair
+-- Podkop Tweaker | v4.10.4 | 19.10.2026 | Factual ST1 observations and bounded literal init repair
 -- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
+local CHECK = require("podkop-tweaker.stubby_check")
 
 local M = {}
 M.CONFIG_MAX_SIZE = LIB.UCI_MAX_SIZE
@@ -129,17 +130,7 @@ function M.chain_info()
 end
 
 function M.init_check()
-    local content, err, errno = SRV.read_file("/etc/init.d/stubby", LIB.UCI_MAX_SIZE)
-    if not content then
-        if errno == 2 then return { status = "not_installed" } end
-        return { error = "Cannot read init script", details = err }
-    end
-    if not content:match("%S") then return { error = "Init script is empty" } end
-
-    if content:match("procd_set_param user stubby") then
-        return { status = "needs_fix" }
-    end
-    return { status = "fixed" }
+    return CHECK.read()
 end
 
 function M.init_fix()
@@ -150,11 +141,11 @@ function M.init_fix()
             return { error = errno == 2 and "Init script not found" or "Cannot read init script", details = read_err }
         end
         if not source:match("%S") then return { error = "Init script is empty" } end
-        if not source:match("procd_set_param user stubby") then
+        local content, candidate_err, unchanged = CHECK.root_candidate(source)
+        if not content then return { success = false, error = "Cannot safely change init user", details = candidate_err } end
+        if unchanged then
             return { success = true, message = "Already fixed" }
         end
-
-        local content = source:gsub("procd_set_param user stubby", "procd_set_param user root")
         local stage, stage_err = SRV.stage_file(path, content, { suffix = ".tmp-fix", executable = true })
         if not stage then return { success = false, error = "Cannot write init script", details = stage_err } end
 

@@ -22,10 +22,44 @@ function M.checked_command(command)
 end
 
 function M.exec_checked(command)
-    local ran, raw = pcall(function() return require("luci.sys").exec(M.checked_command(command)) end)
-    if not ran or type(raw) ~= "string" then return false, tostring(raw or "Cannot execute command"), nil end
-    local details, code = raw:match("^(.*)\nPT_EXIT:(%d+)\n$")
-    return code == "0", details or raw, code and tonumber(code) or nil
+    local failures = {}
+    local function failed(stage, err, errno, exception)
+        failures[#failures + 1] = { stage = stage, error = tostring(err or "No result returned"),
+            errno = errno, exception = exception or nil }
+    end
+    local function unknown(raw)
+        local details = type(raw) == "string" and raw or ""
+        for _, failure in ipairs(failures) do
+            local message = "Command outcome is unknown: " .. failure.stage ..
+                (failure.exception and " exception: " or " failed: ") .. failure.error ..
+                (failure.errno ~= nil and (" (errno=" .. tostring(failure.errno) .. ")") or "")
+            details = details .. (details ~= "" and "\n" or "") .. message
+        end
+        return false, details, nil, { unknown = true, errors = failures }
+    end
+    local opened, pipe, open_err, open_errno = pcall(function()
+        return io.popen(M.checked_command(command), "r")
+    end)
+    if not opened then failed("open", pipe, nil, true); return unknown() end
+    if not pipe then failed("open", open_err, open_errno); return unknown() end
+    -- Own the descriptor directly: one complete read, then exactly one close,
+    -- including when read throws. Never replay the command or an interrupted read.
+    local read, raw, read_err, read_errno = pcall(function() return pipe:read("*a") end)
+    local close, closed, close_err, close_errno = pcall(function() return pipe:close() end)
+    if not read then failed("read", raw, nil, true); raw = nil
+    elseif type(raw) ~= "string" or read_err ~= nil or read_errno ~= nil then
+        failed("read", read_err or "Pipe read did not return complete text", read_errno)
+    end
+    if not close then failed("close", closed, nil, true)
+    elseif not closed then failed("close", close_err, close_errno) end
+    if #failures > 0 then return unknown(raw) end
+    local details, code = raw:match("^(.*)\nPT_EXIT:([0-9]+)\n$")
+    local number = code and #code <= 3 and tonumber(code) or nil
+    if not number or number > 255 or tostring(number) ~= code then
+        failed("marker", "Missing or invalid final PT_EXIT marker")
+        return unknown(raw)
+    end
+    return number == 0, details, number
 end
 
 function M.background_command(command, delay)
@@ -354,8 +388,11 @@ function M.restart_service(value)
     local ops = process_ops(value)
     if not ops then return error_response("Unknown service") end
     local before = M.service_status(ops)
-    local ok, details = M.exec_checked(ops.svc.restart_cmd)
-    local response = ok and { success = true, restarting = true } or error_response("Service restart command failed", details)
+    local ok, details, code = M.exec_checked(ops.svc.restart_cmd)
+    local response = ok and { success = true, restarting = true } or
+        error_response(code ~= nil and "Service restart command failed" or "Service restart outcome is unknown", details)
+    if code == nil then response.unknown = true end
+    response.command_result_known, response.command_exit_code = code ~= nil, code
     response.verification_required = true
     response.previous_running = before.running
     response.previous_instance = before.instance
@@ -372,19 +409,26 @@ function M.service_toggle(value, action)
     local result, err, uncertain = M.with_lock(name, function()
         local before = M.service_status(ops)
         local init = ops.init:sub(1, 1) == "/" and ops.init or ("/etc/init.d/" .. ops.init)
-        local ok, details = M.exec_checked(LIB.shell_escape(init) .. " " .. action)
-        if not ok then outcome = error_response("Service " .. action .. " command failed", details); return outcome end
-        local response = M.service_status(ops)
-        response.command_accepted, response.requested = true, action
+        local ok, details, code = M.exec_checked(LIB.shell_escape(init) .. " " .. action)
+        local response
+        if not ok then
+            response = error_response("Service " .. action .. (code ~= nil and " command failed" or " outcome is unknown"), details)
+            if code == nil then response.unknown = true end
+        else
+            response = M.service_status(ops)
+            response.command_accepted = true
+            response.success = response.error == nil and response.running == (action == "start")
+            if response.success then response.applied = true
+            else
+                response.error = response.error or "Service command accepted, but requested state is not observed"
+                response.unknown = true
+            end
+        end
+        response.requested = action
+        response.command_result_known, response.command_exit_code = code ~= nil, code
         response.verification_required, response.previous_running = true, before.running
         response.previous_instance = before.instance
         response.previous_identity_known = before.error == nil and (before.running == false or before.instance ~= nil)
-        response.success = response.error == nil and response.running == (action == "start")
-        if response.success then response.applied = true
-        else
-            response.error = response.error or "Service command accepted, but requested state is not observed"
-            response.unknown = true
-        end
         outcome = response
         return response
     end)

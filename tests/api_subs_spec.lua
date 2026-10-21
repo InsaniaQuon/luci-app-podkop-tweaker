@@ -68,7 +68,32 @@ local function begin_subs(opts)
     -- The harness keeps this database by reference. Each request world needs
     -- its own copy so a previous actor/test cannot mutate the shared seed.
     opts.uci = copy_uci(opts.uci or UCI_SEED)
+    local network = opts.popen
+    local checked = opts.sys or {}
+    checked[#checked + 1] = { match = "pidof 'sing-box'", out = "\nPT_EXIT:1\n" }
+    checked[#checked + 1] = { match = "/etc/init.d/podkop restart", out = "\nPT_EXIT:0\n" }
+    checked[#checked + 1] = { match = "crontab ", out = "\nPT_EXIT:0\n" }
+    checked[#checked + 1] = { match = "(mkdir -p /etc/hotplug.d/iface)", out = "\nPT_EXIT:0\n" }
+    opts.sys = checked
+    opts.popen = function(command)
+        for _, responder in ipairs(checked) do
+            if (type(responder.match) == "function" and responder.match(command)) or
+                (type(responder.match) == "string" and command:find(responder.match, 1, true)) then
+                return type(responder.out) == "function" and responder.out(command) or responder.out
+            end
+        end
+        if type(network) == "function" then return network(command) end
+        for _, responder in ipairs(network or {}) do
+            if (type(responder.match) == "function" and responder.match(command)) or
+                (type(responder.match) == "string" and command:find(responder.match, 1, true)) then
+                return type(responder.out) == "function" and responder.out(command) or responder.out
+            end
+        end
+        return nil
+    end
     H.begin(opts)
+    local sequence = 0
+    require("pt-subs-lib").new_operation_id = function() sequence = sequence + 1; return string.format("%032x", sequence) end
     if not H.vfs_exists(CFG) then H.vfs_write(CFG, CFG_TEXT) end
     return H.reload("podkop-tweaker.api_subs")
 end
@@ -77,14 +102,14 @@ local function mktemp_world(payload)
     return {
         popen = function(cmd)
             if cmd:find("curl", 1, true) then return (payload or H.vfs_read("/tmp/pt-fixed") or "") .. "\nPT_CURL_EXIT:0\n" end
-            return ""
+            return nil
         end
     }, payload
 end
 
 local function command_count(needle)
     local n = 0
-    for _, commands in ipairs({ H.exec_cmds(), H.execute_cmds() }) do
+    for _, commands in ipairs({ H.exec_cmds(), H.execute_cmds(), H.popen_cmds() }) do
         for _, command in ipairs(commands) do
             if command:find(needle, 1, true) then n = n + 1 end
         end
@@ -93,7 +118,11 @@ local function command_count(needle)
 end
 
 local function restart_count()
-    return command_count("/etc/init.d/podkop restart")
+    local n = 0
+    for _, command in ipairs(H.popen_cmds()) do
+        if command:find("/etc/init.d/podkop restart", 1, true) then n = n + 1 end
+    end
+    return n
 end
 
 after_each(function()
@@ -185,7 +214,10 @@ describe("api_subs.subscription_fetch", function()
     end)
 
     it("producer failure -> download error", function()
-        local SUB = begin_subs({ popen = function() return "\nPT_CURL_EXIT:7\n" end })
+        local SUB = begin_subs({ popen = function(command)
+            if command:find("curl ", 1, true) then return "\nPT_CURL_EXIT:7\n" end
+            return nil
+        end })
         assert.equal("Failed to download subscription", SUB.subscription_fetch("https://sub.example/x").error)
     end)
 
@@ -236,10 +268,13 @@ describe("api_subs.subscription_attach", function()
     it("unchanged link: only subs+log updated, no restart, no sub-backup", function()
         local SUB = begin_subs({})
         local r = SUB.subscription_attach("main", "0", "https://sub/1", "OldName", LINK_OLD)
-        assert.same({ success = true, unchanged = true }, r)
+        assert.is_true(r.success)
+        assert.is_true(r.unchanged)
+        assert.equal("not_required", r.service)
+        assert.same({ recorded = true, finalized = true }, r.journal)
         assert.falsy(H.vfs_exists(SUBBAK))
         local restarts = 0
-        for _, c in ipairs(H.exec_cmds()) do
+        for _, c in ipairs(H.popen_cmds()) do
             if c:find("/etc/init.d/podkop restart", 1, true) then restarts = restarts + 1 end
         end
         assert.equal(0, restarts)
@@ -395,7 +430,7 @@ describe("api_subs.settings_save", function()
         assert.equal(25, st.log_display_count)
         assert.falsy(H.vfs_exists("/usr/bin/pt-auto-update"), "disabled triggers do not need a launcher")
         local cleanup = false
-        for _, c in ipairs(H.exec_cmds()) do
+        for _, c in ipairs(H.popen_cmds()) do
             if c:find("crontab '/tmp/pt-subscriptions.cron", 1, true) then cleanup = true end
         end
         assert.truthy(cleanup)
@@ -633,7 +668,8 @@ describe("subscription mutation IO and lock outcomes", function()
             assert.equal(state, H.vfs_read(SUBS))
             assert.equal(CFG_TEXT, H.vfs_read(CFG))
             assert.equal("last good backup", H.vfs_read(SUBBAK))
-            assert.equal("old journal\n", H.vfs_read(LOG))
+            assert.matches("^old journal\n", H.vfs_read(LOG))
+            assert.matches("|state=finished|service=not_required|skipped=0|outcome=failed", H.vfs_read(LOG), 1, true)
             assert.equal(0, restart_count())
             assert.same({}, H.stage_paths(CFG .. ".tmp.*"))
         end)
@@ -670,7 +706,8 @@ describe("subscription mutation IO and lock outcomes", function()
         assert.equal(state, H.vfs_read(SUBS))
         assert.truthy(H.vfs_read(CFG):find(fresh, 1, true))
         assert.equal(CFG_TEXT, H.vfs_read(SUBBAK))
-        assert.equal("old journal\n", H.vfs_read(LOG))
+        assert.matches("^old journal\n", H.vfs_read(LOG))
+        assert.matches("|state=finished|service=pending|skipped=0|outcome=partial", H.vfs_read(LOG), 1, true)
         assert.equal(0, restart_count())
         local fetches = 0
         for _, command in ipairs(H.popen_cmds()) do if command:find("curl", 1, true) then fetches = fetches + 1 end end
@@ -776,6 +813,13 @@ describe("subscription release failures preserve actual outcomes", function()
                 local api = begin_subs({ strict = true, failures = {
                     [failure_path] = { [failure] = true, partial = 4 }, [sub_lock] = { rmdir = true }
                 } })
+                if mutation.name == "Attach" and failure == "write" then
+                    H.state().failures[sub_lock] = nil
+                    require("pt-subs-lib").new_operation_id = function()
+                        H.state().failures[sub_lock] = { rmdir = true }
+                        return string.rep("a", 32)
+                    end
+                end
                 H.vfs_write(SUBS, state)
                 H.vfs_write(LOG, "old journal\n")
                 local response = mutation.call(api)
@@ -851,7 +895,7 @@ describe("subscription release failures preserve actual outcomes", function()
             assert.is_true(response.unknown)
             assert.equal(published, response.applied == true)
             assert.equal(published and 1 or 0, response.updated)
-            assert.equal(1, response.failed)
+            assert.equal((published or phase == "detached association") and 0 or 1, response.failed)
             assert.equal(published, response.restart_required == true)
             assert.is_false(response.restarted)
             assert.matches("cannot release owned lock", response.error)
@@ -865,7 +909,10 @@ describe("subscription release failures preserve actual outcomes", function()
                 assert.equal(CFG_TEXT, H.vfs_read(CFG))
                 assert.falsy(H.vfs_exists(SUBBAK))
             end
-            assert.equal("old journal\n", H.vfs_read(LOG))
+            if phase == "config stage" or published then
+                assert.matches("^old journal\n", H.vfs_read(LOG))
+                assert.matches("|state=finished|", H.vfs_read(LOG), 1, true)
+            else assert.equal("old journal\n", H.vfs_read(LOG)) end
             assert.equal(1, fetches)
             assert.equal(0, restart_count())
         end)
@@ -898,7 +945,7 @@ describe("subscription release failures preserve actual outcomes", function()
     for _, case in ipairs({
         { name = "accepted restart", output = "\nPT_EXIT:0\n", requested = true },
         { name = "failed restart", output = "primary restart diagnostics\nPT_EXIT:7\n", primary = "primary restart diagnostics" },
-        { name = "missing exit evidence", output = "missing result marker", primary = "missing result marker" }
+        { name = "missing exit evidence", output = "missing result marker", primary = "missing result marker", unknown = true }
     }) do
         it("keeps checked metadata and primary diagnostics after " .. case.name .. " and release failure", function()
             local options = mktemp_world(fresh)
@@ -925,7 +972,7 @@ describe("subscription release failures preserve actual outcomes", function()
             assert.equal(case.requested ~= true, response.restart_required == true)
             assert.matches("cannot release owned lock", response.details)
             if case.primary then
-                assert.equal("Service restart command failed", response.error)
+                assert.equal(case.unknown and "Service restart outcome is unknown" or "Service restart command failed", response.error)
                 assert.truthy(response.details:find(case.primary, 1, true))
             end
             assert.truthy(H.vfs_read(CFG):find(fresh, 1, true))
@@ -952,7 +999,7 @@ describe("subscription network-wait reconciliation", function()
                 assert.equal("dead", coroutine.status(actor))
                 return fresh .. "\nPT_CURL_EXIT:0\n"
             end
-            return ""
+            return nil
         end })
         H.vfs_write(SUBS, state)
         local response = api.update_all()
@@ -1055,7 +1102,7 @@ describe("subscription network-wait reconciliation", function()
         assert.equal("concurrently damaged state", H.vfs_read(SUBS))
         assert.equal(CFG_TEXT, H.vfs_read(CFG))
         assert.falsy(H.vfs_exists(SUBBAK))
-        assert.falsy(H.vfs_exists(LOG))
+        assert.matches("|state=finished|service=not_required|skipped=0|outcome=failed", H.vfs_read(LOG), 1, true)
         assert.equal(0, restart_count())
     end)
 

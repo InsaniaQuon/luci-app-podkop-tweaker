@@ -67,10 +67,15 @@ describe("untrusted subscription bytes and logical UCI replacement", function()
     end)
     it("auto-update rejects a malicious response without backup/write/restart", function()
         H.begin({ uci = { podkop = { H.sec("main", "section", { connection_type = "proxy", proxy_config_type = "url", proxy_string = "vless://old@host:443#old" }) } },
-            popen = function() return "vless://new@host:443#new\0tail\nPT_CURL_EXIT:0\n" end })
+            popen = function(command)
+                if command:find("curl ", 1, true) then return "vless://new@host:443#new\0tail\nPT_CURL_EXIT:0\n" end
+                return nil
+            end })
         H.vfs_write(CFG, BASE)
         H.vfs_write("/subs.json", '{"main":[{"subscription_url":"https://provider.test","proxy_name":"old"}]}')
-        local r = require("pt-subs-lib").update_all_subscriptions("/subs.json", "/log", 25, "auto")
+        local s = require("pt-subs-lib")
+        s.new_operation_id = function() return string.rep("a", 32) end
+        local r = s.update_all_subscriptions("/subs.json", "/log", 25, "auto")
         assert.equal(0, r.updated); assert.equal(1, r.failed); assert.is_false(r.need_restart)
         assert.equal(BASE, H.vfs_read(CFG))
         assert.falsy(H.vfs_exists(BACKUP))

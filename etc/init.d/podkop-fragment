@@ -68,27 +68,87 @@ _wrapper_prepare() {
 		echo "ERROR: current init snapshot failed, is invalid or changed while reading"
 		return 1
 	fi
-	# Match only the literal line emitted by this application. Preserve other
-	# commands/comments mentioning the patcher and all current upstream functions.
-	WRAPPER_HOOK="$(printf '\t( sleep 5 && %s ) &' "$PATCH_SCRIPT")"
-	WRAPPER_HOOK_BODY="( sleep 5 && $PATCH_SCRIPT ) &"
+	# The line-based normalizer cannot distinguish commands from multiline shell
+	# payloads. Refuse ambiguous source before deriving or publishing either file.
+	# Track independent quote/command/parameter contexts on each physical line so
+	# canonical inline nested substitutions remain supported. This is not a full
+	# shell parser: ANSI-C quotes, heredocs, multiline contexts/continuations,
+	# backticks, arithmetic expansions and case inside substitutions require repair.
+	if ! awk '
+function unsupported(reason) {
+	printf "ERROR: unsupported Podkop init source at line %d: %s\n", NR, reason
+	exit 1
+}
+function push(context) {
+	if (depth >= 64) unsupported("shell context nesting exceeds 64")
+	word_start[depth]=0
+	kind[++depth]=context; word_start[depth]=1
+}
+{
+	depth=0; kind[0]="root"; word_start[0]=1
+	for (i=1; i<=length($0); i++) {
+		c=substr($0, i, 1); next_c=substr($0, i+1, 1); context=kind[depth]
+		if (context == "single") { if (c == "\047") depth--; continue }
+		if (c == "\\") {
+			if (i == length($0)) unsupported("line continuation")
+			i++; word_start[depth]=0; continue
+		}
+		if (c == "\"") { if (context == "double") depth--; else push("double"); continue }
+		if (context != "double" && c == "\047") { push("single"); continue }
+		if (c == "`") unsupported("backtick substitution")
+		if (c == "$" && next_c == "\047" && context != "double") unsupported("ANSI-C quoting")
+		if (c == "$" && next_c == "(") {
+			if (substr($0, i+2, 1) == "(") unsupported("arithmetic expansion")
+			push("command"); i++; continue
+		}
+		if (c == "$" && next_c == "{") { push("parameter"); i++; continue }
+		if (context == "parameter" && c == "}") { depth--; continue }
+		if (context == "double" || context == "parameter") continue
+		if (c == "#" && word_start[depth]) break
+		if (c == "<" && next_c == "<") unsupported("here-document")
+		if (context == "command" || context == "group") {
+			if (word_start[depth] && substr($0, i) ~ /^case([ \t;&|()<>]|$)/) unsupported("case inside command substitution")
+			if (c == "(") { push("group"); continue }
+			if (c == ")") { depth--; continue }
+		}
+		word_start[depth]=(c ~ /[ \t;&|()<>]/)
+	}
+	if (depth) unsupported(kind[depth] == "single" || kind[depth] == "double" ? "multiline quoted string" : "multiline substitution")
+}
+' "$CURRENT_TMP"; then
+		echo "ERROR: wrapper source preflight failed; refusing changes to current init and original"
+		return 1
+	fi
+	# Own only the exact legacy/detached bodies inside start/reload. Detach all
+	# stdio so the delayed child cannot hold the caller's checked-output pipe open.
+	WRAPPER_LEGACY_HOOK_BODY="( sleep 5 && $PATCH_SCRIPT ) &"
+	WRAPPER_HOOK_BODY="( sleep 5 && $PATCH_SCRIPT ) </dev/null >/dev/null 2>&1 &"
+	WRAPPER_HOOK="$(printf '\t%s' "$WRAPPER_HOOK_BODY")"
+	# awk prints line records without exposing the final separator. Preserve that
+	# byte too, including when owned hooks precede an unrelated unterminated tail.
+	WRAPPER_LAST_BYTE="$(tail -c 1 "$CURRENT_TMP")" || return 1
+	WRAPPER_FINAL_LF=0
+	[ -n "$WRAPPER_LAST_BYTE" ] || WRAPPER_FINAL_LF=1
 	NORMALIZE_AWK='
 /^[A-Za-z_][A-Za-z_0-9]*[ \t]*\(\)/ { managed=($0 ~ /^(start_service|reload_service)\(\)/) }
 {
 	line=$0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line)
-	if (managed && line == hook) { found=1; if (mode == "clean") next }
-	if (mode == "clean") print
+	if (managed && (line == hook || line == legacy_hook)) { found=1; if (mode == "clean") next }
+	if (mode == "clean") { printf "%s%s", separator, $0; separator="\n" }
 }
 /^}/ { managed=0 }
-END { if (mode == "detect") exit found ? 0 : 1 }
+END {
+	if (mode == "detect") exit found ? 0 : 1
+	if (mode == "clean" && final_lf) printf "\n"
+}
 '
 	if ! cp -p "$CURRENT_TMP" "$CLEAN_TMP"; then
 		echo "ERROR: could not prepare clean current init"
 		return 1
 	fi
-	awk -v hook="$WRAPPER_HOOK_BODY" -v mode=detect "$NORMALIZE_AWK" "$CURRENT_TMP"
+	awk -v hook="$WRAPPER_HOOK_BODY" -v legacy_hook="$WRAPPER_LEGACY_HOOK_BODY" -v mode=detect "$NORMALIZE_AWK" "$CURRENT_TMP"
 	case "$?" in
-		0) awk -v hook="$WRAPPER_HOOK_BODY" -v mode=clean "$NORMALIZE_AWK" "$CURRENT_TMP" > "$CLEAN_TMP" || return 1 ;;
+		0) awk -v hook="$WRAPPER_HOOK_BODY" -v legacy_hook="$WRAPPER_LEGACY_HOOK_BODY" -v mode=clean -v final_lf="$WRAPPER_FINAL_LF" "$NORMALIZE_AWK" "$CURRENT_TMP" > "$CLEAN_TMP" || return 1 ;;
 		1) : ;; # No owned hooks: retain exact bytes, including a missing final LF.
 		*) echo "ERROR: could not inspect generated hooks"; return 1 ;;
 	esac
@@ -101,13 +161,17 @@ END { if (mode == "detect") exit found ? 0 : 1 }
 _install_wrapper() (
 	_wrapper_prepare || exit 1
 	NEW_TMP="$(mktemp "${PODKOP_INIT}.pt-fragment-new.XXXXXX")" || exit 1
-	if ! cp -p "$CLEAN_TMP" "$NEW_TMP" || ! awk -v hook="$WRAPPER_HOOK" '
+	if ! cp -p "$CLEAN_TMP" "$NEW_TMP" || ! awk -v hook="$WRAPPER_HOOK" -v final_lf="$WRAPPER_FINAL_LF" '
+function emit(line) { printf "%s%s", separator, line; separator="\n" }
 /^start_service\(\)/ { starts++; in_start=1 }
-in_start && /^}$/ { print hook; in_start=0; start_hooks++ }
+in_start && /^}$/ { emit(hook); in_start=0; start_hooks++ }
 /^reload_service\(\)/ { reloads++; in_reload=1 }
-in_reload && /^}$/ { print hook; in_reload=0; reload_hooks++ }
-{ print }
-END { if (starts != 1 || reloads != 1 || start_hooks != 1 || reload_hooks != 1 || in_start || in_reload) exit 1 }
+in_reload && /^}$/ { emit(hook); in_reload=0; reload_hooks++ }
+{ emit($0) }
+END {
+	if (starts != 1 || reloads != 1 || start_hooks != 1 || reload_hooks != 1 || in_start || in_reload) exit 1
+	if (final_lf) printf "\n"
+}
 ' "$CLEAN_TMP" > "$NEW_TMP" || ! sh -n "$NEW_TMP" || ! chmod +x "$CLEAN_TMP" "$NEW_TMP"; then
 		echo "ERROR: wrapper generation, syntax or executable permissions failed"
 		exit 1

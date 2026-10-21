@@ -1,4 +1,4 @@
--- api_stubby_spec | v1.1.0 | 17.10.2026 | Owned init repair and checked service/partial-application contracts
+-- api_stubby_spec | v1.3.0 | 19.10.2026 | Factual ST1 reads and literal-only checked init publication
 
 package.path = "./usr/lib/lua/?.lua;./tests/?.lua;" .. package.path
 
@@ -33,21 +33,26 @@ local function begin_stubby(opts)
     opts = opts or {}
     if opts.strict == nil then opts.strict = true end
     opts.sys = opts.sys or {}
+    local pipes = opts.popen or {}
+    for _, reply in ipairs(opts.sys) do pipes[#pipes + 1] = reply end
     for _, action in ipairs({ "restart", "start", "stop", "enable", "disable" }) do
-        table.insert(opts.sys, service_reply(action, "\nPT_EXIT:0\n"))
+        table.insert(pipes, service_reply(action, "\nPT_EXIT:0\n"))
     end
-    table.insert(opts.sys, pid_reply("\nPT_EXIT:1\n"))
-    table.insert(opts.sys, { match = "sh -n ", out = "\nPT_EXIT:0\n" })
-    table.insert(opts.sys, { match = "chmod 755 ", out = "\nPT_EXIT:0\n" })
-    table.insert(opts.sys, { match = "for link in /etc/rc.d/S*stubby", out = "\nPT_EXIT:0\n" })
+    table.insert(pipes, pid_reply("\nPT_EXIT:1\n"))
+    table.insert(pipes, { match = "sh -n ", out = "\nPT_EXIT:0\n" })
+    table.insert(pipes, { match = "chmod 755 ", out = "\nPT_EXIT:0\n" })
+    table.insert(pipes, { match = "for link in /etc/rc.d/S*stubby", out = "\nPT_EXIT:0\n" })
+    opts.popen = pipes
     H.begin(opts)
     return H.reload("podkop-tweaker.api_stubby")
 end
 
 local function commands_containing(text)
     local result = {}
-    for _, cmd in ipairs(H.exec_cmds()) do
-        if cmd:find(text, 1, true) then result[#result + 1] = cmd end
+    for _, commands in ipairs({ H.exec_cmds(), H.popen_cmds() }) do
+        for _, cmd in ipairs(commands) do
+            if cmd:find(text, 1, true) then result[#result + 1] = cmd end
+        end
     end
     return result
 end
@@ -55,6 +60,8 @@ end
 local function assert_restart(resp, running, instance)
     assert.is_true(resp.success)
     assert.is_true(resp.restarting)
+    assert.is_true(resp.command_result_known)
+    assert.equal(0, resp.command_exit_code)
     assert.is_true(resp.verification_required)
     assert.equal(running or false, resp.previous_running)
     assert.is_true(resp.previous_identity_known)
@@ -126,6 +133,8 @@ describe("api_stubby shared service application", function()
         local r = STB.save_config(VALID)
         assert.is_false(r.success)
         assert.is_true(r.applied)
+        assert.is_true(r.command_result_known)
+        assert.equal(11, r.command_exit_code)
         assert.is_true(r.verification_required)
         assert.is_true(r.previous_running)
         assert.is_true(r.previous_identity_known)
@@ -256,14 +265,16 @@ describe("api_stubby.chain_info", function()
 end)
 
 describe("api_stubby.init_check/init_fix IO3", function()
-    it("retains the detection contract without changing deferred listener detection", function()
+    it("does not infer runtime root from an init declaration and retains an explicit root no-op", function()
         local STB = begin_stubby()
-        assert.same({ status = "not_installed" }, STB.init_check())
+        assert.equal("not_installed", STB.init_check().status)
         assert.equal("Init script not found", STB.init_fix().error)
         H.vfs_write(INIT, SCRIPT)
-        assert.same({ status = "needs_fix" }, STB.init_check())
+        assert.equal("stopped", STB.init_check().runtime.state)
+        assert.equal("unknown", STB.init_check().status)
         H.vfs_write(INIT, FIXED)
-        assert.same({ status = "fixed" }, STB.init_check())
+        assert.equal("root", STB.init_check().init.user)
+        assert.equal("unknown", STB.init_check().status)
         assert.same({ success = true, message = "Already fixed" }, STB.init_fix())
         assert.equal(0, #commands_containing("/etc/init.d/stubby restart"))
     end)
@@ -271,7 +282,7 @@ describe("api_stubby.init_check/init_fix IO3", function()
     it("does not label an empty init script fixed", function()
         local STB = begin_stubby()
         H.vfs_write(INIT, " \n\t")
-        assert.equal("Init script is empty", STB.init_check().error)
+        assert.equal("Init script is empty", STB.init_check().init.error)
         assert.equal("Init script is empty", STB.init_fix().error)
         assert_unpublished(" \n\t")
     end)
@@ -293,8 +304,8 @@ describe("api_stubby.init_check/init_fix IO3", function()
             local STB = begin_stubby({ failures = { [INIT] = { [operation] = true, errno = 13 } } })
             H.vfs_write(INIT, SCRIPT)
             local check, fix = STB.init_check(), STB.init_fix()
-            assert.truthy(check.error)
-            assert.is_nil(check.status)
+            assert.truthy(check.init.error)
+            assert.equal("unknown", check.init.state)
             assert.truthy(fix.error)
             assert.truthy(fix.details)
             assert_unpublished()

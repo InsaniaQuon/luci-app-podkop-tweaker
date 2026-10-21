@@ -58,7 +58,7 @@ local function begin(opts)
             return opts.toggle_output or checked_output("", 0)
         end }
     }
-    H.begin({ strict = true, failures = opts.failures, execute = opts.execute, sys = scripts, popen = scripts })
+    fixture.state = H.begin({ strict = true, failures = opts.failures, execute = opts.execute, popen = scripts })
     active_fixture = fixture
     return require("podkop-tweaker.services"), fixture
 end
@@ -70,6 +70,7 @@ after_each(function()
     -- production pcall. A fake cannot turn a swallowed assertion into evidence.
     H.finish()
     if not fixture then return end
+    assert.same({}, fixture.state.exec_log, "services must capture their own pipes, never sys.exec")
     for _, check in ipairs(fixture.checks) do
         assert.equal("string", type(check.path), "native validation must use an actual owned stage")
         assert.equal("string", type(check.bytes))
@@ -93,6 +94,8 @@ describe("observed service-toggle outcomes", function()
             local result = S.service_toggle("singbox", case.action)
             assert.is_false(result.success)
             assert.is_true(result.command_accepted)
+            assert.is_true(result.command_result_known)
+            assert.equal(0, result.command_exit_code)
             assert.is_true(result.unknown)
             assert.falsy(result.applied)
             assert.equal(case.running, result.running)
@@ -293,33 +296,270 @@ describe("checked native exit evidence", function()
         { name = "missing marker", output = "" },
         { name = "unterminated success marker", output = "\nPT_EXIT:0" },
         { name = "invalid marker", output = "\nPT_EXIT:not-a-code\n" },
+        { name = "signed code", output = "\nPT_EXIT:+0\n" },
+        { name = "negative code", output = "\nPT_EXIT:-1\n" },
+        { name = "fractional code", output = "\nPT_EXIT:0.0\n" },
+        { name = "leading zero", output = "\nPT_EXIT:00\n" },
+        { name = "noncanonical nonzero", output = "\nPT_EXIT:017\n" },
+        { name = "out-of-range code", output = "\nPT_EXIT:256\n" },
+        { name = "unbounded decimal", output = "\nPT_EXIT:" .. string.rep("9", 1000) .. "\n" },
+        { name = "whitespace in code", output = "\nPT_EXIT: 0\n" },
+        { name = "extra final newline", output = "\nPT_EXIT:0\n\n" },
         { name = "non-final success marker", output = "\nPT_EXIT:0\nmore output\n" },
         { name = "earlier success followed by failure", output = "early\nPT_EXIT:0\nlate\nPT_EXIT:9\n", code = 9 }
     }) do
         local test = case
         it("does not infer success from " .. test.name, function()
             local scripts = { { match = "fixture-check", out = test.output } }
-            H.begin({ strict = true, sys = scripts, popen = scripts })
+            H.begin({ strict = true, popen = scripts })
             local S = require("podkop-tweaker.services")
             local ok, details, code = S.exec_checked("fixture-check")
             assert.is_false(ok)
             assert.equal("string", type(details))
             assert.equal(test.code, code)
+            if test.code then
+                assert.equal(test.output:match("^(.*)\nPT_EXIT:[0-9]+\n$"), details)
+            else
+                assert.equal(test.output, details:sub(1, #test.output))
+                assert.truthy(details:find("Command outcome is unknown", 1, true))
+                assert.truthy(details:find("final PT_EXIT marker", 1, true))
+            end
+            assert.same({}, H.exec_cmds())
+            assert.equal(1, #H.popen_cmds())
+            assert.same({ "*a" }, H.state().pipe_log[1].reads)
+            assert.equal(1, H.state().pipe_log[1].close_calls)
         end)
     end
 
     it("accepts exit zero with stdout and retains complete diagnostics", function()
-        local details = string.rep("full diagnostic context\n", 1000) .. "last line"
+        local details = string.rep("full diagnostic context\n", 10000) .. "\nPT_EXIT:17\nearlier marker\nlast line"
         local scripts = { { match = "fixture-check", out = checked_output(details, 0) } }
-        H.begin({ strict = true, sys = scripts, popen = scripts })
+        H.begin({ strict = true, popen = scripts })
         local ok, output, code = require("podkop-tweaker.services").exec_checked("fixture-check")
         assert.is_true(ok)
         assert.equal(details, output)
         assert.equal(0, code)
+        assert.same({}, H.exec_cmds())
+        assert.equal(1, #H.popen_cmds())
+        assert.same({ "*a" }, H.state().pipe_log[1].reads)
+        assert.equal(1, H.state().pipe_log[1].close_calls)
+    end)
+
+    it("accepts the complete canonical shell exit range", function()
+        local scripts = { { match = "fixture-check", out = function(command)
+            return checked_output("context", tonumber(command:match("fixture%-check (%d+)")))
+        end } }
+        H.begin({ strict = true, popen = scripts })
+        local S = require("podkop-tweaker.services")
+        for code = 0, 255 do
+            local ok, details, trusted = S.exec_checked("fixture-check " .. code)
+            assert.equal(code == 0, ok)
+            assert.equal("context", details)
+            assert.equal(code, trusted)
+        end
+        assert.equal(256, #H.popen_cmds())
+        assert.same({}, H.exec_cmds())
+    end)
+
+    for _, case in ipairs({
+        { name = "open error", descriptor = { open_error = "pipe unavailable", open_errno = 24 },
+            stage = "open", message = "pipe unavailable", errno = 24 },
+        { name = "open exception", descriptor = { open_exception = "cannot open pipe" },
+            stage = "open", message = "cannot open pipe", exception = true },
+        { name = "read error", descriptor = { read_error = "read failed", read_errno = 5 },
+            stage = "read", message = "read failed", errno = 5 },
+        { name = "read EINTR with returned success marker", descriptor = { read_error = "interrupted", read_errno = 4,
+            read_output = "all returned bytes\nPT_EXIT:0\n" }, stage = "read", message = "interrupted", errno = 4 },
+        { name = "read exception", descriptor = { read_exception = "reader raised" },
+            stage = "read", message = "reader raised", exception = true },
+        { name = "close error after success marker", descriptor = { content = "complete output\nPT_EXIT:0\n",
+            close_error = "pclose failed", close_errno = 10 }, stage = "close", message = "pclose failed", errno = 10 },
+        { name = "close exception after nonzero marker", descriptor = { content = "complete output\nPT_EXIT:17\n",
+            close_exception = "closer raised" }, stage = "close", message = "closer raised", exception = true }
+    }) do
+        local test = case
+        it("retains " .. test.name .. " and closes an acquired descriptor once without replay", function()
+            H.begin({ strict = true, popen = { { match = "fixture-check", out = test.descriptor } } })
+            local S = require("podkop-tweaker.services")
+            local ok, details, code, metadata = S.exec_checked("fixture-check")
+            assert.is_false(ok)
+            assert.is_nil(code, "transport errors invalidate even a returned final marker")
+            assert.truthy(details:find("Command outcome is unknown", 1, true))
+            assert.truthy(details:find(test.stage, 1, true))
+            assert.truthy(details:find(test.message, 1, true))
+            if test.errno then assert.truthy(details:find("errno=" .. test.errno, 1, true)) end
+            local raw = test.descriptor.read_output or test.descriptor.content or ""
+            assert.equal(raw, details:sub(1, #raw), "never truncate or strip returned bytes on transport failure")
+            assert.same({ unknown = true, errors = { { stage = test.stage, error = test.message,
+                errno = test.errno, exception = test.exception } } }, metadata)
+            assert.same({}, H.exec_cmds())
+            assert.same({ S.checked_command("fixture-check") }, H.popen_cmds())
+            local pipe = H.state().pipe_log[1]
+            assert.equal("r", pipe.mode)
+            assert.equal(test.stage ~= "open", pipe.acquired)
+            assert.same(test.stage == "open" and {} or { "*a" }, pipe.reads)
+            assert.equal(test.stage == "open" and 0 or 1, pipe.close_calls)
+        end)
+    end
+
+    it("retains both read and close failures rather than losing one during cleanup", function()
+        H.begin({ strict = true, popen = { { match = "fixture-check", out = {
+            read_output = "partial\nPT_EXIT:1\n", read_error = "interrupted", read_errno = 4,
+            close_exception = "close also raised" } } } })
+        local ok, details, code, metadata = require("podkop-tweaker.services").exec_checked("fixture-check")
+        assert.is_false(ok)
+        assert.is_nil(code)
+        assert.equal("partial\nPT_EXIT:1\n", details:sub(1, #"partial\nPT_EXIT:1\n"))
+        assert.truthy(details:find("interrupted (errno=4)", 1, true))
+        assert.truthy(details:find("close also raised", 1, true))
+        assert.same({ { stage = "read", error = "interrupted", errno = 4 },
+            { stage = "close", error = "close also raised", exception = true } }, metadata.errors)
+        assert.same({ "*a" }, H.state().pipe_log[1].reads)
+        assert.equal(1, H.state().pipe_log[1].close_calls)
+        assert.equal(1, #H.popen_cmds())
+    end)
+
+    it("still closes once when read and close both throw", function()
+        H.begin({ strict = true, popen = { { match = "fixture-check", out = {
+            read_exception = "read raised", close_exception = "close raised" } } } })
+        local ok, details, code, metadata = require("podkop-tweaker.services").exec_checked("fixture-check")
+        assert.is_false(ok)
+        assert.is_nil(code)
+        assert.truthy(details:find("read raised", 1, true))
+        assert.truthy(details:find("close raised", 1, true))
+        assert.same({ { stage = "read", error = "read raised", exception = true },
+            { stage = "close", error = "close raised", exception = true } }, metadata.errors)
+        assert.equal(1, H.state().pipe_log[1].close_calls)
     end)
 end)
 
+describe("checked restart certainty and prior process facts", function()
+    for _, case in ipairs({
+        { name = "accepted", output = checked_output("notice", 0), code = 0 },
+        { name = "known failure", output = checked_output("failure details", 19), code = 19 },
+        { name = "missing marker", output = "returned diagnostics" },
+        { name = "open failure", output = { open_error = "no pipe", open_errno = 24 } },
+        { name = "interrupted read", output = { read_output = checked_output("partial", 0), read_error = "EINTR", read_errno = 4 } },
+        { name = "read exception", output = { read_exception = "reader raised" } },
+        { name = "close failure", output = { content = checked_output("full output", 0), close_error = "pclose failed", close_errno = 10 } }
+    }) do
+        local test = case
+        it("classifies an " .. test.name .. " restart without discarding the previous instance", function()
+            local S, fixture = begin({ pid_output = checked_output("55", 0), restart_output = test.output })
+            H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
+            local response = S.restart_service("singbox")
+            assert.equal(test.code == 0, response.success)
+            assert.equal(test.code ~= nil, response.command_result_known)
+            assert.equal(test.code, response.command_exit_code)
+            assert.is_true(response.verification_required)
+            assert.is_true(response.previous_running)
+            assert.is_true(response.previous_identity_known)
+            assert.equal("55:400", response.previous_instance)
+            if test.code == 0 then
+                assert.is_true(response.restarting)
+                assert.falsy(response.unknown)
+            else
+                assert.falsy(response.restarting)
+                if test.code then
+                    assert.equal("Service restart command failed", response.error)
+                    assert.equal("failure details", response.details)
+                    assert.falsy(response.unknown)
+                else
+                    assert.equal("Service restart outcome is unknown", response.error)
+                    assert.is_true(response.unknown)
+                    assert.truthy(response.details:find("unknown", 1, true))
+                end
+            end
+            assert.falsy(response.applied, "restart_service does not own a disk-application fact")
+            assert.equal(1, #fixture.restarts)
+            assert.equal(2, #H.popen_cmds(), "one process query and one command transport")
+        end)
+    end
+
+    for _, case in ipairs({
+        { name = "known absence", pid = checked_output("", 1), running = false, known = true },
+        { name = "failed process query", pid = checked_output("cannot query", 2), known = false },
+        { name = "unreadable process identity", pid = checked_output("55", 0), running = true, known = false }
+    }) do
+        local test = case
+        it("retains " .. test.name .. " on an unknown restart outcome", function()
+            local S = begin({ pid_output = test.pid, restart_output = "" })
+            local response = S.restart_service("singbox")
+            assert.is_false(response.success)
+            assert.is_true(response.unknown)
+            assert.is_false(response.command_result_known)
+            assert.equal(test.running, response.previous_running)
+            assert.equal(test.known, response.previous_identity_known)
+            assert.is_nil(response.previous_instance)
+        end)
+    end
+
+    for _, action in ipairs({ "start", "stop" }) do
+        local requested = action
+        for _, case in ipairs({
+            { name = "known failure", output = checked_output("failed command", 17), code = 17 },
+            { name = "missing marker", output = "" },
+            { name = "read error", output = { read_error = "interrupted", read_errno = 4 } },
+            { name = "close error", output = { content = checked_output("done", 0), close_error = "failed close", close_errno = 10 } }
+        }) do
+            local test = case
+            it("keeps " .. requested .. " " .. test.name .. " separate from an accepted command", function()
+                local S = begin({ toggle_output = test.output, pid_output = checked_output("55", 0) })
+                H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
+                local response = S.service_toggle("singbox", requested)
+                assert.is_false(response.success)
+                assert.equal(test.code ~= nil, response.command_result_known)
+                assert.equal(test.code, response.command_exit_code)
+                assert.equal(requested, response.requested)
+                assert.is_true(response.previous_running)
+                assert.equal("55:400", response.previous_instance)
+                assert.is_true(response.previous_identity_known)
+                assert.falsy(response.command_accepted)
+                assert.falsy(response.applied)
+                assert.falsy(response.restarting)
+                if test.code then assert.falsy(response.unknown)
+                else
+                    assert.is_true(response.unknown)
+                    assert.equal("Service " .. requested .. " outcome is unknown", response.error)
+                end
+                assert.equal(2, #H.popen_cmds(), "failed command must not trigger another command/status attempt")
+            end)
+        end
+    end
+end)
+
 describe("service validation and owned sing-box publication", function()
+    for _, case in ipairs({
+        { name = "open", descriptor = { open_error = "no checker pipe", open_errno = 24 } },
+        { name = "read", descriptor = { read_output = checked_output("returned invalid", 1),
+            read_error = "interrupted", read_errno = 4 } },
+        { name = "close", descriptor = { content = checked_output("returned invalid", 1),
+            close_error = "pclose failed", close_errno = 10 } }
+    }) do
+        local test = case
+        it("does not skip a usable backup on an uncertain checker " .. test.name .. " outcome", function()
+            local S, fixture = begin({ check_output = function(bytes)
+                return bytes == SB_OLD and test.descriptor or checked_output("", 0)
+            end })
+            H.vfs_write(CFG, SB_OLD)
+            H.vfs_write(BAK, SB_FOREIGN)
+            local backed, err = S.backup_current("singbox")
+            assert.is_false(backed)
+            assert.truthy(err)
+            local result = S.apply_service("singbox", SB_NEW)
+            assert_error(result)
+            assert.equal("Cannot create backup", result.error)
+            assert.truthy(result.details:find("Command outcome is unknown", 1, true))
+            assert.falsy(result.applied)
+            assert.equal(SB_OLD, H.vfs_read(CFG))
+            assert.equal(SB_FOREIGN, H.vfs_read(BAK))
+            assert.same({}, fixture.restarts)
+            assert_no_publication(CFG)
+            assert_no_publication(BAK)
+            assert_stages_cleaned()
+        end)
+    end
+
     it("uses native exit failure even when sing-box emits no stdout", function()
         local S, fixture = begin({ check_output = checked_output("", 23) })
         H.vfs_write(CFG, SB_OLD)
@@ -598,8 +838,50 @@ describe("usable service backup and restore", function()
         local response = S.apply_service("podkop", PODKOP_NEW)
         assert_error(response)
         assert.is_true(response.applied)
+        assert.is_true(response.command_result_known)
+        assert.equal(19, response.command_exit_code)
+        assert.falsy(response.unknown)
         assert.equal(diagnostics, response.details)
         assert.equal(PODKOP_NEW, H.vfs_read(S.podkop.config))
+        assert.equal(PODKOP_OLD, H.vfs_read(S.podkop.backup))
+        assert.equal(1, #fixture.restarts)
+        assert_stages_cleaned()
+    end)
+
+    for _, service in ipairs(services) do
+        local test = service
+        it("retains published " .. test.name .. " bytes and backup when restart capture becomes unknown", function()
+            local S, fixture = begin({ restart_output = { content = checked_output("restart response", 0),
+                close_error = "pclose failed", close_errno = 10 } })
+            local svc = S[test.name]
+            H.vfs_write(svc.config, test.old)
+            local response = S.apply_service(test.name, test.new)
+            assert_error(response)
+            assert.is_true(response.applied)
+            assert.is_true(response.unknown)
+            assert.is_false(response.command_result_known)
+            assert.is_nil(response.command_exit_code)
+            assert.falsy(response.restarting)
+            assert.equal(test.new, H.vfs_read(svc.config))
+            assert.equal(test.old, H.vfs_read(svc.backup))
+            assert.equal(1, #fixture.restarts)
+            assert_stages_cleaned()
+        end)
+    end
+
+    it("retains restored disk bytes when rollback restart output is interrupted", function()
+        local S, fixture = begin({ restart_output = { read_output = checked_output("returned", 0),
+            read_error = "interrupted", read_errno = 4 } })
+        H.vfs_write(S.podkop.config, PODKOP_NEW)
+        H.vfs_write(S.podkop.backup, PODKOP_OLD)
+        local response = S.rollback("podkop")
+        assert_error(response)
+        assert.is_true(response.applied)
+        assert.is_true(response.unknown)
+        assert.is_false(response.command_result_known)
+        assert.is_nil(response.command_exit_code)
+        assert.falsy(response.restarting)
+        assert.equal(PODKOP_OLD, H.vfs_read(S.podkop.config))
         assert.equal(PODKOP_OLD, H.vfs_read(S.podkop.backup))
         assert.equal(1, #fixture.restarts)
         assert_stages_cleaned()

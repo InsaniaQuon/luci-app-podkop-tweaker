@@ -131,13 +131,15 @@ Author: InsaniaQuon
                 <strong>&#9888; Note:</strong> This will modify sing-box config directly and restart the service. A backup will be created.
             </div>
         </div>
-        <div class="ps-modal-footer" style="margin-top:12px;display:flex;align-items:center;gap:8px;">
-            <button class="btn cbi-button" id="ps-patch-select-all" disabled>Select All</button>
-            <button class="btn cbi-button cbi-button-apply" id="ps-patch-apply" disabled>Apply Patch</button>
-            <button class="btn cbi-button" id="ps-patch-remove" disabled>Remove Patch</button>
-            <button class="btn cbi-button" id="ps-patch-retry">Retry outbounds read</button>
-            <span id="ps-patch-status" style="font-size:12px;"></span>
-            <button class="btn cbi-button" id="ps-patch-close">Close</button>
+        <div class="ps-modal-footer ps-patch-footer">
+            <div class="ps-patch-actions">
+                <button class="btn cbi-button" id="ps-patch-select-all" disabled>Select All</button>
+                <button class="btn cbi-button cbi-button-apply" id="ps-patch-apply" disabled>Apply Patch</button>
+                <button class="btn cbi-button" id="ps-patch-remove" disabled>Remove Patch</button>
+                <button class="btn cbi-button" id="ps-patch-retry">Retry outbounds read</button>
+                <button class="btn cbi-button" id="ps-patch-close">Close</button>
+            </div>
+            <span id="ps-patch-status"></span>
         </div>
     </div>
 </div>
@@ -478,7 +480,7 @@ window.PT = {
                 wrapperStatusEl.style.color = PT.color('warning');
             } else if (r.installed && r.stale) {
                 wrapperBtn.textContent = 'Reinstall Wrapper';
-                wrapperStatusEl.textContent = 'Wrapper lost after Podkop update — needs reinstall';
+                wrapperStatusEl.textContent = 'Wrapper outdated or missing — needs reinstall';
                 wrapperStatusEl.style.color = PT.color('warning');
             } else if (r.installed) {
                 wrapperBtn.textContent = 'Disable Wrapper';

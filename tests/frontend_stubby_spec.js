@@ -22,6 +22,17 @@ const restartAck = { success: true, applied: true, restarting: true, verificatio
     previous_running: true, previous_identity_known: true, previous_instance: '42:100' };
 const running = (instance = '42:100') => ({ running: true, pid: instance.split(':')[0], instance });
 const longDetails = '<script>literal command output</script>\n' + 'complete native diagnostic <&>\n'.repeat(600) + 'END OF COMPLETE OUTPUT';
+function initFacts(kind = 'needs_fix', overrides = {}) {
+    const root = kind === 'fixed', missing = kind === 'not_installed';
+    return { check_version: 2, status: missing ? 'not_installed' : root ? 'fixed' : 'unknown',
+        init: missing ? { state: 'missing' } : { state: 'literal', user: 'stubby' },
+        runtime: { state: root ? 'root' : 'stopped', process_count: root ? 1 : 0,
+            processes: root ? [{ pid: '42', euid: 0, instance: '42:100' }] : [] },
+        listeners: { state: root ? 'observed' : 'none', count: root ? 2 : 0,
+            entries: root ? ['tcp', 'udp'].map(protocol => ({ protocol, address: '127.0.0.53', port: 53, pid: '42' })) : [] },
+        config: { state: 'uci', listen_count: 1, listen_addresses: ['127.0.0.53@53'] },
+        repair: { available: !missing, reason: 'Optional root-mode workaround; non-root operation is not itself an error' }, ...overrides };
+}
 
 function freeze(value) {
     if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -37,7 +48,7 @@ function setup(options = {}) {
     class Element {
         constructor(tag = 'span') {
             this.tagName = tag.toUpperCase(); this.attrs = {}; this.children = []; this.listeners = {};
-            this.value = ''; this.disabled = false; this.className = ''; this._text = ''; this._html = '';
+            this.value = ''; this.disabled = false; this.open = false; this.className = ''; this._text = ''; this._html = '';
             this.style = { setProperty(key, value) { this[key] = value; } };
             this.classList = {
                 contains: name => this.className.split(/\s+/).includes(name),
@@ -190,7 +201,7 @@ function setup(options = {}) {
     if (options.read !== false) s.read(original);
     s.pending('/status').reply(running());
     s.pending('/autostart').reply({ enabled: true });
-    if (options.initCheck !== false) s.pending('/init/check').reply({ status: 'needs_fix' });
+    if (options.initCheck !== false) s.pending('/init/check').reply(initFacts());
     return s;
 }
 
@@ -205,6 +216,12 @@ function assertDetails(el, expected) {
     assert.equal(el.querySelectorAll('script').length, 0);
     assert.equal(el.querySelectorAll('img').length, 0);
 }
+function assertCheckDetails(s, expected) {
+    const pre = s.get('ps-initfix-check-details');
+    assert.ok(pre.textContent.endsWith(expected), 'the complete read diagnostic remains in the modal technical disclosure');
+    assert.equal(pre.children.length, 0, 'read diagnostics stay literal text');
+    assert.equal(s.get('ps-initfix-status').querySelectorAll('pre').length, 0, 'no technical dump in the compact main status');
+}
 function assertOnePost(s, kind) {
     assert.equal(s.posts().length, 1, 'only the explicit operation mutates');
     assert.equal(s.posts()[0].url, forms[kind].url);
@@ -212,19 +229,128 @@ function assertOnePost(s, kind) {
     assert.equal(s.posts()[0].timeout, 120000, 'native service command has a finite operation deadline');
 }
 
-// Only the three exact native init-check statuses establish a fact. In
-// particular an error object, a missing reply or an HTTP 404 is not absence.
+// The ordinary editor keeps the former two-button toolbar; runtime diagnostics
+// belong to the explicitly opened fix dialog, not a second status panel.
+{
+    const main = view.slice(0, view.indexOf('<div class="ps-modal" id="ps-error-modal"'));
+    assert.match(main, /id="ps-initfix-btn">Fix Init Script<\/button>/);
+    assert.doesNotMatch(main, /id="ps-initfix-(?:facts|refresh|technical|check-details|reason)"/);
+    assert.doesNotMatch(main, /Init declaration:|Processes:|effective UID|Init \/ Runtime|Refresh observations/);
+    assert.match(view, /<h3>Fix Init Script<\/h3>/);
+    assert.match(view, /id="ps-initfix-apply" disabled>Apply Fix<\/button>/);
+    assert.match(view, /changes the user in <code>\/etc\/init\.d\/stubby<\/code> from <code>stubby<\/code> to <code>root<\/code> and requests a Stubby restart/);
+    assert.doesNotMatch(view.match(/<details id="ps-initfix-technical"[^>]*>/)[0], /\bopen\b/);
+    const s = setup(); s.open('init');
+    s.get('ps-initfix-technical').open = true;
+    s.get(forms.init.close).click(); s.open('init');
+    assert.equal(s.get('ps-initfix-technical').open, false, 'technical disclosure defaults closed on each explicit opening');
+    assert.equal(s.posts().length, 0);
+}
+
+// Only independently typed version-2 observations establish UID/socket facts.
 for (const [status, label, role] of [
-    ['fixed', 'Running as root', 'success'], ['needs_fix', 'Needs fix', 'error'], ['not_installed', 'Not installed', 'dim']
+    ['fixed', 'Init user: stubby', 'info'], ['needs_fix', 'Init user: stubby', 'info'], ['not_installed', 'Init script not installed', 'dim']
 ]) for (const flags of [{}, { success: true, unknown: false }]) {
     const s = setup({ initCheck: false });
     assert.equal(s.get('ps-initfix-status').textContent, 'Checking...');
     const request = s.pending('/init/check');
     assert.equal(request.method, 'GET'); assert.equal(request.timeout, 30000);
-    request.reply({ status, ...flags });
+    request.reply({ ...initFacts(status), ...flags });
     assert.equal(s.get('ps-initfix-status').textContent, label);
     assert.equal(s.get('ps-initfix-status').style.color, s.window.PT.color(role));
     assert.equal(s.posts().length, 0); assert.equal(s.polls.length, 0);
+}
+
+// Root is a live UID fact, never an implication of an init substring or port.
+for (const port of [53, 5353]) {
+    const s = setup({ initCheck: false });
+    const data = initFacts('fixed', {
+        status: 'unknown', runtime: { state: 'user', process_count: 1, processes: [{ pid: '42', euid: 453, instance: '42:100' }] }
+    });
+    data.listeners.entries.forEach(entry => { entry.port = port; });
+    s.pending('/init/check').reply(data);
+    assert.equal(s.get('ps-initfix-status').textContent, 'Init user: stubby');
+    assert.doesNotMatch(s.get('ps-initfix-status').textContent, /Needs fix|root/i);
+    assert.match(s.get('ps-initfix-facts').textContent, new RegExp('@' + port));
+    assert.match(s.get('ps-initfix-facts').textContent, /effective UID 453/);
+    assert.equal(s.posts().length, 0, 'observing non-root operation never applies a workaround');
+    assert.match(s.get('ps-initfix-reason').textContent, /change stubby to root/);
+}
+for (const root of [true, false]) {
+    const s = setup({ initCheck: false });
+    const data = initFacts(root ? 'fixed' : 'needs_fix', { init: { state: 'literal', user: 'root' }, repair: { available: false, reason: 'Init already declares root' } });
+    s.pending('/init/check').reply(data);
+    assert.equal(s.get('ps-initfix-status').textContent, 'Init user: root', 'a declaration is not a claim that a root process is running');
+    s.open('init');
+    assert.equal(s.get(forms.init.apply).disabled, true);
+    s.get(forms.init.apply).dispatch('click');
+    assert.equal(s.posts().length, 0, 'known root init has no root-change mutation capability');
+}
+{
+    const s = setup({ initCheck: false });
+    s.pending('/init/check').reply(initFacts('fixed', { config: { state: 'manual', listen_count: 1, listen_addresses: ['127.0.0.1@5353'] } }));
+    assert.match(s.get('ps-initfix-facts').textContent, /Manual YAML/);
+    assert.doesNotMatch(s.get('ps-initfix-facts').textContent, /UCI listen_address/);
+}
+{
+    const s = setup({ initCheck: false });
+    s.open('init'); s.get(forms.init.apply).dispatch('click');
+    assert.equal(s.posts().length, 0, 'pending current read cannot authorize an init change');
+    s.pending('/init/check').reply(initFacts());
+    assert.equal(s.get(forms.init.apply).disabled, false, 'the first current typed read unlocks only the supported explicit action');
+    assert.equal(s.posts().length, 0);
+}
+for (const part of ['init', 'runtime', 'listeners', 'config']) {
+    const s = setup({ initCheck: false }), data = initFacts('fixed');
+    data[part] = { state: 'unknown', error: longDetails };
+    if (part === 'init') data.repair = { available: false, reason: 'Unsupported init' };
+    if (part === 'runtime') { data.status = 'unknown'; data.listeners = { state: 'unknown', error: 'Process identity is unknown' }; }
+    s.pending('/init/check').reply(data);
+    assert.equal(s.get('ps-initfix-status').textContent, part === 'init' ? 'Init user: Unknown' : 'Init user: stubby');
+    assert.ok(s.get('ps-initfix-check-details').textContent.includes('END OF COMPLETE OUTPUT'));
+    assert.equal(s.get('ps-initfix-status').querySelectorAll('pre').length, 0);
+    assert.equal(s.posts().length, 0);
+}
+for (const change of [
+    data => { data.runtime.processes[0].euid = '0'; },
+    data => { data.runtime.processes[0].euid = 453; },
+    data => { data.runtime.process_count = 0; },
+    data => { data.runtime.processes[0].instance = '99:100'; },
+    data => { data.listeners.entries[0].pid = '99'; },
+    data => { data.listeners.entries = {}; },
+    data => { data.config.listen_addresses = { malicious: '<script>' }; },
+    data => { data.repair.available = 'true'; },
+    data => { data.init.user = 'root'; },
+    data => { delete data.check_version; }
+]) {
+    const s = setup({ initCheck: false }), data = initFacts('fixed'); change(data);
+    s.pending('/init/check').reply(data);
+    assert.equal(s.get('ps-initfix-status').textContent, 'Init check: Unknown');
+    s.open('init'); s.get(forms.init.apply).dispatch('click');
+    assert.equal(s.posts().length, 0, 'malformed or inconsistent facts cannot authorize root mode');
+}
+{
+    const s = setup({ initCheck: false }), data = initFacts();
+    data.runtime.processes = {}; data.listeners.entries = {};
+    s.pending('/init/check').reply(data);
+    assert.equal(s.get('ps-initfix-status').textContent, 'Init user: stubby', 'native empty containers require explicit matching zero counts');
+}
+{
+    const s = setup({ initCheck: false }), stale = s.pending('/init/check');
+    s.get('ps-initfix-refresh').click();
+    const current = s.last('/init/check');
+    assert.notEqual(current, stale);
+    current.reply(initFacts('fixed'));
+    const label = s.get('ps-initfix-status').textContent, facts = s.get('ps-initfix-facts').textContent;
+    stale.reply(initFacts());
+    assert.equal(s.get('ps-initfix-status').textContent, label);
+    assert.equal(s.get('ps-initfix-facts').textContent, facts, 'a stale earlier snapshot cannot replace a current explicit refresh');
+    assert.match(facts, /Read-only snapshot/);
+    s.get('ps-initfix-refresh').click();
+    s.pending('/init/check').reply(initFacts());
+    assert.equal(s.get('ps-initfix-status').textContent, 'Init user: stubby');
+    assert.doesNotMatch(s.get('ps-initfix-facts').textContent, /PID 42/, 'a later process absence clears stale technical process facts');
+    assert.equal(s.posts().length, 0);
 }
 const initReadFailures = [
     { name: 'network', message: /Network error/, run: r => r.fail() },
@@ -233,7 +359,8 @@ const initReadFailures = [
     ...['', ' \t\n', '{broken JSON', '"fixed"', '<html><body>LuCI login</body></html>'].map(body => ({
         name: 'invalid body ' + JSON.stringify(body), details: body, run: r => r.reply(body)
     })),
-    ...[null, [], [{ status: 'not_installed' }], false, 0, {}, { status: null }, { status: false }, { status: [] }, { status: {} },
+    ...[null, [], [{ status: 'not_installed' }], false, 0, {}, { status: 'fixed' }, { status: 'needs_fix' }, { status: 'not_installed' },
+        { status: null }, { status: false }, { status: [] }, { status: {} },
         { status: 'unknown' }, { status: 'not_installed ' }, { status: 'FIXED' },
         { status: 'fixed', success: false }, { status: 'needs_fix', success: 'true' }, { status: 'not_installed', success: null },
         { status: 'fixed', unknown: true }, { status: 'needs_fix', unknown: 'false' }, { status: 'not_installed', unknown: null },
@@ -257,19 +384,19 @@ const initReadFailures = [
 for (const afterKnownRead of [false, true]) for (const failure of initReadFailures) {
     const s = setup({ initCheck: false });
     if (afterKnownRead) {
-        s.pending('/init/check').reply({ status: 'fixed' });
-        assert.equal(s.get('ps-initfix-status').textContent, 'Running as root');
+        s.pending('/init/check').reply(initFacts('fixed'));
+        assert.equal(s.get('ps-initfix-status').textContent, 'Init user: stubby');
         s.start('init').reply({ success: true, message: 'Already fixed', details: longDetails });
         assert.equal(s.get('ps-initfix-status').textContent, 'Checking...', 'a reread does not keep an old factual label while pending');
     }
     const page = s.result(), modal = s.get(forms.init.status).textContent, request = s.pending('/init/check');
     failure.run(request);
     const label = s.get('ps-initfix-status');
-    assert.match(label.textContent, /^Unknown/, failure.name);
+    assert.equal(label.textContent, 'Init check: Unknown', failure.name);
     assert.equal(label.style.color, s.window.PT.color('warning'), failure.name);
-    if (failure.message) assert.match(label.textContent, failure.message, failure.name);
-    if (failure.details) assertDetails(label, failure.details);
-    if (failure.httpStatus) assert.ok(label.querySelectorAll('pre')[0].textContent.includes('HTTP ' + failure.httpStatus), 'HTTP status is retained alongside the full native details');
+    if (failure.message) assert.match(label.title, failure.message, failure.name);
+    if (failure.details) assertCheckDetails(s, failure.details);
+    if (failure.httpStatus) assert.ok(s.get('ps-initfix-check-details').textContent.includes('HTTP ' + failure.httpStatus), 'HTTP status is retained alongside the full native details');
     assert.equal(s.result(), page, 'readonly init facts cannot replace the operation result');
     assert.equal(s.get(forms.init.status).textContent, modal);
     const displayed = label.textContent, count = s.requests.length;
@@ -305,8 +432,8 @@ for (const kind of Object.keys(forms)) {
         assert.equal(s.get(forms.template.modal).style.display, 'none');
         assert.equal(s.count('/read'), 2, 'closing is presentation only, not another config load');
     } else {
-        s.pending('/init/check').reply({ status: 'fixed' });
-        assert.equal(s.get('ps-initfix-status').textContent, 'Running as root');
+        s.pending('/init/check').reply(initFacts('fixed'));
+        assert.equal(s.get('ps-initfix-status').textContent, 'Init user: stubby');
         assert.equal(s.get(forms.init.modal).style.display, 'flex');
     }
     s.get(forms[kind].apply).dispatch('click');
@@ -363,7 +490,7 @@ for (const kind of Object.keys(forms)) for (const scenario of unconfirmedCases) 
     assert.equal(s.get('ps-config-editor').value, sentDraft);
     assert.equal(s.dirty(), true);
     s.pending('/status').reply(running());
-    s.pending('/init/check').reply({ status: 'fixed' });
+    s.pending('/init/check').reply(initFacts('fixed'));
     assert.doesNotMatch(s.result(), /new Stubby instance|Stubby restarted|applied to disk/);
     s.get('ps-config-undo').click();
     assert.equal(s.get('ps-config-editor').value, original, 'init no-op retains the typed config baseline');
@@ -390,6 +517,10 @@ for (const kind of Object.keys(forms)) for (const status of [200, 500]) {
     const s = setup(); s.start(kind).reply({ success: false }, status);
     assert.ok(s.result(), 'quiet failure is presented');
     assert.doesNotMatch(s.result(), /applied to disk|new Stubby instance|Stubby restarted/);
+    if (kind === 'init') {
+        assert.equal(s.get(forms[kind].apply).disabled, true, 'a new explicit action waits for the current init reread');
+        s.pending('/init/check').reply(initFacts());
+    }
     assert.equal(s.get(forms[kind].apply).disabled, false, 'an explicit checked non-applied failure may be retried by the user');
     assert.equal(s.polls.length, 0); assert.equal(s.readbacks.length, 0);
     assertOnePost(s, kind);
@@ -472,6 +603,7 @@ for (const kind of Object.keys(forms)) for (const failure of failures) {
     assert.equal(s.get('ps-config-editor').value, sentDraft);
     assert.equal(s.dirty(), true);
     assert.equal(s.polls.length, 0); assert.equal(s.readbacks.length, 0);
+    if (kind === 'init' && !failure.unknown) s.pending('/init/check').reply(initFacts());
     assert.equal(s.get(forms[kind].apply).disabled, failure.unknown);
     const result = s.result(), count = s.requests.length;
     request.fail(); request.fail('timeout'); request.abort(); request.reply(restartAck);
@@ -500,6 +632,7 @@ for (const kind of Object.keys(forms)) for (const completion of ['success', 'fai
     if (kind === 'init') assert.equal(s.count('/init/check'), 2, 'the sent init operation still refreshes external init facts');
     s.tick(5000);
     assert.equal(s.get(forms[kind].modal).style.display, 'flex', 'a stale operation cannot schedule a close for the new opening');
+    if (kind === 'init') s.pending('/init/check').reply(initFacts());
     s.get(forms[kind].close).click(); s.open(kind);
     assert.equal(s.get(forms[kind].apply).disabled, completion === 'unknown', 'a fresh explicit opening sees the released operation gate');
     assert.equal(s.get('ps-config-editor').value, sentDraft);
@@ -647,7 +780,7 @@ for (const draft of ['', sentDraft, ' \t\n']) {
 // native operation diagnostics/metadata, promote an uncertain result, or repaint
 // a reopened Init Fix modal. Older initial checks remain stale in every branch.
 for (const outcome of ['already-fixed', 'success', 'applied-failed', 'unknown']) for (const checkFails of [false, true]) {
-    const s = setup({ initCheck: false }), stale = s.pending('/init/check');
+    const s = setup(), stale = s.last('/init/check');
     s.edit(sentDraft);
     const facts = { verification_required: true, previous_running: true, previous_identity_known: true, previous_instance: '42:100' };
     const nested = { ...facts, success: outcome === 'success', details: 'complete nested restart evidence' };
@@ -667,10 +800,10 @@ for (const outcome of ['already-fixed', 'success', 'applied-failed', 'unknown'])
     s.get(forms.init.close).click(); s.open('init');
     const reopened = s.get(forms.init.status).textContent, disabled = s.get(forms.init.apply).disabled;
     s.pending('/status').reply(running('42:101'));
-    current.reply(checkFails ? { status: 'not_installed', error: 'Cannot reread init script', details: longDetails } : { status: 'fixed' });
+    current.reply(checkFails ? { status: 'not_installed', error: 'Cannot reread init script', details: longDetails } : initFacts('fixed'));
     const label = s.get('ps-initfix-status').textContent;
-    if (checkFails) { assert.match(label, /^Unknown/); assertDetails(s.get('ps-initfix-status'), longDetails); }
-    else assert.equal(label, 'Running as root');
+    if (checkFails) { assert.equal(label, 'Init check: Unknown'); assertCheckDetails(s, longDetails); }
+    else assert.equal(label, 'Init user: stubby');
     stale.reply({ status: 'not_installed' });
     assert.equal(s.get('ps-initfix-status').textContent, label, 'a pre-command read cannot replace a newer valid or unknown status');
     assert.equal(s.result(), result, 'readonly facts cannot replace the native operation outcome');
@@ -686,11 +819,11 @@ for (const outcome of ['already-fixed', 'success', 'applied-failed', 'unknown'])
     assertOnePost(s, 'init');
 }
 {
-    const s = setup({ initCheck: false }), stale = s.pending('/init/check');
+    const s = setup(), stale = s.last('/init/check');
     s.start('init').reply({ success: true, message: 'Already fixed' });
     const current = s.requests.filter(r => r.url === '/init/check').at(-1);
-    current.reply({ status: 'fixed' }); stale.reply({ status: 'needs_fix' });
-    assert.equal(s.get('ps-initfix-status').textContent, 'Running as root', 'an initial pre-command check cannot replace current init facts');
+    current.reply(initFacts('fixed')); stale.reply({ status: 'needs_fix' });
+    assert.equal(s.get('ps-initfix-status').textContent, 'Init user: stubby', 'an initial pre-command check cannot replace current init facts');
 }
 {
     const s = setup(); s.confirm(false); s.open('template'); s.get(forms.template.apply).click();

@@ -6,6 +6,7 @@ local M = {}
 local sys = require("luci.sys")
 local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
+local S = require("pt-subs-lib")
 local CRONTAB = "/etc/crontabs/root"
 local CRON_INPUT = "/tmp/pt-subscriptions.cron"
 local LAUNCHER = "/usr/bin/pt-auto-update"
@@ -177,14 +178,19 @@ local function last_auto(log_file)
     local closed = fd:close()
     if not text or not closed then return nil end
     if offset > 0 then text = text:match("\n(.*)$") or "" end
-    local last
+    local last, pending
     for line in text:gmatch("[^\r\n]+") do
-        local ts, updated, unchanged, failed = line:match("^(%d%d:%d%d %d%d%.%d%d%.%d%d%d%d)|auto|updated=(%d+)|unchanged=(%d+)|failed=(%d+)$")
-        if ts and #updated <= 10 and #unchanged <= 10 and #failed <= 10 then
-            last = { ts = ts, updated = tonumber(updated), unchanged = tonumber(unchanged), failed = tonumber(failed) }
+        local event = S.parse_log_header(line)
+        if event and event.mode == "auto" then
+            event.mode = nil
+            if event.state == "pending" then pending = event
+            else
+                -- File order is completion order; timestamps may share a minute.
+                last, pending = event, nil
+            end
         end
     end
-    return last
+    return last, pending
 end
 
 function M.status(settings, log_file)
@@ -200,13 +206,14 @@ function M.status(settings, log_file)
     end
     local hook = script_status(HOTPLUG, HOOK)
     hook.enabled = settings.auto_update_on_restart == true
+    local completed, pending = last_auto(log_file)
     return {
         cron = { enabled = enabled, expected = expected,
             matches = not cron_err and ((enabled and expected and #actual == 1 and actual[1] == expected) or (not enabled and #actual == 0)) or false,
             running = (sys.exec("pidof crond 2>/dev/null") or ""):match("%d+") ~= nil,
             actual = actual, error = cron_err },
         launcher = script_status(LAUNCHER, SCRIPT), hotplug = hook,
-        last_auto = last_auto(log_file), log_window_bytes = READ_LIMIT
+        last_auto = completed, last_auto_pending = pending, log_window_bytes = READ_LIMIT
     }
 end
 
