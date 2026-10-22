@@ -146,13 +146,15 @@ editor (--ps-editor-bg). All text, borders and status colors are semantic.
 .ps-copy-panel{position:relative;min-width:0;margin:0 0 12px;border:1px solid var(--ps-border-strong);border-radius:6px;background:var(--ps-editor-bg)}
 .ps-copy-raised{background:var(--ps-bg-alt)}
 .ps-copy-inset{background:var(--ps-bg-inset)}
-.ps-copy-tools{display:flex;justify-content:flex-end;align-items:center;box-sizing:border-box;height:36px;padding:3px 6px;position:sticky;top:0;z-index:2;background:inherit;border-radius:5px 5px 0 0}
+.ps-copy-overlay{position:absolute;inset:0;z-index:2;pointer-events:none}
+.ps-copy-tools{display:flex;justify-content:flex-end;align-items:center;box-sizing:border-box;height:36px;padding:3px 22px 3px 6px;position:sticky;top:0;pointer-events:none}
 .ps-modal .ps-copy-tools{top:-24px}
-#cbi-podkop-tweaker .ps-copy-source,.ps-modal .ps-copy-source{border:0!important;margin:0!important;border-radius:0 0 5px 5px}
-#cbi-podkop-tweaker .ps-copy-btn,.ps-modal .ps-copy-btn{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;height:30px;min-width:30px;max-width:30px;min-height:30px;padding:5px!important;border:0!important;border-radius:4px;background:transparent!important;color:var(--ps-text-muted)!important;font:400 12px/1.5 sans-serif;cursor:pointer}
-#cbi-podkop-tweaker .ps-copy-btn:hover,.ps-modal .ps-copy-btn:hover{background:var(--ps-neutral-hover)!important;color:var(--ps-text)!important}
-#cbi-podkop-tweaker .ps-copy-btn[data-pt-copy-state="done"],.ps-modal .ps-copy-btn[data-pt-copy-state="done"]{color:var(--ps-success)!important}
-#cbi-podkop-tweaker .ps-copy-btn[data-pt-copy-state="error"],.ps-modal .ps-copy-btn[data-pt-copy-state="error"]{color:var(--ps-error)!important}
+#cbi-podkop-tweaker .ps-copy-source,.ps-modal .ps-copy-source{border:0!important;margin:0!important;border-radius:5px}
+#cbi-podkop-tweaker .ps-copy-btn,.ps-modal .ps-copy-btn{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;height:30px;min-width:30px;max-width:30px;min-height:30px;margin:0!important;padding:5px!important;border:0!important;border-radius:4px;background:transparent!important;color:var(--ps-text-muted)!important;font:400 12px/1.5 sans-serif;cursor:pointer;pointer-events:auto;opacity:.25!important}
+@media(hover:hover){#cbi-podkop-tweaker .ps-copy-btn:hover,.ps-modal .ps-copy-btn:hover{opacity:1!important;background:var(--ps-neutral-hover)!important;color:var(--ps-text)!important}}
+#cbi-podkop-tweaker .ps-copy-btn:focus-visible,.ps-modal .ps-copy-btn:focus-visible,#cbi-podkop-tweaker .ps-copy-btn:active,.ps-modal .ps-copy-btn:active,#cbi-podkop-tweaker .ps-copy-btn[data-pt-copy-pressed="true"],.ps-modal .ps-copy-btn[data-pt-copy-pressed="true"],#cbi-podkop-tweaker .ps-copy-btn:disabled,.ps-modal .ps-copy-btn:disabled{opacity:1!important;background:var(--ps-bg-alt)!important;color:var(--ps-text)!important}
+#cbi-podkop-tweaker .ps-copy-btn[data-pt-copy-state="done"],.ps-modal .ps-copy-btn[data-pt-copy-state="done"]{opacity:1!important;background:var(--ps-bg-alt)!important;color:var(--ps-success)!important}
+#cbi-podkop-tweaker .ps-copy-btn[data-pt-copy-state="error"],.ps-modal .ps-copy-btn[data-pt-copy-state="error"]{opacity:1!important;background:var(--ps-bg-alt)!important;color:var(--ps-error)!important}
 .ps-copy-btn svg{display:block;width:18px;height:18px;pointer-events:none}
 .ps-copy-status{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;pointer-events:none}
 .ps-copy-btn:disabled{cursor:wait}
@@ -172,10 +174,8 @@ editor (--ps-editor-bg). All text, borders and status colors are semantic.
 .ps-line-numbers{width:48px;min-width:48px;padding:14px 6px 14px 4px;text-align:right;font-family:'Consolas','Monaco','Courier New',monospace;font-size:13px;line-height:1.6;color:var(--ps-text-dim);background:var(--ps-editor-gutter);border-right:1px solid var(--ps-border-strong);overflow:hidden;user-select:none;white-space:pre-line}
 .ps-config-editor{flex:1;width:100%;min-width:0;height:100%;font-family:'Consolas','Monaco','Courier New',monospace;font-size:13px;line-height:1.6;padding:14px;border:none;resize:none;white-space:pre;background:var(--ps-bg);color:var(--ps-text)}
 .ps-config-editor:focus{outline:none;box-shadow:inset 0 0 0 2px var(--ps-primary)}
-.ps-editor-wrap.ps-copy-editor{display:grid;grid-template-columns:48px minmax(0,1fr);grid-template-rows:36px minmax(0,1fr);background:var(--ps-editor-bg)}
-.ps-copy-editor>.ps-copy-tools{grid-column:1/-1;grid-row:1}
-.ps-copy-editor>.ps-line-numbers{grid-column:1;grid-row:2;box-sizing:border-box;min-height:0}
-.ps-copy-editor>.ps-config-editor{grid-column:2;grid-row:2;box-sizing:border-box;min-height:0}
+.ps-editor-wrap.ps-copy-editor{position:relative;background:var(--ps-editor-bg)}
+.ps-copy-editor>.ps-line-numbers,.ps-copy-editor>.ps-config-editor{box-sizing:border-box;min-height:0}
 .ps-service-status{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600}
 .ps-status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 .ps-status-dot.running{background:var(--ps-success)}

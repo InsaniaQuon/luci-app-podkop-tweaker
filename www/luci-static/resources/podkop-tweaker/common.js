@@ -80,8 +80,8 @@ window.PT = window.PT || {};
 		return typeof source.innerText === 'string' ? source.innerText : source.textContent;
 	};
 
-	// The tools row is inside the text frame, outside its scrolling source.
-	// Editors keep their resizable frame; grid gives the tools their own row.
+	// An out-of-flow overlay leaves the text frame's full height to its source.
+	// Its inner tools stay sticky within that frame during modal scrolling.
 	function copyAnchor(source) {
 		var panel = source.closest && source.closest('.ps-editor-wrap');
 		if (panel) panel.classList.add('ps-copy-editor');
@@ -95,9 +95,12 @@ window.PT = window.PT || {};
 			panel.appendChild(source);
 			source.classList.add('ps-copy-source');
 		}
+		var overlay = document.createElement('div');
+		overlay.className = 'ps-copy-overlay';
 		var anchor = document.createElement('div');
 		anchor.className = 'ps-copy-tools';
-		panel.insertBefore(anchor, panel.firstChild);
+		overlay.appendChild(anchor);
+		panel.insertBefore(overlay, panel.firstChild);
 		return anchor;
 	}
 
@@ -126,6 +129,14 @@ window.PT = window.PT || {};
 		}
 		state('copy');
 		var resetTimer;
+		// Native touch does not consistently expose :active. This hint belongs
+		// only to the button; cancellation/leave never triggers a copy.
+		button.addEventListener('pointerdown', function (e) {
+			if (!button.disabled && e.isPrimary !== false && e.button === 0) button.setAttribute('data-pt-copy-pressed', 'true');
+		});
+		['pointerup', 'pointercancel', 'pointerleave', 'lostpointercapture', 'blur'].forEach(function (event) {
+			button.addEventListener(event, function () { button.setAttribute('data-pt-copy-pressed', 'false'); });
+		});
 		button.addEventListener('mousedown', function (e) { e.preventDefault(); });
 		button.addEventListener('click', function (e) {
 			e.preventDefault();

@@ -1,4 +1,4 @@
-// theme_browser_spec.js | v4.11.0 | 19.10.2026 | Compact Stubby toolbar, clear fix action and opt-in technical details with retained ST1 checks
+// theme_browser_spec.js | v4.12.0 | 22.10.2026 | Native overlay Copy geometry, pointer/keyboard/touch and retained clipboard regressions
 // node tests/theme_browser_spec.js --browser <installed Chromium/Edge executable>
 // Add --theme-only for schemes/live Argon modes, or a focused form flag below.
 // --output-dir .test_tmp/<run> isolates generated files/profile from old runs.
@@ -2797,6 +2797,144 @@ async function main() {
             brokenSchedule = false;
         }
         if (!focused || copyOnly) {
+            const overlayGeometry = `(() => [...document.querySelectorAll('.ps-copy-overlay')].flatMap(overlay => {
+                const frame=overlay.parentElement,source=frame.querySelector(':scope > .ps-copy-source,:scope > .ps-config-editor');
+                if(!source||!source.getClientRects().length)return [];
+                const button=overlay.querySelector('.ps-copy-btn');
+                if(!button)return [];
+                const f=frame.getBoundingClientRect(),s=source.getBoundingClientRect(),b=button.getBoundingClientRect(),style=getComputedStyle(frame);
+                const gutter=frame.querySelector(':scope > .ps-line-numbers'),g=gutter&&gutter.getBoundingClientRect();
+                return [{id:source.id||source.className,sourceTop:s.top,frameTop:f.top,topGap:s.top-f.top-parseFloat(style.borderTopWidth||0),
+                    frameHeight:f.height,sourceHeight:s.height,innerHeight:frame.clientHeight,gutterTop:g&&g.top,gutterHeight:g&&g.height,
+                    inFrame:b.left>=f.left&&b.right<=f.right&&b.top>=f.top&&b.bottom<=f.bottom,
+                    clearScrollbar:b.right<=s.left+source.clientLeft+source.clientWidth+1,
+                    width:b.width,height:b.height,opacity:Number(getComputedStyle(button).opacity),
+                    overlayPosition:getComputedStyle(overlay).position,overlayPointer:getComputedStyle(overlay).pointerEvents}];
+            }))()`;
+            const editorCopy = '[data-pt-copy-for="editor"]';
+            const copyOpacity = selector => evaluate(`Number(getComputedStyle(document.querySelector(${JSON.stringify(selector)})).opacity)`);
+            const movePointer = (x, y) => cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, sessionId);
+            const copyCenter = selector => evaluate(`(() => {const b=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:b.left+b.width/2,y:b.top+b.height/2};})()`);
+            const pressKey = async (key, code, number, modifiers = 0) => {
+                await cdp.call('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: number, modifiers,
+                    ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) }, sessionId);
+                await cdp.call('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: number, modifiers }, sessionId);
+            };
+            const overlayReports = [];
+            for (const scheme of ['light', 'dark']) for (const width of [320, 390, 768, 1440]) for (const profile of ['soft', 'contrast']) {
+                await cdp.call('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false }, sessionId);
+                await navigateFixture(base + '/argon-force-' + scheme + '?profile=' + profile);
+                await wait('document.documentElement.getAttribute("data-pt-dark")', String(scheme === 'dark'));
+                await evaluate(`(() => {
+                    if(innerWidth<768)document.querySelector('.fixture-grid').style.display='block';
+                    const editor=document.getElementById('editor');editor.value='overlay first line\\n'+('long editable config line '.repeat(12)+'\\n').repeat(200);
+                    window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:undefined});
+                    document.addEventListener('copy',event=>{window.copyWrites.push(document.activeElement.value);event.preventDefault();});
+                })()`);
+                await movePointer(1, 1);
+                const geometry = await evaluate(overlayGeometry);
+                assert.ok(geometry.length >= 5, 'editor, DNS, log, diff and history use the actual overlay');
+                for (const item of geometry) {
+                    const label = `${scheme}/${width}/${profile}/${item.id}: ${JSON.stringify(item)}`;
+                    assert.equal(item.overlayPosition, 'absolute', label);
+                    assert.equal(item.overlayPointer, 'none', label);
+                    assert.ok(Math.abs(item.topGap) <= 1, 'Copy reserves no upper row: ' + label);
+                    assert.equal(item.inFrame, true, 'Copy stays inside its own frame: ' + label);
+                    assert.equal(item.clearScrollbar, true, 'Copy does not cover the source scrollbar: ' + label);
+                    assert.equal(item.width, 30, label); assert.equal(item.height, 30, label);
+                    assert.equal(item.opacity, 0.25, 'idle Copy is translucent: ' + label);
+                    if (item.gutterTop !== null) {
+                        assert.ok(Math.abs(item.gutterTop - item.sourceTop) <= 1, label);
+                        assert.ok(Math.abs(item.sourceHeight - item.innerHeight) <= 1, label);
+                        assert.ok(Math.abs(item.gutterHeight - item.sourceHeight) <= 1, label);
+                    }
+                }
+                const point = await copyCenter(editorCopy);
+                await movePointer(point.x, point.y);
+                assert.equal(await copyOpacity(editorCopy), 1, 'native hover reveals Copy');
+                const textPoint = await evaluate(`(() => {const e=document.getElementById('editor'),b=e.getBoundingClientRect();return {x:b.left+8,y:b.top+45};})()`);
+                await movePointer(textPoint.x, textPoint.y);
+                assert.equal(await evaluate(`document.elementFromPoint(${textPoint.x},${textPoint.y})===document.getElementById('editor')`), true, 'overlay outside its button does not intercept editing');
+                assert.equal(await copyOpacity(editorCopy), 0.25, 'hovering editor text does not reveal Copy');
+                assert.deepEqual(await evaluate(overlayGeometry), geometry, 'hover does not change frame/source geometry');
+
+                if (width === 768 && profile === 'contrast') {
+                    const frame = await evaluate(`(() => {const f=document.querySelector('.ps-copy-editor').getBoundingClientRect();return {x:f.right-5,y:f.bottom-5,height:f.height};})()`);
+                    await movePointer(frame.x, frame.y);
+                    await cdp.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: frame.x, y: frame.y, button: 'left', buttons: 1, clickCount: 1 }, sessionId);
+                    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: frame.x, y: frame.y + 60, button: 'left', buttons: 1 }, sessionId);
+                    await cdp.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: frame.x, y: frame.y + 60, button: 'left', buttons: 0, clickCount: 1 }, sessionId);
+                    const resized = (await evaluate(overlayGeometry)).find(item => item.id === 'editor');
+                    assert.ok(resized.frameHeight >= frame.height + 40, 'native editor resize remains usable');
+                    assert.ok(Math.abs(resized.sourceHeight - resized.innerHeight) <= 1, 'resizing retains the full text viewport');
+                    assert.ok(Math.abs(resized.gutterHeight - resized.sourceHeight) <= 1, 'resizing preserves gutter alignment');
+                    assert.equal(resized.inFrame, true);
+                }
+                if (width === 1440 && profile === 'soft') {
+                    await movePointer(1, 1);
+                    await evaluate('document.getElementById("editor").focus()');
+                    await pressKey('Tab', 'Tab', 9, 8);
+                    assert.equal(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(editorCopy)})&&document.activeElement.matches(':focus-visible')`), true, 'native Shift+Tab reaches Copy');
+                    assert.equal(await copyOpacity(editorCopy), 1, 'keyboard focus reveals Copy without a pointer');
+                    await pressKey('Enter', 'Enter', 13);
+                    await wait('window.copyWrites.length', 1);
+                    assert.equal(await evaluate('window.copyWrites[0]===document.getElementById("editor").value'), true);
+                    await evaluate('document.getElementById("editor").focus()');
+                    assert.equal(await copyOpacity(editorCopy), 1, 'complete feedback remains visible without hover/focus');
+                    await wait(`document.querySelector(${JSON.stringify(editorCopy)}).getAttribute('data-pt-copy-state')`, 'copy');
+                    assert.equal(await copyOpacity(editorCopy), 0.25, 'feedback returns to the idle opacity');
+                }
+                if (width === 390 && profile === 'soft') {
+                    await movePointer(1, 1);
+                    await cdp.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 }, sessionId);
+                    try {
+                        assert.equal(await evaluate('matchMedia("(hover: none)").matches'), true, 'touch fixture actually has no hover');
+                        await evaluate(`window.overlayTouchEvents=[];for(const type of ['pointerdown','pointerup','pointercancel','touchstart','touchend','click'])document.addEventListener(type,event=>window.overlayTouchEvents.push({type,pointerType:event.pointerType||'',target:event.target.tagName,copy:event.target.getAttribute('data-pt-copy-for')}),true)`);
+                        const touch = await copyCenter(editorCopy);
+                        await cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touch.x, y: touch.y }] }, sessionId);
+                        await wait('window.overlayTouchEvents.some(event=>event.type==="pointerdown")', true);
+                        const pressed = await evaluate(`(() => {const button=document.querySelector(${JSON.stringify(editorCopy)});return {opacity:Number(getComputedStyle(button).opacity),active:button.matches(':active'),events:window.overlayTouchEvents.slice(),hit:document.elementFromPoint(${touch.x},${touch.y}).tagName};})()`);
+                        await cdp.call('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }, sessionId);
+                        await wait('window.copyWrites.length', 1);
+                        fs.writeFileSync(path.join(artifacts, 'copy-touch-' + scheme + '.json'), JSON.stringify({ pressed, events: await evaluate('window.overlayTouchEvents') }, null, 2));
+                        assert.equal(pressed.opacity, 1, 'touch press is fully visible: ' + JSON.stringify(pressed));
+                        assert.equal(await evaluate('window.copyWrites[0]===document.getElementById("editor").value'), true, 'the first native tap copies immediately');
+                        assert.equal(await copyOpacity(editorCopy), 1);
+                        await wait(`document.querySelector(${JSON.stringify(editorCopy)}).getAttribute('data-pt-copy-state')`, 'copy');
+                        assert.equal(await copyOpacity(editorCopy), 0.25, 'touch does not leave a sticky hover');
+                        await cdp.call('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touch.x, y: touch.y }] }, sessionId);
+                        await wait(`Number(getComputedStyle(document.querySelector(${JSON.stringify(editorCopy)})).opacity)`, 1);
+                        await cdp.call('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] }, sessionId);
+                        await wait(`Number(getComputedStyle(document.querySelector(${JSON.stringify(editorCopy)})).opacity)`, 0.25);
+                        assert.equal(await evaluate('window.copyWrites.length'), 1, 'cancelled touch neither copies nor leaves a pressed hint');
+                    } finally {
+                        await cdp.call('Emulation.setTouchEmulationEnabled', { enabled: false }, sessionId);
+                    }
+                    await movePointer(1, 1);
+                }
+                if (profile === 'soft' && (width === 320 || width === 1440)) await screenshot('copy-overlay-' + scheme + '-' + width, width);
+                overlayReports.push({ scheme, width, profile, geometry });
+            }
+            // Exercise production pending/error feedback through controlled
+            // clipboard failures; never write to the host clipboard.
+            await navigateFixture(base + '/argon-force-dark');
+            await movePointer(1, 1);
+            await evaluate(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText(text){window.pendingCopyText=text;return new Promise(resolve=>window.finishCopy=resolve);}}});`);
+            await cdp.call('Runtime.evaluate', { expression: `document.querySelector(${JSON.stringify(editorCopy)}).click()`, userGesture: true }, sessionId);
+            assert.equal(await evaluate(`document.querySelector(${JSON.stringify(editorCopy)}).disabled`), true);
+            assert.equal(await copyOpacity(editorCopy), 1, 'pending Copy stays visible');
+            await evaluate('window.finishCopy()');
+            await wait(`document.querySelector(${JSON.stringify(editorCopy)}).getAttribute('data-pt-copy-state')`, 'done');
+            assert.equal(await copyOpacity(editorCopy), 1);
+            await wait(`document.querySelector(${JSON.stringify(editorCopy)}).getAttribute('data-pt-copy-state')`, 'copy');
+            await evaluate(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText(){return Promise.reject(new Error('fixture permission denied'));}}});document.execCommand=()=>false;`);
+            await cdp.call('Runtime.evaluate', { expression: `document.querySelector(${JSON.stringify(editorCopy)}).click()`, userGesture: true }, sessionId);
+            await wait(`document.querySelector(${JSON.stringify(editorCopy)}).getAttribute('data-pt-copy-state')`, 'error');
+            assert.equal(await copyOpacity(editorCopy), 1, 'failed Copy remains fully visible');
+            assert.equal(await evaluate('document.querySelectorAll(".ps-copy-fallback").length'), 0);
+            fs.writeFileSync(path.join(artifacts, 'copy-overlay.json'), JSON.stringify(overlayReports, null, 2));
+            console.log('PASS native Copy overlay: no reserved row, full editor/gutter height, scrollbar clearance and nonblocking hit tests across 16 light/dark/font/viewport cases; actual hover, keyboard, first-touch copy, native resize and pending/success/error opacity');
+            await cdp.call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false }, sessionId);
             await cdp.call('Page.navigate', { url: base + '/cache-prime' }, sessionId);
             await wait('window.__ptOldAsset', true);
             const copy = async selector => {
@@ -2806,12 +2944,14 @@ async function main() {
                     const source=id?document.getElementById(id):details.querySelector('pre');
                     const frame=source.closest('.ps-copy-panel,.ps-copy-editor'),b=button.getBoundingClientRect(),f=frame.getBoundingClientRect(),s=source.getBoundingClientRect();
                     return {icon:!!svg,hidden:getComputedStyle(status).clipPath==='inset(50%)',width:b.width,height:b.height,
-                        inFrame:details&&!details.open?button.parentElement.tagName==='SUMMARY':b.left>=f.left&&b.right<=f.right&&b.top>=f.top&&b.bottom<=s.top+1};
+                        inFrame:details&&!details.open?button.parentElement.tagName==='SUMMARY':b.left>=f.left&&b.right<=f.right&&b.top>=f.top&&b.bottom<=f.bottom,
+                        topGap:s.top-f.top-(parseFloat(getComputedStyle(frame).borderTopWidth)||0)};
                 })()`);
                 assert.equal(placement.icon, true, 'copy control must display a fixed SVG icon');
                 assert.equal(placement.hidden, true, 'status labels must be visually hidden, not visible buttons');
                 assert.equal(placement.width, 30); assert.equal(placement.height, 30);
-                assert.equal(placement.inFrame, true, 'icon must be inside its frame and outside the scrolling text');
+                assert.equal(placement.inFrame, true, 'icon must overlay its own frame without leaving its bounds');
+                if (placement.topGap !== 0 && !Number.isNaN(placement.topGap)) assert.ok(Math.abs(placement.topGap) <= 1, 'Copy must not reserve a separate upper row');
                 const before = await evaluate('window.copyWrites.length');
                 await cdp.call('Runtime.evaluate', { expression: `document.querySelector(${JSON.stringify(selector)}).click()`, userGesture: true }, sessionId);
                 await wait('window.copyWrites.length', before + 1);

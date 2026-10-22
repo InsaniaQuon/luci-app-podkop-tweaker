@@ -1,4 +1,4 @@
-// frontend_copy_spec.js | v1.2.0 | 19.10.2026 | Clipboard transport and actual compact subscription snapshots
+// frontend_copy_spec.js | v1.3.0 | 22.10.2026 | Overlay ownership with retained clipboard transport and journal snapshots
 // Run: node tests/frontend_copy_spec.js. No dependencies or OS clipboard writes.
 'use strict';
 const assert = require('node:assert/strict');
@@ -469,6 +469,22 @@ async function main() {
     const button = s.PT.addCopyButton(source, { anchor });
     assert.equal(s.PT.addCopyButton(source, { anchor }), button);
     assert.equal(anchor.children.length, 1, 'repeated initialization must not stack buttons');
+    const beforePress = modern.length;
+    for (const reset of ['pointerup', 'pointercancel', 'pointerleave', 'lostpointercapture', 'blur']) {
+        button.events.pointerdown({ button: 0, isPrimary: true, pointerType: 'touch' });
+        assert.equal(button.attrs['data-pt-copy-pressed'], 'true');
+        assert.equal(modern.length, beforePress, 'pressing alone must not copy');
+        button.events[reset]();
+        assert.equal(button.attrs['data-pt-copy-pressed'], 'false');
+    }
+    for (const event of [{ button: 2 }, { button: 0, isPrimary: false }]) {
+        button.events.pointerdown(event);
+        assert.equal(button.attrs['data-pt-copy-pressed'], 'false', 'non-primary activation is not a press');
+    }
+    button.disabled = true;
+    button.events.pointerdown({ button: 0, isPrimary: true });
+    assert.equal(button.attrs['data-pt-copy-pressed'], 'false', 'disabled controls do not acquire press ownership');
+    button.disabled = false;
     let prevented = 0, stopped = 0;
     button.events.click({ preventDefault() { prevented++; }, stopPropagation() { stopped++; } });
     source.textContent = 'new output during pending copy';
@@ -497,8 +513,11 @@ async function main() {
     const error = new s.Element('span');
     s.PT.setErr(error, 'HTTP error: 403', text);
     const disclosure = error.children[0], summary = disclosure.children[0];
-    const panel = disclosure.children[1], tools = panel.children[0], pre = panel.children[1];
+    const panel = disclosure.children[1], overlay = panel.children[0], tools = overlay.children[0], pre = panel.children[1];
     const icon = pre.__ptCopyButton;
+    assert.equal(overlay.className, 'ps-copy-overlay');
+    assert.equal(tools.className, 'ps-copy-tools');
+    assert.equal(overlay.children.length, 1);
     assert.equal(pre.textContent, text);
     assert.equal(icon.parentNode, summary);
     disclosure.open = true; disclosure.events.toggle();
