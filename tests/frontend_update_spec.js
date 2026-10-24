@@ -39,7 +39,7 @@ class Form {
 const repo = path.resolve(__dirname, '..');
 const common = fs.readFileSync(path.join(repo, 'www/luci-static/resources/podkop-tweaker/common.js'), 'utf8');
 const urls = { upload: '/upload', apply: '/apply', systemInfo: '/info', checkUpdates: '/check',
-    tweakerUpdate: '/git', argonThemeUpdate: '/theme', clearCache: '/cache', restartStatus: '/restart/status', appVersion: '/version' };
+    tweakerUpdate: '/git', argonThemeUpdate: '/theme', argonThemeJob: '/themejob', clearCache: '/cache', restartStatus: '/restart/status', appVersion: '/version' };
 
 function setup(viewName) {
     const requests = [], elements = {}, calls = [], timers = [], events = {}, prompts = [];
@@ -436,33 +436,105 @@ for (const [latest, downgrade] of [['4.10.3', false], ['4.8.1', true]]) {
 }
 
 // A check started in an earlier webGeneration must return before touching any
-// decision, status or action lock, whether its terminal outcome is success/error.
-for (const knownFailure of [false, true]) {
-    for (const terminal of [{ name: 'aggregate', run: request => request.reply(aggregate({ update_available: false })) }, ...failures]) {
-        const s = systemPage();
-        s.get('ps-check-updates').click();
-        const check = s.last('/check');
-        s.get('ps-argon-update-btn').click();
-        const mutation = s.last('/theme');
-        if (knownFailure) mutation.reply({ success: false, error: 'Locale install failed', details: full, partial: true, resume_available: true, phase: 'translation' });
-        else { mutation.onerror(); s.tick(60000); }
-        const rows = rowState(s), status = s.get('ps-argon-status').textContent, checkStatus = s.get('ps-update-status').textContent;
-        const controls = ['ps-check-updates', 'ps-refresh-info', 'ps-clear-cache', 'ps-argon-update-btn'];
-        const locks = controls.map(id => s.get(id).disabled);
-        terminal.run(check);
-        assert.deepEqual(rowState(s), rows, terminal.name);
-        assert.equal(s.get('ps-argon-status').textContent, status, terminal.name);
-        assert.equal(s.get('ps-update-status').textContent, checkStatus, terminal.name);
-        assert.deepEqual(controls.map(id => s.get(id).disabled), locks, 'stale callback cannot unlock controls: ' + terminal.name);
-        assert.equal(s.get('ps-check-updates').disabled, !knownFailure);
-        assert.equal(s.requests.filter(request => request.url === '/theme').length, 1);
-        if (knownFailure) assert.equal(s.get('ps-argon-update-btn').textContent, 'Resume Theme Update');
-        else {
-            const retry = findElement(s.get('ps-argon-status'), node => /ps-restart-retry/.test(node.className || ''));
-            assert.ok(retry); retry.click();
-            assert.equal(s.requests.filter(request => request.url === '/theme').length, 1, 'uncertain state permits read-only verification');
-        }
+// decision, status or action lock while a theme job is still observed.
+for (const terminal of [{ name: 'aggregate', run: request => request.reply(aggregate({ update_available: false })) }, ...failures]) {
+    const s = systemPage();
+    s.get('ps-check-updates').click();
+    const check = s.last('/check');
+    s.get('ps-argon-update-btn').click();
+    const admission = s.last('/theme'), admissionId = new URLSearchParams(admission.body).get('restart_id');
+    assert.equal(new URLSearchParams(admission.body).get('async'), '1');
+    admission.reply({ success: true, queued: true, restart_id: admissionId });
+    const job = () => s.requests.filter(request => request.url.startsWith('/themejob?')).at(-1);
+    job().reply({ id: admissionId, state: 'queued' });
+    s.tick(2000);
+    job().reply({ id: admissionId, state: 'running' });
+    const rows = rowState(s), status = s.get('ps-argon-status').textContent, checkStatus = s.get('ps-update-status').textContent;
+    const controls = ['ps-check-updates', 'ps-refresh-info', 'ps-clear-cache', 'ps-argon-update-btn'];
+    const locks = controls.map(id => s.get(id).disabled);
+    terminal.run(check);
+    assert.deepEqual(rowState(s), rows, terminal.name);
+    assert.equal(s.get('ps-argon-status').textContent, status, terminal.name);
+    assert.equal(s.get('ps-update-status').textContent, checkStatus, terminal.name);
+    assert.deepEqual(controls.map(id => s.get(id).disabled), locks, 'stale callback cannot unlock controls: ' + terminal.name);
+    s.tick(3000);
+    job().reply({ id: admissionId, state: 'failed',
+        result: { success: false, error: 'Locale install failed', details: full, partial: true, resume_available: true, phase: 'translation' } });
+    assert.equal(s.requests.filter(request => request.url === '/theme').length, 1, 'observation never re-POSTs the mutation');
+    assert.equal(s.get('ps-check-updates').disabled, false);
+    assert.equal(s.get('ps-argon-update-btn').textContent, 'Resume Theme Update');
+    assert.equal(preElement(s.get('ps-argon-status')).textContent, full);
+}
+
+// The admitted job drives the whole lifecycle: queued -> running -> completed,
+// then the shared restart verification reloads with a bounded nonce.
+{
+    const s = systemPage();
+    s.get('ps-argon-update-btn').click();
+    const admission = s.last('/theme');
+    const id = new URLSearchParams(admission.body).get('restart_id');
+    assert.match(admission.body, /^token=test-token&async=1&restart_id=[a-f0-9]{32}$/);
+    admission.reply({ success: true, queued: true, restart_id: id });
+    const job = () => s.requests.filter(request => request.url.startsWith('/themejob?')).at(-1);
+    job().reply({ id, state: 'queued' });
+    assert.match(s.get('ps-argon-status').textContent, /Starting/);
+    s.tick(2000);
+    job().reply({ id, state: 'running' });
+    assert.match(s.get('ps-argon-status').textContent, /Updating/);
+    s.tick(3000);
+    job().reply({ id, state: 'completed', restart: { queued: true }, result: { success: true, new_version: '3.0.0-r2' } });
+    const probe = () => s.requests.filter(request => request.url.startsWith('/restart/status?')).at(-1);
+    assert.equal(new URL('http://router.test' + probe().url).searchParams.get('id'), id);
+    const ready = { id, state: 'applied', ready: true, installed_version: '3.0.0-r2' };
+    probe().reply({ ...ready, restarted: false });
+    assert.equal(s.reloads(), 0);
+    s.tick(1000); probe().reply({ ...ready, restarted: true });
+    assert.equal(s.reloads(), 1);
+    assert.match(s.context.window.location.href, new RegExp('_pt_reload=' + id));
+    assert.equal(s.requests.filter(request => request.url === '/theme').length, 1);
+    // The success path reloads instead of returning to the idle controls.
+    assert.equal(s.reloads(), 1);
+}
+
+// Interrupted or start-unconfirmed jobs stay read-only terminals with the
+// unknown hint; only an explicit click starts a new admission.
+for (const reply of [
+    { state: 'failed', start_unconfirmed: true, result: { success: false, error: 'Theme worker did not start' } },
+    { state: 'running', interrupted: true, result: { success: false, unknown: true, error: 'Theme worker was interrupted' } }
+]) {
+    const s = systemPage();
+    s.get('ps-argon-update-btn').click();
+    const admission = s.last('/theme');
+    const id = new URLSearchParams(admission.body).get('restart_id');
+    admission.reply({ success: true, queued: true, restart_id: id });
+    s.requests.filter(request => request.url.startsWith('/themejob?')).at(-1).reply({ id, ...reply });
+    assert.equal(s.requests.filter(request => request.url === '/theme').length, 1, 'unknown terminals never re-POST');
+    assert.ok(findElement(s.get('ps-argon-status'), node => /result is unknown/.test(node.textContent || '')), 'uncertain hint is present');
+    assert.equal(s.get('ps-check-updates').disabled, false);
+    s.get('ps-argon-update-btn').click();
+    assert.equal(s.requests.filter(request => request.url === '/theme').length, 2, 'an explicit click is required for a new admission');
+}
+
+// A lost admission response or an expired observation budget is uncertain and
+// read-only; a session-expired job poll tells the user to sign in.
+for (const scenario of ['transport', 'timeout', 'auth']) {
+    const s = systemPage();
+    s.get('ps-argon-update-btn').click();
+    const admission = s.last('/theme');
+    const id = new URLSearchParams(admission.body).get('restart_id');
+    if (scenario === 'transport') admission.onerror();
+    else if (scenario === 'timeout') {
+        admission.reply({ success: true, queued: true, restart_id: id });
+        s.requests.filter(request => request.url.startsWith('/themejob?')).at(-1).reply({ id, state: 'running' });
+        s.tick(600000);
+    } else {
+        admission.reply({ success: true, queued: true, restart_id: id });
+        s.requests.filter(request => request.url.startsWith('/themejob?')).at(-1).reply('<html>login</html>', 403);
     }
+    assert.equal(s.requests.filter(request => request.url === '/theme').length, 1, 'no automatic admission replay');
+    const text = s.get('ps-argon-status').textContent + ' ' + s.get('ps-argon-status').children.map(c => c.textContent).join(' ');
+    assert.match(text, scenario === 'auth' ? /Sign in/ : /unknown/i);
+    assert.equal(s.get('ps-check-updates').disabled, false);
 }
 
 // A completed upload cannot unlock Apply after a lost ACK/applied uncertainty.

@@ -179,14 +179,236 @@ function M.write_file_atomic(target, content, options)
     return ok, publish_err
 end
 
-function M.with_lock(key, fn)
-    if type(key) ~= "string" or not key:match("^[a-zA-Z0-9_%-]+$") or type(fn) ~= "function" then return nil, "Invalid resource lock" end
-    local who = owner()
-    if held[key] and held[key].owner == who then return fn() end
-    local path = M.LOCK_ROOT .. (key == "singbox" and "/podkop-fragment.lock" or "/podkop-tweaker-" .. key .. ".lock")
+-- Kernel-guarded resource locks (4.11.0). The resource itself stays the same
+-- directory legacy actors mkdir/rmdir, so old and new code share one mutual
+-- exclusion space and a downgrade keeps working. New actors serialize their
+-- metadata sections on a stable-inode guard file (never unlinked or renamed);
+-- owner identity lives on an adjacent inode. singbox keeps the legacy shell
+-- protocol because /var/lock/podkop-fragment.lock is shared with the shell
+-- patcher, which is out of scope for this train.
+M.LOCK_OWNERLESS_TTL = 900
+M.LOCK_DEAD_OWNER_GRACE = 10
+M.LOCK_RECOVERY_ATTEMPTS = 3
+M.LOCK_GEN = 1
+M.EPOCH_FILE = "/etc/podkop-tweaker.lock-epoch"
+
+function M.lock_wait(seconds)
+    os.execute("sleep " .. math.floor(tonumber(seconds) or 0) .. " 2>/dev/null")
+end
+
+-- Resolved per call: a cached module reference must never outlive the Lua
+-- environments (request handlers, standalone runs) that provide nixio.
+function M.nixio_module()
+    local ok, mod = pcall(require, "nixio")
+    local ready = ok and type(mod) == "table" and type(mod.open) == "function" and
+        type(mod.open_flags) == "function" and type(mod.getpid) == "function" and
+        type(mod.fs) == "table" and type(mod.fs.mkdir) == "function" and type(mod.fs.rmdir) == "function" and
+        type(mod.fs.stat) == "function" and type(mod.fs.chmod) == "function" and
+        type(mod.const) == "table" and mod.const.EAGAIN ~= nil and mod.const.EACCES ~= nil and mod.const.ENOENT ~= nil
+    if ready then return mod end
+    return false
+end
+
+local PROCESS_PID, OWNER_COUNTER = nil, 0
+
+function M.proc_start_time(pid)
+    local stat, _, errno = M.read_file("/proc/" .. tostring(pid) .. "/stat", 4096)
+    if not stat then return nil, errno end
+    local fields = stat:match("^%d+ %b() (.+)$")
+    if not fields then return nil, 5 end
+    local index = 0
+    for field in fields:gmatch("%S+") do
+        index = index + 1
+        if index == 20 then return field:match("^%d+$") and tonumber(field) or false end
+    end
+    return nil, 5
+end
+
+local function boot_time()
+    local stat = M.read_file("/proc/stat", 65536)
+    local btime = stat and stat:match("btime (%d+)")
+    return btime and tonumber(btime) or nil
+end
+
+local RECOVERY_CACHE = { btime = nil, enabled = false }
+
+local function recovery_enabled(btime)
+    btime = btime or boot_time()
+    if not btime or btime == 0 then return false end
+    if RECOVERY_CACHE.btime == btime then return RECOVERY_CACHE.enabled end
+    local enabled = false
+    local marker = M.read_file(M.EPOCH_FILE, 4096)
+    local gen, when
+    if marker then
+        local g, b = marker:match("^pt%-lock%-epoch gen=(%d+) btime=(%d+)")
+        gen, when = g and tonumber(g), b and tonumber(b)
+    end
+    if gen == M.LOCK_GEN and when ~= nil and when ~= btime then
+        enabled = true
+    elseif gen ~= M.LOCK_GEN then
+        -- Pin the epoch to the current boot on the first run of this lock
+        -- generation: automatic recovery stays disabled until a reboot
+        -- separates legacy 4.10.5 actors from the new protocol (accepted
+        -- one-time boundary). The takeover heuristics below are accepted
+        -- risk policies, never proof that a native descendant finished.
+        local fd = io.open(M.EPOCH_FILE, "wb")
+        if fd then
+            fd:write("pt-lock-epoch gen=" .. tostring(M.LOCK_GEN) .. " btime=" .. tostring(btime) .. "\n")
+            fd:close()
+            pcall(function() M.nixio_module().fs.chmod(M.EPOCH_FILE, 600) end)
+        end
+    end
+    RECOVERY_CACHE.btime, RECOVERY_CACHE.enabled = btime, enabled
+    return enabled
+end
+
+local function lock_paths(dir)
+    local base = dir:sub(1, #dir - 5) -- strip the trailing ".lock"
+    return base .. ".owner", base .. ".guard"
+end
+
+local function parse_owner(text)
+    if type(text) ~= "string" then return nil end
+    local pid, start, btime = text:match("^pid=(%d+) start=(%d+) btime=(%d+) token=[%w%-]+%s*$")
+    if not pid then return nil end
+    return { pid = tonumber(pid), start = tonumber(start), btime = tonumber(btime) }
+end
+
+local function write_owner(path, text)
+    local fd = io.open(path, "wb")
+    if not fd then return false end
+    local written = fd:write(text)
+    local closed = fd:close()
+    return written ~= nil and closed ~= nil
+end
+
+local function new_owner_token(n, btime)
+    local start = M.proc_start_time(n.getpid())
+    if start == nil or start == false then return nil end
+    OWNER_COUNTER = OWNER_COUNTER + 1
+    return string.format("pid=%d start=%d btime=%d token=%d-%d-%d\n",
+        n.getpid(), start, btime, os.time(), n.getpid(), OWNER_COUNTER)
+end
+
+local function guard_open(n, path)
+    local flags = n.open_flags("rdwr", "creat")
+    local opened, file = pcall(n.open, path, flags, "rw-------")
+    if not opened or not file then return nil end
+    local locked, ok_lock = pcall(function() return file:lock("tlock", 0) end)
+    if not ok_lock or locked ~= true then
+        pcall(function() file:close() end)
+        return nil
+    end
+    return file
+end
+
+-- "free" | "busy" | "recover-ownerless" | "recover-dead" (plus owner text for
+-- the dead case). Unreadable or corrupt owner metadata is always busy: it is
+-- never proof of an absent owner.
+local function classify_resource(n, dir, owner_path, btime, st)
+    if st == nil then return "busy" end
+    if st.type ~= "dir" then return "busy" end
+    local raw, _, rerrno = M.read_file(owner_path, 4096)
+    if raw == nil then
+        if rerrno == 2 and recovery_enabled(btime) and os.time() - (st.mtime or os.time()) >= M.LOCK_OWNERLESS_TTL then
+            return "recover-ownerless"
+        end
+        return "busy"
+    end
+    local owner = parse_owner(raw)
+    if not owner then return "busy" end
+    if owner.btime ~= btime then return "busy" end
+    local start, serrno = M.proc_start_time(owner.pid)
+    local dead = false
+    if start == nil and serrno == 2 then dead = true
+    elseif start == nil or start == false then return "busy"
+    elseif start ~= owner.start then dead = true end
+    if not dead or not recovery_enabled(btime) then return "busy" end
+    return "recover-dead", raw
+end
+
+local function guarded_acquire(key, dir)
+    local n = M.nixio_module()
+    local owner_path, guard_path = lock_paths(dir)
+    local snapshot = nil
+    for _ = 1, M.LOCK_RECOVERY_ATTEMPTS do
+        local token = nil
+        local outcome = "busy"
+        local ok, step = pcall(function()
+            local guard = guard_open(n, guard_path)
+            if not guard then return "busy" end
+            local function busy() guard:close(); return "busy" end
+            local btime = boot_time() or 0 -- without a readable boot time recovery stays disabled and tokens use 0
+            local st, errno = n.fs.stat(dir)
+            if st == nil and errno ~= 2 then return busy() end
+            local mode, owner_raw
+            if st == nil then mode = "free"
+            else mode, owner_raw = classify_resource(n, dir, owner_path, btime, st) end
+            if mode == "recover-ownerless" then
+                if not n.fs.rmdir(dir) then return busy() end
+                mode = "free"
+            elseif mode == "recover-dead" then
+                if snapshot and snapshot.raw == owner_raw and snapshot.mtime == st.mtime then
+                    if not n.fs.rmdir(dir) then return busy() end
+                    os.remove(owner_path)
+                    mode = "free"
+                else
+                    snapshot = { raw = owner_raw, mtime = st.mtime }
+                    guard:close()
+                    return "wait"
+                end
+            end
+            if mode ~= "free" then return busy() end
+            token = new_owner_token(n, btime)
+            if not token or not write_owner(owner_path, token) then token = nil; return busy() end
+            if not n.fs.mkdir(dir) then
+                os.remove(owner_path) -- our own adjacent metadata only
+                token = nil
+                return busy()
+            end
+            guard:close()
+            return "acquired"
+        end)
+        if ok and step == "acquired" then return token end
+        if not (ok and step == "wait") then
+            return nil, "Resource is busy or its lock is unavailable: " .. key
+        end
+        -- Dead-owner recovery waits outside the guard, then re-verifies the
+        -- exact directory/owner generation under a fresh guard hold.
+        M.lock_wait(M.LOCK_DEAD_OWNER_GRACE)
+    end
+    return nil, "Resource is busy or its lock is unavailable: " .. key
+end
+
+local function guarded_release(key, record)
+    local n = M.nixio_module()
+    local guard = guard_open(n, record.guard_path)
+    if not guard then
+        return nil, "Operation may already be applied; cannot release owned lock: " .. key, true
+    end
+    local released = false
+    pcall(function()
+        local raw = M.read_file(record.owner_path, 4096)
+        local st = raw == record.token and n.fs.stat(record.dir) or nil
+        if raw == record.token and st and st.type == "dir" then
+            if n.fs.rmdir(record.dir) then
+                os.remove(record.owner_path)
+                released = true
+            end
+        end
+    end)
+    pcall(function() guard:close() end)
+    if not released then
+        return nil, "Operation may already be applied; cannot release owned lock: " .. key, true
+    end
+    return true
+end
+
+local function legacy_locked(key, path, fn)
     if not LIB.exit_ok(os.execute("mkdir " .. LIB.shell_escape(path) .. " 2>/dev/null")) then return nil, "Resource is busy or its lock is unavailable: " .. key end
+    local who = owner()
     local scope, previous = {}, scopes[who]
-    held[key], scopes[who] = { owner = who }, scope
+    held[key], scopes[who] = { owner = who, state = "active" }, scope
     local result = pack(pcall(fn))
     scopes[who], held[key] = previous, nil
     local cleanup_err
@@ -199,6 +421,52 @@ function M.with_lock(key, fn)
         end
     end
     local released = LIB.exit_ok(os.execute("rmdir " .. LIB.shell_escape(path) .. " 2>/dev/null"))
+    if not result[1] then error(tostring(result[2]) .. (cleanup_err and ("; " .. cleanup_err) or "") .. (not released and "; cannot release owned lock" or ""), 0) end
+    if not released then return nil, "Operation may already be applied; cannot release owned lock: " .. key, true end
+    return unpack(result, 2, result.n)
+end
+
+function M.with_lock(key, fn)
+    if type(key) ~= "string" or not key:match("^[a-zA-Z0-9_%-]+$") or type(fn) ~= "function" then return nil, "Invalid resource lock" end
+    local who = owner()
+    local path = M.LOCK_ROOT .. (key == "singbox" and "/podkop-fragment.lock" or "/podkop-tweaker-" .. key .. ".lock")
+    local n = M.nixio_module()
+    if n then
+        local pid = n.getpid()
+        if PROCESS_PID == nil then PROCESS_PID = pid
+        elseif pid ~= PROCESS_PID then
+            -- A forked copy of this Lua state must not reuse parent ownership.
+            return nil, "Resource is busy or its lock is unavailable: " .. key
+        end
+    end
+    local record = held[key]
+    if record then
+        if record.owner ~= who then return nil, "Resource is busy or its lock is unavailable: " .. key end
+        if record.state ~= "active" then return nil, "Resource lock release did not complete earlier: " .. key end
+        return fn()
+    end
+    if key == "singbox" or not n then return legacy_locked(key, path, fn) end
+    local token = guarded_acquire(key, path)
+    if not token then return nil, "Resource is busy or its lock is unavailable: " .. key end
+    local owner_path, guard_path = lock_paths(path)
+    local scope, previous = {}, scopes[who]
+    held[key] = { owner = who, state = "active", dir = path, owner_path = owner_path,
+        guard_path = guard_path, token = token }
+    scopes[who] = scope
+    local result = pack(pcall(fn))
+    local cleanup_err
+    if not result[1] then
+        local paths = {}
+        for stage, stage_record in pairs(owned) do if stage_record.scope == scope then paths[#paths + 1] = stage end end
+        for _, stage in ipairs(paths) do
+            local ok, err = M.discard_stage(stage)
+            if not ok then cleanup_err = err end
+        end
+    end
+    local released = guarded_release(key, held[key])
+    scopes[who] = previous
+    if released then held[key] = nil
+    else held[key].state = "release-pending" end
     if not result[1] then error(tostring(result[2]) .. (cleanup_err and ("; " .. cleanup_err) or "") .. (not released and "; cannot release owned lock" or ""), 0) end
     if not released then return nil, "Operation may already be applied; cannot release owned lock: " .. key, true end
     return unpack(result, 2, result.n)

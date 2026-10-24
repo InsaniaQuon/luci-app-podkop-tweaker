@@ -597,19 +597,21 @@ describe("api_argon theme wrappers", function()
         assert.same({}, H.popen_cmds())
     end)
 
-    it("forwards the restart ID and returns partial-stage diagnostics without a typography-tab guard", function()
+    it("fail-fasts legacy synchronous requests and forwards admitted async jobs without a tab guard", function()
         begin_argon({})
         require("luci.model.uci").cursor():set("podkop-tweaker", "settings", "show_argon_tab", "0")
-        local theme = require("podkop-tweaker.theme")
+        local worker = require("podkop-tweaker.theme_worker")
         local id, seen = string.rep("a", 32), {}
-        local result = { success = false, partial = true, phase = "translation", resume_available = true,
-            error = "Translation hook failed", details = string.rep("full output\n", 100) }
-        theme.update = function(value) seen[#seen + 1] = value; return result end
+        local admitted = { success = true, queued = true, restart_id = id }
+        worker.admit = function(value) seen[#seen + 1] = value; return admitted end
         local ARG = H.reload("podkop-tweaker.api_argon")
-        assert.equal(result, ARG.theme_update(id))
+        -- Old 4.10.5 tabs send no async marker: fail fast instead of blocking.
+        local legacy = ARG.theme_update(id)
+        assert.is_false(legacy.success)
+        assert.matches("Reload the Podkop Tweaker page", legacy.error, 1, true)
+        assert.same({}, seen)
+        assert.equal(admitted, ARG.theme_update({ async = "1", restart_id = id }))
         assert.same({ id }, seen)
-        result = { success = true, new_version = "3.0.0-r2", restart_id = id }
-        assert.equal(result, ARG.theme_update(id))
         assert.same({}, H.execute_cmds())
     end)
 end)
@@ -900,31 +902,43 @@ describe("Argon typography resource coordination", function()
 
     for _, first_run in ipairs({ false, true }) do
         local missing = first_run
-        it("returns neither current settings nor first-run defaults when the read lock cannot be released", function()
+        it("serves checked read observations even while a failed lock release is retained: " .. tostring(missing), function()
             begin_argon({ failures = { [LOCK] = { rmdir = true } },
                 uci = { argon = { H.sec("typography", "typography", { font_size = "19" }) } } })
             if missing then os.remove(CONFIG); H.state().uci.argon = nil end
             H.vfs_write(CSS, ".theme{}\n" .. MARKER_S .. "existing" .. MARKER_E)
             local resp = H.reload("podkop-tweaker.api_argon").typography()
-            assert.is_false(resp.success)
-            assert.is_true(resp.unknown)
-            assert.truthy(resp.error)
-            assert.equal(resp.error, resp.lock_error)
-            assert.is_nil(resp.settings)
-            assert.is_nil(resp.stale)
-            assert.is_nil(resp.font_families)
-            assert.is_nil(resp.settings_source)
-            assert.is_nil(resp.config_missing)
-            assert.is_nil(resp.uci_saved)
-            assert.is_nil(resp.css_applied)
-            assert.is_nil(resp.partial)
-            assert.is_nil(resp.applied)
+            -- 4.11.0: read-only observations no longer take the exclusive
+            -- writer lock, so a retained release failure cannot block them.
+            assert.is_nil(resp.error)
+            assert.is_nil(resp.unknown)
+            assert.truthy(resp.settings)
+            assert.is_false(resp.stale)
+            assert.equal(missing and "defaults" or "uci", resp.settings_source)
+            assert.equal(missing, resp.config_missing)
             assert.same({}, H.commits())
             no_live_write()
         end)
     end
 
-    for _, action in ipairs({ "typography", "typography_save", "typography_reset", "reinject" }) do
+    it("typography returns the complete primary read error without lock uncertainty", function()
+        begin_argon({})
+        local original = ".theme{}\n"
+        H.vfs_write(CSS, original)
+        local primary = "Primary native UCI read failure\n" .. string.rep("complete diagnostic <not HTML>\n", 1000)
+        require("luci.model.uci").cursor().get_all = function() return nil, primary end
+        local resp = H.reload("podkop-tweaker.api_argon").typography()
+        assert.truthy(resp.error)
+        assert.equal(primary, resp.error)
+        assert.is_nil(resp.unknown)
+        assert.is_nil(resp.lock_error)
+        assert.is_nil(resp.settings)
+        assert.is_nil(resp.stale)
+        assert.equal(original, H.vfs_read(CSS))
+        assert.same({}, H.commits())
+    end)
+
+    for _, action in ipairs({ "typography_save", "typography_reset", "reinject" }) do
         local endpoint = action
         it(endpoint .. " preserves a complete primary read error and adds release uncertainty without applied proof", function()
             begin_argon({ failures = { [LOCK] = { rmdir = true } } })
@@ -1013,34 +1027,31 @@ describe("Argon typography resource coordination", function()
         no_css_stages()
     end)
 
-    it("preserves a low-level checked read error when release also fails", function()
-        begin_argon({ failures = { [LOCK] = { rmdir = true } } })
+    it("preserves a low-level checked read error without lock uncertainty", function()
+        begin_argon({})
         local primary = "Primary package read failure\n" .. string.rep("full read diagnostic\n", 1000)
         require("luci.model.uci").cursor().get_all = function() return false, primary end
         local settings, err, uncertain, info = require("podkop-tweaker.argon").read_settings()
         assert.is_nil(settings)
         assert.equal(primary, err)
-        assert.is_true(uncertain)
-        assert.is_true(info.unknown)
-        assert.truthy(info.lock_error)
-        assert.is_nil(info.applied)
-        assert.is_nil(info.settings_source)
+        assert.is_nil(uncertain, "an unlocked observation never reports release uncertainty")
+        assert.is_nil(info)
         assert.same({}, H.commits())
     end)
 
-    it("fails a busy resource read and mutation without changing UCI or CSS", function()
+    it("serves read observations while a foreign writer lock blocks only mutations", function()
         begin_argon({})
         H.vfs_mkdir(LOCK)
         H.vfs_write(CSS, ".theme{}\n")
         local before = H.vfs_read(CONFIG)
         local ARG = H.reload("podkop-tweaker.api_argon")
         local read, reset = ARG.typography(), ARG.typography_reset()
-        assert.truthy(read.error)
-        assert.is_nil(read.settings)
-        assert.is_nil(read.stale)
+        assert.is_nil(read.error)
+        assert.truthy(read.settings)
+        assert.is_true(read.stale)
+        assert.is_nil(read.unknown)
         assert.is_false(reset.success)
         assert.truthy(reset.error)
-        assert.is_nil(read.unknown)
         assert.is_nil(reset.unknown)
         assert.is_nil(reset.partial)
         assert.equal(before, H.vfs_read(CONFIG))

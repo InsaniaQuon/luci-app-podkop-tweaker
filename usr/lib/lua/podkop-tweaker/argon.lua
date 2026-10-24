@@ -96,14 +96,16 @@ local function settings_from(section)
     return settings
 end
 
+-- Read-only settings observation (4.11.0): no exclusive writer lock. The
+-- file read and the UCI package read remain independent checked observations;
+-- a failed read is an explicit error and never becomes first-run defaults.
+-- Mutations keep the argon-css reservation below.
 function M.read_settings()
-    return locked_result(function()
-        local sections, err, missing = read_config()
-        if not sections then return nil, err end
-        local settings, settings_err = settings_from(sections.typography or {})
-        if not settings then return nil, settings_err end
-        return settings, nil, { settings_source = sections.typography and "uci" or "defaults", config_missing = missing }
-    end)
+    local sections, err, missing = read_config()
+    if not sections then return nil, err end
+    local settings, settings_err = settings_from(sections.typography or {})
+    if not settings then return nil, settings_err end
+    return settings, nil, { settings_source = sections.typography and "uci" or "defaults", config_missing = missing }
 end
 
 -- Single place writing all typography fields to UCI (used by save / reset / bundle import)
@@ -172,14 +174,15 @@ local function replace_css(original, content)
     return published, publish_err
 end
 
+-- Read-only CSS observation (4.11.0): unlocked like read_settings. During a
+-- live update the API layer reports the busy job instead of serving a
+-- migration-time snapshot; this helper itself only reports checked facts.
 function M.check_stale()
-    return locked_result(function()
-        local content, err = read_css()
-        if not content then return nil, err end
-        local first, _, marker_err = css_block_span(content)
-        if marker_err then return nil, marker_err end
-        return first == nil
-    end)
+    local content, err = read_css()
+    if not content then return nil, err end
+    local first, _, marker_err = css_block_span(content)
+    if marker_err then return nil, marker_err end
+    return first == nil
 end
 
 function M.inject_css(css_block)

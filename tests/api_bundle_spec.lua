@@ -1012,23 +1012,26 @@ describe("bundle uncertainty and primary failure preservation", function()
 
     for _, accepted in ipairs({ false, true }) do
         it("retains " .. (accepted and "accepted" or "failed") .. " restart evidence and full errors when finishing release fails", function()
-            local lock, releases = "/var/lock/podkop-tweaker-podkop.lock", 0
+            local lock = "/var/lock/podkop-tweaker-podkop.lock"
             local details = "native restart output\n" .. string.rep("restart diagnostic\n", 800) .. "last restart detail"
             local api = begin_bundle({
                 sys = {
                     { match = "pidof ", out = "321\nPT_EXIT:0\n" },
-                    { match = "/etc/init.d/podkop restart", out = accepted and "\nPT_EXIT:0\n" or details .. "\nPT_EXIT:9\n" }
-                },
-                execute = { { match = function(command)
-                    return command:find("rmdir ", 1, true) and command:find(lock, 1, true)
-                end, out = function()
-                    releases = releases + 1
-                    return releases == 2 and 1 or 0
-                end } }
+                    { match = "/etc/init.d/podkop restart", out = function()
+                        -- Fail only the finishing release, after the write
+                        -- phase already released the resource cleanly.
+                        H.state().failures[lock] = { rmdir = true }
+                        return accepted and "\nPT_EXIT:0\n" or details .. "\nPT_EXIT:9\n"
+                    end }
+                }
             })
             H.vfs_write("/proc/321/stat", "321 (sing-box) S" .. string.rep(" 0", 18) .. " 9876\n")
             local result = api.import(bundle_str({ podkop = { content = PODKOP_CFG } }), nil, nil)
             local item = result.results.podkop
+            local releases = 0
+            for _, event in ipairs(H.state().io_log) do
+                if event.operation == "rmdir" and event.path == lock then releases = releases + 1 end
+            end
             assert.equal(2, releases)
             assert.equal(1, restart_count("podkop"))
             assert.is_false(item.ok)

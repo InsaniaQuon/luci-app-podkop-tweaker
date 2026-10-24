@@ -37,6 +37,8 @@ local function read_record()
     if record.state ~= "working" and record.state ~= "applied" and record.state ~= "failed" then return nil end
     if type(record.previous_instance) ~= "string" or not record.previous_instance:match("^%d+:%d+$") then return nil end
     if record.restart_queued ~= nil and type(record.restart_queued) ~= "boolean" then return nil end
+    if record.unknown ~= nil and type(record.unknown) ~= "boolean" then return nil end
+    if record.supersedes ~= nil and not M.valid_id(record.supersedes) then return nil end
     return record
 end
 
@@ -83,6 +85,10 @@ function M.run(id, target, fn)
     -- Evidence is for read-only recovery, not mutual exclusion. Include legacy
     -- callers without an ID in the same interprocess mutation lock.
     local function run_locked()
+        -- A queued or running theme job reserves the whole web-update resource
+        -- for its worker: admission and Local/Git/cache mutations share one slot.
+        local active = require("podkop-tweaker.theme_worker").active_job()
+        if active then return { error = "A theme update is in progress" } end
         if tracked then
             local instance = M.instance()
             if not instance then return { error = "Cannot identify the web server process" } end
@@ -92,7 +98,8 @@ function M.run(id, target, fn)
                 return { error = "A web restart operation is already pending" }
             end
             record = { id = id, target = target, state = "working", started = os.time(),
-                previous_instance = instance, restart_queued = false }
+                previous_instance = instance, restart_queued = false,
+                supersedes = previous and previous.id ~= id and previous.id or nil }
             local written, err = store(record)
             if not written then return { error = "Cannot create restart state", details = err } end
         end
@@ -100,8 +107,26 @@ function M.run(id, target, fn)
         mutation_started = true
         -- Let exceptions cross with_lock so it cleans this invocation's stages
         -- before the outer pcall converts the result into read-only uncertainty.
-        local result = fn()
-        if type(result) ~= "table" then error("Invalid web operation result") end
+        -- The own record keeps its working state and gains the error trail: a
+        -- rejected competing request never touches this evidence.
+        local ok_call, called = pcall(fn)
+        if not ok_call then
+            if record then
+                record.error = tostring(called):sub(1, 2048)
+                record.unknown = true
+                pcall(store, record)
+            end
+            error(called, 0)
+        end
+        local result = called
+        if type(result) ~= "table" then
+            if record then
+                record.error = "Invalid web operation result"
+                record.unknown = true
+                pcall(store, record)
+            end
+            error("Invalid web operation result")
+        end
         if result.success == true and (result.error ~= nil or result.partial == true or result.unknown == true) then
             result.success = false
             result.error = result.error or "Operation did not complete successfully"
@@ -168,6 +193,39 @@ function M.status(id)
     return { id = id, target = record.target, state = record.state, expected_version = record.expected_version,
         error = record.error, restarted = record.state == "applied" and record.restart_queued ~= false and
             instance ~= nil and instance ~= record.previous_instance }
+end
+
+-- Terminal evidence for an already-running detached worker. The caller owns
+-- the web-update resource (reentrant acquisition) and supplies the completed
+-- pipeline result. Unlike M.run, the uhttpd baseline is captured fresh at the
+-- end of the pipeline, right before the restart is queued, so a web restart
+-- that happened during a long update cannot make verification impossible.
+function M.finalize_restart(id, target, result)
+    if not M.valid_id(id) then return nil, "Invalid restart operation ID" end
+    if type(result) ~= "table" then return nil, "Invalid operation result" end
+    local instance = M.instance()
+    if not instance then return nil, "Cannot identify the web server process" end
+    local previous = read_record()
+    local record = { id = id, target = target,
+        state = result.success == true and "applied" or "failed",
+        started = os.time(), previous_instance = instance, restart_queued = false,
+        expected_version = result.new_version,
+        error = result.error and tostring(result.error):sub(1, 2048) or nil,
+        unknown = result.unknown == true or nil,
+        supersedes = previous and previous.id ~= id and previous.id or nil }
+    local written, err = store(record)
+    if not written then return nil, "Cannot record operation result", err end
+    if result.success ~= true then return record end
+    local queued, output = queue_restart()
+    if queued then
+        record.restart_queued = true
+        local stored, store_err = store(record)
+        if not stored then return nil, "Cannot record web restart scheduling result", store_err end
+        return record
+    end
+    record.state, record.error = "failed", "Applied, but web restart could not be scheduled"
+    pcall(store, record)
+    return nil, "Applied, but web restart could not be scheduled", output
 end
 
 return M

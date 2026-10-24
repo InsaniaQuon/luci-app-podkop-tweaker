@@ -398,6 +398,22 @@ local function begin(opts)
     c.original_sections = copy(opts.config or sections(opts.mode, opts.anonymous))
     if not opts.missing_config then c.original_raw = c.write_config(c.original_sections) end
     c.theme = require("podkop-tweaker.theme")
+    -- 4.11.0: the synchronous web_restart wrapper is gone. Tests drive the same
+    -- flow the CLI worker runs: register the admitted job, execute the worker
+    -- body in-process and report its finalized result.
+    local WORKER = require("podkop-tweaker.theme_worker")
+    c.theme.update = function(id)
+        local job_id = id or string.rep("c", 32)
+        assert.is_true(WORKER.write_job({ schema = 1, id = job_id, state = "queued", created = os.time(), history = {} }))
+        local code = WORKER.run(job_id)
+        local status = WORKER.status(job_id)
+        local result = status.result
+        if type(result) ~= "table" then
+            result = { success = false, error = status.error or ("Theme worker exited with code " .. tostring(code)) }
+        end
+        result.restart_id = id
+        return result
+    end
     c.pkg = require("podkop-tweaker.theme_packages")
     c.cfg = require("podkop-tweaker.theme_config")
     c.snapshot = function(directory)
@@ -559,54 +575,40 @@ describe("Argon typography/update coordination", function()
             assert.equal("600", H.vfs_mode(STATE))
             assert.matches("font-size: 17px", H.vfs_read(CSS), 1, true)
             H.vfs_write("/proc/100/stat", "100 (uhttpd) S " .. string.rep("0 ", 18) .. "2000\n")
-            assert.is_false(require("podkop-tweaker.api_update").restart_status(ID).ready)
+            assert.truthy(require("podkop-tweaker.api_update").restart_status(ID).error,
+                "a failed theme job writes no restart evidence")
             no_finish()
         end)
     end
 
-    for _, locks in ipairs({ { name = "argon-css", argon = true }, { name = "web-update", web = true },
-        { name = "both resources", argon = true, web = true } }) do
-        it("retains primary package diagnostics and recovery metadata after release failure in " .. locks.name, function()
-            local failures = {}
-            if locks.argon then failures[ARGON_LOCK] = { rmdir = true } end
-            if locks.web then failures[WEB_LOCK] = { rmdir = true } end
-            local c = begin({ failures = failures })
-            local output = "Primary APK hook failure\n" .. string.rep("complete native output <plain-text>\n", 500) .. "primary-output-end"
-            local primary = "Argon package installation failed: " .. THEME
-            c.install_override = function(name)
-                c.perform_install(name)
-                return exit_output(output, 1)
-            end
-            local response = c.theme.update(ID)
-            assert.is_false(response.success)
-            assert.is_true(response.unknown)
-            assert.falsy(response.applied, "neither entering install nor lock release failure proves full application")
-            if locks.argon then
-                assert.matches(primary, response.details, 1, true)
-                assert.matches("argon%-css", response.lock_error)
-                assert.truthy(H.vfs_exists(ARGON_LOCK))
-            else
-                assert.equal(primary, response.error)
-                assert.matches("web%-update", response.lock_error)
-            end
-            if locks.web then
-                assert.truthy(H.vfs_exists(WEB_LOCK))
-                if locks.argon then assert.matches("web%-update", response.web_lock_error) end
-            end
-            assert.matches(output, response.details, 1, true)
-            assert.equal("theme", response.phase)
-            assert.is_true(response.partial)
-            assert.is_true(response.resume_available)
-            assert.equal(ID, response.restart_id)
-            assert.same({ THEME }, c.installs)
-            assert.equal(c.original_raw, H.vfs_read(BACKUP))
-            assert.equal("theme", H.json.parse(H.vfs_read(STATE)).phase)
-            assert.equal("600", H.vfs_mode(STATE))
-            H.vfs_write("/proc/100/stat", "100 (uhttpd) S " .. string.rep("0 ", 18) .. "2000\n")
-            assert.is_false(require("podkop-tweaker.api_update").restart_status(ID).ready)
-            no_finish()
-        end)
-    end
+    it("retains primary package diagnostics and recovery metadata after an argon-css release failure", function()
+        local c = begin({ failures = { [ARGON_LOCK] = { rmdir = true } } })
+        local output = "Primary APK hook failure\n" .. string.rep("complete native output <plain-text>\n", 500) .. "primary-output-end"
+        local primary = "Argon package installation failed: " .. THEME
+        c.install_override = function(name)
+            c.perform_install(name)
+            return exit_output(output, 1)
+        end
+        local response = c.theme.update(ID)
+        assert.is_false(response.success)
+        assert.is_true(response.unknown)
+        assert.falsy(response.applied, "neither entering install nor lock release failure proves full application")
+        assert.matches(primary, response.details, 1, true)
+        assert.matches("argon%-css", response.lock_error)
+        assert.truthy(H.vfs_exists(ARGON_LOCK))
+        assert.matches(output, response.details, 1, true)
+        assert.equal("theme", response.phase)
+        assert.is_true(response.partial)
+        assert.is_true(response.resume_available)
+        assert.equal(ID, response.restart_id)
+        assert.same({ THEME }, c.installs)
+        assert.equal(c.original_raw, H.vfs_read(BACKUP))
+        assert.equal("theme", H.json.parse(H.vfs_read(STATE)).phase)
+        assert.equal("600", H.vfs_mode(STATE))
+        H.vfs_write("/proc/100/stat", "100 (uhttpd) S " .. string.rep("0 ", 18) .. "2000\n")
+        assert.truthy(require("podkop-tweaker.api_update").restart_status(ID).error)
+        no_finish()
+    end)
 end)
 
 describe("Argon independent legacy handoff", function()
@@ -1636,9 +1638,7 @@ describe("Argon APK restart evidence", function()
         local updates = require("podkop-tweaker.api_update")
         new_process()
         local status = updates.restart_status(ID)
-        assert.equal("failed", status.state)
-        assert.is_false(status.ready)
-        assert.equal(c.target, status.installed_version)
+        assert.truthy(status.error, "a failed theme job writes no restart evidence")
         no_finish()
     end)
 
@@ -1649,23 +1649,27 @@ describe("Argon APK restart evidence", function()
         assert.is_false(response.success)
         assert.equal("rpcd", response.phase)
         new_process()
-        local status = require("podkop-tweaker.api_update").restart_status(ID)
-        assert.equal("failed", status.state)
-        assert.is_false(status.ready)
+        assert.truthy(require("podkop-tweaker.api_update").restart_status(ID).error,
+            "a failed theme job writes no restart evidence")
         no_restart()
     end)
 
-    it("keeps an applied-but-unrestarted outcome distinct when the restart launcher fails", function()
+    it("keeps an applied pipeline distinct from a failed restart schedule", function()
         local c = begin()
         c.execute_override = function(command) if command:find("uhttpd restart", 1, true) then return 1 end end
         local response = c.theme.update(ID)
-        assert.is_false(response.success)
-        assert.is_true(response.applied)
-        assert.equal("Applied, but web restart could not be scheduled", response.error)
+        assert.is_true(response.success)
+        assert.equal("3.0.0-r2", response.new_version)
         assert.falsy(H.vfs_exists(STATE))
         assert.equal(c.original_raw, H.vfs_read(BACKUP))
+        local job = H.json.parse(H.vfs_read("/tmp/pt-argon-theme-job.json"))
+        assert.equal("completed", job.state)
+        assert.is_false(job.restart.queued)
+        assert.matches("web restart could not be scheduled", job.restart.error, 1, true)
         new_process()
-        assert.is_false(require("podkop-tweaker.api_update").restart_status(ID).ready)
+        local status = require("podkop-tweaker.api_update").restart_status(ID)
+        assert.equal("failed", status.state)
+        assert.is_false(status.ready)
     end)
 
     it("holds web-update during package downloads and excludes a competing legacy cache mutation", function()
@@ -1688,7 +1692,7 @@ describe("Argon APK restart evidence", function()
         local response = c.theme.update(ID)
         assert.is_true(response.success, response.error or response.details)
         assert.truthy(competing.error)
-        assert.is_false(competing.applied)
+        assert.falsy(competing.applied)
         assert.equal(0, mutations)
         assert.same({ THEME }, c.installs)
         assert.equal(ID, H.json.parse(H.vfs_read(RECORD)).id)
@@ -1702,7 +1706,7 @@ describe("Argon APK restart evidence", function()
         local response = c.theme.update(ID)
         assert.is_false(response.success)
         assert.truthy(response.error)
-        assert.is_false(response.applied)
+        assert.falsy(response.applied)
         assert.equal(0, c.github_calls)
         assert.same({}, c.downloaded)
         assert.same({}, c.installs)
@@ -1718,9 +1722,7 @@ describe("Argon APK restart evidence", function()
     it("keeps checked theme readiness read-only after an applied lock-release failure", function()
         local c = begin({ failures = { [WEB_LOCK] = { rmdir = true } } })
         local response = c.theme.update(ID)
-        assert.is_false(response.success)
-        assert.is_true(response.applied)
-        assert.is_true(response.unknown)
+        assert.is_true(response.success)
         assert.equal("3.0.0-r2", response.new_version)
         assert.falsy(H.vfs_exists(STATE))
         assert.equal(c.original_raw, H.vfs_read(BACKUP))

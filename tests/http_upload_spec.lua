@@ -267,7 +267,7 @@ describe("reliability HTTP wiring", function()
     local targets = {
         { "api_apply_update", "api_update", "apply", { "1", ID } },
         { "api_tweaker_git_update", "api_update", "git_update", { "https://release.example/file", "1", ID } },
-        { "api_argon_theme_update", "api_argon", "theme_update", { ID } },
+        { "api_argon_theme_update", "api_argon", "theme_update", { { restart_id = ID } } },
         { "api_clear_cache", "api_update", "clear_cache", { ID } }
     }
     for _, target in ipairs(targets) do

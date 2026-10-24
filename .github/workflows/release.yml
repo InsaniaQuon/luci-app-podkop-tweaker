@@ -123,6 +123,9 @@ jobs:
       - name: Check native shared IO ownership and service backup invariants
         run: python3 tests/native_io.py
 
+      - name: Check native lockf guard semantics
+        run: python3 -B tests/native_lockf_probe.py
+
       - name: Build and verify release archive
         id: archive
         shell: bash

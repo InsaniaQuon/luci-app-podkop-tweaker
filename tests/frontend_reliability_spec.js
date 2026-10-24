@@ -2012,7 +2012,7 @@ for (const invalid of [
     assert.equal(s.get('ps-file-input').disabled, true);
 }
 
-const infoUrls = { systemInfo: '/info', tweakerUpdate: '/git', argonThemeUpdate: '/theme', clearCache: '/clear', checkUpdates: '/check', restartStatus: '/restart/status', appVersion: '/version' };
+const infoUrls = { systemInfo: '/info', tweakerUpdate: '/git', argonThemeUpdate: '/theme', argonThemeJob: '/themejob', clearCache: '/clear', checkUpdates: '/check', restartStatus: '/restart/status', appVersion: '/version' };
 {
     const s = setup('system-info', infoUrls);
     s.last('/info').reply({ tweaker_version: '4.9.0', tweaker_latest: '4.10.0', tweaker_download_url: 'https://github.com/InsaniaQuon/luci-app-podkop-tweaker/releases/download/v4.10.0/app.tar.gz' });
@@ -2063,6 +2063,7 @@ function argonPage(fields) {
     return s;
 }
 function themeOperation(s) { return new URLSearchParams(s.last('/theme').body).get('restart_id'); }
+function jobPoll(s) { return s.requests.filter(r => r.url.startsWith('/themejob?')).at(-1); }
 function forceArgon(s, theme) {
     s.get('ps-check-updates').click();
     s.last('/check').reply({ podkop: { update_available: false }, tweaker: { current_version: '4.10.0' }, theme });
@@ -2083,11 +2084,13 @@ for (const fields of [
     const post = s.last('/theme'), id = themeOperation(s);
     assert.match(id, /^[a-f0-9]{32}$/);
     assert.equal(new URLSearchParams(post.body).get('token'), 'token');
+    assert.equal(new URLSearchParams(post.body).get('async'), '1');
     assert.equal(s.get('ps-argon-update-btn').disabled, true);
     assert.equal(s.get('ps-check-updates').disabled, true);
     assert.equal(s.get('ps-refresh-info').disabled, true);
-    // No new_version in the ACK: the row's full target is the fallback.
-    post.reply({ success: true, restart_id: id });
+    // No new_version in the job result: the row's full target is the fallback.
+    post.reply({ success: true, queued: true, restart_id: id });
+    jobPoll(s).reply({ id, state: 'completed', restart: { queued: true }, result: { success: true } });
     const target = fields.argon_theme_latest || '3.0.0-r2';
     probe(s).reply({ id, state: 'applied', restarted: true, ready: true, installed_version: target.replace(/-r\d+$/, '') });
     assert.equal(s.reloads(), 0, 'a semver without the exact APK revision is not ready');
@@ -2145,22 +2148,23 @@ for (const fields of [
 }
 
 // A received install failure permits an explicit resume with a fresh operation ID.
-// Capture the real helper callback to check metadata survives both shared layers.
+// Capture the real job callback to check metadata survives both shared layers.
 for (const partial of [false, true]) {
     const s = argonPage();
     let failure;
-    const restartAction = s.window.PT.restartAction;
-    s.window.PT.restartAction = cfg => {
-        const onFailure = cfg.onFailure;
-        cfg.onFailure = (error, uncertain) => { failure = { error, uncertain }; onFailure(error, uncertain); };
-        return restartAction(cfg);
+    const runThemeJob = s.window.PT.runThemeJob;
+    s.window.PT.runThemeJob = cfg => {
+        const onTerminal = cfg.onTerminal;
+        cfg.onTerminal = (error, data) => { failure = { error, data }; onTerminal(error, data); };
+        return runThemeJob(cfg);
     };
     s.get('ps-argon-update-btn').click();
     const first = themeOperation(s);
     const details = '<img src=x onerror=alert(1)> literal package output\n' + 'apk failed: full diagnostics\n'.repeat(100);
-    s.last('/theme').reply({ success: false, error: 'Argon package installation failed', details,
-        phase: 'translation', partial, resume_available: true });
-    assert.equal(failure.uncertain, false);
+    s.last('/theme').reply({ success: true, queued: true, restart_id: first });
+    jobPoll(s).reply({ id: first, state: 'failed', result: { success: false, error: 'Argon package installation failed', details,
+        phase: 'translation', partial, resume_available: true } });
+    assert.equal(failure.error.unknown, false);
     assert.equal(failure.error.kind, 'application');
     assert.equal(failure.error.phase, 'translation');
     assert.equal(failure.error.partial, partial);
@@ -2181,19 +2185,22 @@ for (const partial of [false, true]) {
     assert.equal(new URLSearchParams(s.last('/theme').body).has('resume'), false, 'the same endpoint loads its pinned plan');
 }
 {
+    // An applied pipeline whose restart scheduling failed stays terminal with
+    // the explicit restart error; the observation never re-POSTs.
     const s = argonPage();
     s.get('ps-argon-update-btn').click();
-    s.last('/theme').reply({ success: false, applied: true, error: 'Cannot record operation result', details: 'write failed',
-        phase: 'cleanup', partial: true, resume_available: true });
-    assert.equal(s.get('ps-argon-update-btn').disabled, true, 'applied uncertainty wins over resume metadata');
-    assert.equal(s.get('ps-refresh-info').disabled, true);
-    const retry = s.get('ps-argon-status').children.find(el => el.tagName === 'BUTTON');
-    assert.ok(retry);
-    assert.equal(retry.textContent, 'Retry verification');
-    retry.click();
+    const id = themeOperation(s);
+    s.last('/theme').reply({ success: true, queued: true, restart_id: id });
+    jobPoll(s).reply({ id, state: 'completed', restart: { queued: false, error: 'Cannot record operation result', details: 'write failed' },
+        result: { success: true, new_version: '3.0.0-r2', partial: true, resume_available: true, phase: 'cleanup' } });
     assert.equal(s.requests.filter(r => r.url === '/theme').length, 1);
-    assert.ok(probe(s));
+    assert.match(s.get('ps-argon-status').textContent, /Cannot record operation result/);
+    assert.equal(s.get('ps-argon-status').querySelectorAll('*').find(el => el.tagName === 'PRE').textContent, 'write failed');
+    assert.equal(s.get('ps-argon-update-btn').disabled, false);
+    assert.equal(s.requests.filter(r => r.url.startsWith('/restart/status?')).length, 0, 'an unqueued restart is never verified as one');
 }
+// Lost admission responses are read-only uncertain terminals: no re-POST, no
+// restart verification, and only an explicit click starts a new admission.
 for (const failure of ['network', 'timeout', 'parse', 'http500']) {
     const s = argonPage({ argon_theme_version: '3.0.0-r2', argon_theme_resume_available: true, argon_theme_phase: 'config' });
     s.get('ps-argon-update-btn').click();
@@ -2201,45 +2208,45 @@ for (const failure of ['network', 'timeout', 'parse', 'http500']) {
     if (failure === 'network') post.onerror();
     else if (failure === 'timeout') post.ontimeout();
     else post.reply('<html>upstream error</html>', failure === 'http500' ? 500 : 200);
-    assert.ok(probe(s));
-    assert.equal(s.get('ps-argon-update-btn').disabled, true);
-    probe(s).reply({ id, state: 'working', ready: false });
-    s.tick(60000);
-    assert.equal(s.get('ps-argon-update-btn').disabled, true);
-    assert.equal(s.get('ps-check-updates').disabled, true);
-    assert.equal(s.get('ps-refresh-info').disabled, true);
-    const retry = s.get('ps-argon-status').children.find(el => el.tagName === 'BUTTON');
-    assert.ok(retry);
-    retry.click();
-    assert.equal(s.requests.filter(r => r.url === '/theme').length, 1, 'lost resume responses only allow read-only verification: ' + failure);
-    probe(s).reply({ id, state: 'applied', restarted: true, ready: true,
-        expected_version: '3.0.0-r2', installed_version: '3.0.0-r2' });
-    assert.equal(s.reloads(), 1);
+    assert.equal(s.requests.filter(r => r.url.startsWith('/restart/status?')).length, 0);
+    assert.equal(s.requests.filter(r => r.url.startsWith('/themejob?')).length, 0);
+    assert.equal(s.get('ps-argon-update-btn').disabled, false);
+    assert.equal(s.get('ps-check-updates').disabled, false);
+    assert.equal(s.get('ps-refresh-info').disabled, false);
+    assert.ok(s.get('ps-argon-status').children.some(el => /result is unknown/.test(el.textContent || '')),
+        'uncertain hint present: ' + failure);
+    assert.equal(s.requests.filter(r => r.url === '/theme').length, 1, 'lost admission responses never re-POST: ' + failure);
+    s.get('ps-argon-update-btn').click();
+    assert.equal(s.requests.filter(r => r.url === '/theme').length, 2, 'an explicit click starts a new admission: ' + failure);
 }
 for (const knownFailure of [false, true]) {
     const s = argonPage();
     s.get('ps-check-updates').click();
     const check = s.last('/check'), html = s.get('ps-info-argon').innerHTML;
     s.get('ps-argon-update-btn').click();
-    if (knownFailure) s.last('/theme').reply({ success: false, error: 'Locale install failed', details: 'complete failure output',
-        phase: 'translation', partial: true, resume_available: true });
-    else s.last('/theme').onerror();
+    const id = themeOperation(s);
+    s.last('/theme').reply({ success: true, queued: true, restart_id: id });
+    if (knownFailure) jobPoll(s).reply({ id, state: 'failed', result: { success: false, error: 'Locale install failed', details: 'complete failure output',
+        phase: 'translation', partial: true, resume_available: true } });
+    else { jobPoll(s).reply({ id, state: 'running' }); s.tick(600000); }
     check.reply({ podkop: {}, tweaker: {}, theme: { current_version: '3.0.0-r2', latest_version: '3.0.0-r2', update_available: false } });
     assert.equal(s.get('ps-info-argon').innerHTML, html, 'an older in-flight check cannot replace the operation UI');
-    assert.equal(s.get('ps-check-updates').disabled, !knownFailure, 'a stale response cannot unlock uncertainty');
+    assert.equal(s.get('ps-check-updates').disabled, false, 'a stale response cannot unlock uncertainty');
     if (knownFailure) {
         assert.equal(s.get('ps-argon-update-btn').textContent, 'Resume Theme Update');
         assert.match(s.get('ps-argon-status').textContent, /Locale install failed/);
-    } else assert.ok(probe(s));
+    } else assert.ok(s.get('ps-argon-status').children.some(el => /result is unknown/.test(el.textContent || '')),
+        'an expired observation stays a read-only uncertain terminal');
     assert.equal(s.requests.filter(r => r.url === '/theme').length, 1);
 }
 {
     const s = argonPage({ argon_theme_latest: '3.0.0-r1' });
     s.get('ps-argon-update-btn').click();
     const id = themeOperation(s);
-    s.last('/theme').reply({ success: true, restart_id: id, new_version: '3.0.0-r2' });
+    s.last('/theme').reply({ success: true, queued: true, restart_id: id });
+    jobPoll(s).reply({ id, state: 'completed', restart: { queued: true }, result: { success: true, new_version: '3.0.0-r2' } });
     probe(s).reply({ id, state: 'applied', restarted: true, ready: true, installed_version: '3.0.0-r1' });
-    assert.equal(s.reloads(), 0, 'a fresh ACK replaces the old row target with its full revision');
+    assert.equal(s.reloads(), 0, 'a fresh job result replaces the old row target with its full revision');
     s.tick(1000);
     probe(s).reply({ id, state: 'applied', restarted: true, ready: true, installed_version: '3.0.0-r2' });
     assert.equal(s.reloads(), 1);

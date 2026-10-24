@@ -32,7 +32,7 @@ local CLEAR_LOADED_IDS = {
     "podkop-tweaker.http", "podkop-tweaker.services", "podkop-tweaker.lib",
     "podkop-tweaker.diag", "podkop-tweaker.argon", "podkop-tweaker.subsched", "podkop-tweaker.theme", "podkop-tweaker.appearance",
     "podkop-tweaker.net", "podkop-tweaker.archive", "podkop-tweaker.dns_observation", "podkop-tweaker.web_restart",
-    "podkop-tweaker.theme_packages", "podkop-tweaker.theme_config",
+    "podkop-tweaker.theme_packages", "podkop-tweaker.theme_config", "podkop-tweaker.theme_worker",
     "podkop-tweaker.bundle", "podkop-tweaker.api_diag", "podkop-tweaker.api_argon",
     "podkop-tweaker.api_stubby", "podkop-tweaker.stubby_check", "podkop-tweaker.api_podkop", "podkop-tweaker.api_subs",
     "podkop-tweaker.api_singbox", "podkop-tweaker.api_bundle", "podkop-tweaker.api_update",
@@ -533,41 +533,160 @@ local function make_http(st)
     return H
 end
 
-local function make_nixio_fs(vfs, dirs)
+local function make_nixio(st)
     local fs = {}
+    st.guard_state = st.guard_state or {}
+    st.guard_opens = st.guard_opens or {}
+    local nix = {
+        fs = fs,
+        const = { EAGAIN = 11, EWOULDBLOCK = 11, EACCES = 13, ENOENT = 2, EEXIST = 17, EINTR = 4 }
+    }
+    -- Single fake process by default; tests change st.nixio_pid to model
+    -- another actor or a forked Lua state. The current process always sees
+    -- its own /proc identity, like a real POSIX system.
+    function nix.getpid()
+        local pid = st.nixio_pid or 4242
+        local path = "/proc/" .. pid .. "/stat"
+        if not st.vfs[path] then
+            st.vfs[path] = { content = pid .. " (lua) S " .. string.rep("0 ", 18) .. "700\n" }
+        end
+        return pid
+    end
+
+    function nix.open_flags(...)
+        local flags = {}
+        for i = 1, select("#", ...) do flags[(select(i, ...))] = true end
+        return flags
+    end
+
+    function nix.open(path, flags, mode)
+        table.insert(st.io_log, { operation = "open", path = path, mode = mode or flags or "?" })
+        local failure = failure_for(st, path)
+        if failure and failure.open then return nil, "Injected open failure", failure.errno or 13 end
+        local creat = type(flags) == "table" and flags.creat or flags == "w" or flags == "w+"
+        local entry = st.vfs[path]
+        if not entry then
+            if not creat then return nil, "No such file or directory", 2 end
+            entry = { content = "", mode = "600" }
+            st.vfs[path] = entry
+        end
+        st.guard_opens[path] = (st.guard_opens[path] or 0) + 1
+        local file = { _path = path, _closed = false }
+        -- POSIX process-owned lockf model: another holder blocks tlock, and
+        -- the lock survives until every descriptor of this path is closed.
+        function file:lock(cmd)
+            if self._closed then return nil, 9, "Bad file descriptor" end
+            if cmd ~= "tlock" and cmd ~= "lock" then return nil, 22, "Invalid argument" end
+            local state = st.guard_state[path]
+            if state and state.holder ~= nil and state.holder ~= nix.getpid() then
+                return false, 11, "Resource temporarily unavailable"
+            end
+            st.guard_state[path] = { holder = nix.getpid() }
+            return true
+        end
+        function file:close()
+            if self._closed then return nil, 9, "Bad file descriptor" end
+            self._closed = true
+            local opens = (st.guard_opens[path] or 1) - 1
+            st.guard_opens[path] = opens > 0 and opens or nil
+            if opens <= 0 then st.guard_state[path] = nil end
+            return true
+        end
+        function file:seek() return 0 end
+        function file:stat() return { type = "reg", size = #entry.content, mtime = os.time() } end
+        function file:write(...) return true end
+        function file:read() return "" end
+        return file
+    end
+
+    -- Detached-spawn model: a fake fork never runs the child branch; tests
+    -- observe st.forks / force st.fork_fail instead.
+    function nix.fork()
+        if st.fork_fail then return nil, 11, "Resource temporarily unavailable" end
+        st.forks = (st.forks or 0) + 1
+        return 4321
+    end
+    function nix.setsid() return 4321 end
+    function nix.dup() return true end
+    function nix.exec() error("exec is only reachable in a real child process", 0) end
+    nix.stdin, nix.stdout, nix.stderr = {}, {}, {}
 
     function fs.stat(path)
-        if vfs[path] then return { mtime = os.time(), is_directory = false, type = vfs[path].type or "reg", size = #vfs[path].content } end
-        if dirs[path] then return { mtime = os.time(), is_directory = true, type = "dir" } end
-        for p, d in pairs(dirs) do
-            if d and path:sub(1, #p + 1) == p .. "/" then
+        if st.vfs[path] then
+            local e = st.vfs[path]
+            return { mtime = e.mtime or os.time(), is_directory = false, type = e.type or "reg", size = #e.content }
+        end
+        local dir_entry = st.dirs[path]
+        if dir_entry ~= nil and dir_entry ~= false then
+            return { mtime = type(dir_entry) == "number" and dir_entry or os.time(), is_directory = true, type = "dir" }
+        end
+        for p, d in pairs(st.dirs) do
+            if d ~= false and path:sub(1, #p + 1) == p .. "/" then
                 return { mtime = os.time(), is_directory = true, type = "dir" }
             end
         end
-        for p in pairs(vfs) do
+        for p in pairs(st.vfs) do
             if p:sub(1, #path + 1) == path .. "/" then
                 return { mtime = os.time(), is_directory = true, type = "dir" }
             end
         end
-        return nil
+        return nil, 2, "No such file or directory"
     end
     fs.lstat = fs.stat
 
     function fs.readfile(path)
-        local e = vfs[path]
+        local e = st.vfs[path]
         if not e then return nil end
         return e.content
     end
 
     function fs.unlink(path)
-        if vfs[path] then vfs[path] = nil; return true end
-        return false
+        if st.vfs[path] then st.vfs[path] = nil; return true end
+        return nil, 2, "No such file or directory"
     end
 
-    function fs.mkdir(path) dirs[path] = true; return true end
+    function fs.mkdir(path)
+        local failure = failure_for(st, path)
+        local existed = st.dirs[path] ~= nil and st.dirs[path] ~= false or st.vfs[path] ~= nil
+        local blocked = existed or (failure and failure.mkdir)
+        st.io_log[#st.io_log + 1] = { operation = "mkdir", path = path, success = not blocked }
+        if blocked then
+            return nil, existed and 17 or 1, existed and "File exists" or "Injected mkdir failure"
+        end
+        st.dirs[path] = true
+        return true
+    end
     fs.mkdirr = fs.mkdir
 
-    return fs
+    function fs.rmdir(path)
+        local failure = failure_for(st, path)
+        local existed = st.dirs[path] ~= nil and st.dirs[path] ~= false
+        local children = false
+        for child in pairs(st.vfs) do
+            if child:sub(1, #path + 1) == path .. "/" then children = true end
+        end
+        for child in pairs(st.dirs) do
+            if child ~= path and child:sub(1, #path + 1) == path .. "/" then children = true end
+        end
+        local blocked = not existed or children or (failure and failure.rmdir)
+        st.io_log[#st.io_log + 1] = { operation = "rmdir", path = path, success = not blocked }
+        if blocked then
+            local errno = not existed and 2 or children and 39 or 1
+            local message = not existed and "No such directory" or children and "Directory not empty" or "Injected rmdir failure"
+            return nil, errno, message
+        end
+        st.dirs[path] = nil
+        return true
+    end
+
+    function fs.chmod(path, mode)
+        local entry = st.vfs[path]
+        if entry then entry.mode = type(mode) == "number" and string.format("%03d", mode) or tostring(mode or "644") end
+        if entry or st.dirs[path] ~= nil then return true end
+        return nil, 2, "No such file or directory"
+    end
+
+    return nix
 end
 
 -- === global wraps ===
@@ -684,8 +803,8 @@ local function install_preloads(st)
     package.preload["luci.sys"] = function() return make_sys(st) end
     package.preload["luci.model.uci"] = function() return make_uci(st) end
     package.preload["luci.http"] = function() return st.http end
-    package.preload["nixio"] = function() return { fs = make_nixio_fs(st.vfs, st.dirs) } end
-    package.preload["nixio.fs"] = function() return make_nixio_fs(st.vfs, st.dirs) end
+    package.preload["nixio"] = function() return make_nixio(st) end
+    package.preload["nixio.fs"] = function() return make_nixio(st).fs end
     package.preload["luci.jsonc"] = function()
         return { parse = json.parse, stringify = json.stringify }
     end
@@ -729,6 +848,7 @@ function M.begin(opts)
     ST = {
         active = true,
         vfs = {}, dirs = {},
+        guard_state = {}, guard_opens = {},
         fv = opts.fv or {}, env = opts.env or {},
         uci = opts.uci or {},
         uci_failures = opts.uci_failures or {},
@@ -816,8 +936,8 @@ function M.vfs_mode(path)
     return entry and entry.mode
 end
 
-function M.vfs_mkdir(path)
-    if ST then ST.dirs[path] = true end
+function M.vfs_mkdir(path, mtime)
+    if ST then ST.dirs[path] = mtime or true end
 end
 
 function M.vfs_exists(path)

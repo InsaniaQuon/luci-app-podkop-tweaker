@@ -360,8 +360,9 @@ local function update()
     return response
 end
 
-function M.update(restart_id)
-    return require("podkop-tweaker.web_restart").run(restart_id, "theme", update)
-end
+-- The 4.11.0 train runs this pipeline inside the detached theme worker (see
+-- theme_worker.lua). It owns argon-css for the native package/config/CSS
+-- stages only, after network IO; the worker owns the web-update reservation.
+M.run_pipeline = update
 
 return M

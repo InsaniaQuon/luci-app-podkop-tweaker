@@ -58,29 +58,38 @@ local function css_result(response, ok, err, uncertain, info)
     return response
 end
 
+-- A queued/running theme job makes read-only typography observations busy:
+-- mid-migration absence must not surface as first-run defaults, and the CSS
+-- marker state is not stable while a worker reinjects it.
+local function theme_job_active()
+    local active = require("podkop-tweaker.theme_worker").active_job()
+    return active ~= nil
+end
+
 function M.typography()
     if AR.tab_disabled() then
         return { error = "Argon tab is disabled" }
     end
-    return with_typography(function(response)
-        local settings, err, source, info = AR.read_settings()
-        if not settings then
-            response.error = err
-            failure_metadata(response, source, info)
-            return response
-        end
-        local stale, stale_err, uncertain, stale_info = AR.check_stale()
-        if stale == nil then
-            response.error = stale_err
-            failure_metadata(response, uncertain, stale_info)
-            return response
-        end
-        local families = {}
-        for k in pairs(LIB.ARGON_FONT_FAMILIES) do table.insert(families, k) end
-        table.sort(families)
-        return { settings = settings, stale = stale, font_families = families,
-            settings_source = source.settings_source, config_missing = source.config_missing }
-    end)
+    if theme_job_active() then
+        return { error = "A theme update is in progress" }
+    end
+    local settings, err, source, info = AR.read_settings()
+    if not settings then
+        local response = { error = err }
+        failure_metadata(response, source, info)
+        return response
+    end
+    local stale, stale_err, uncertain, stale_info = AR.check_stale()
+    if stale == nil then
+        local response = { error = stale_err or "Cannot read Argon stylesheet status" }
+        failure_metadata(response, uncertain, stale_info)
+        return response
+    end
+    local families = {}
+    for k in pairs(LIB.ARGON_FONT_FAMILIES) do table.insert(families, k) end
+    table.sort(families)
+    return { settings = settings, stale = stale, font_families = families,
+        settings_source = source.settings_source, config_missing = source.config_missing }
 end
 
 function M.typography_save(input)
@@ -196,8 +205,19 @@ function M.theme_check(force_raw)
     return THEME.check(force_raw == true or force_raw == "1")
 end
 
-function M.theme_update(restart_id)
-    return THEME.update(restart_id)
+-- 4.11.0: the synchronous theme pipeline is gone. Requests without the async
+-- marker (old 4.10.5 tabs) fail fast instead of blocking a CGI handler; the
+-- reloaded page drives the queued job protocol with a client-generated ID.
+function M.theme_update(input)
+    input = type(input) == "table" and input or {}
+    if input.async ~= "1" and input.async ~= 1 and input.async ~= true then
+        return { success = false, error = "Reload the Podkop Tweaker page to update the theme" }
+    end
+    return require("podkop-tweaker.theme_worker").admit(input.restart_id)
+end
+
+function M.theme_job_status(id)
+    return require("podkop-tweaker.theme_worker").status(id)
 end
 
 return M

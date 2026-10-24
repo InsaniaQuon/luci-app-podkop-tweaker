@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.10.5 | 22.10.2026 | Translucent overlay clipboard controls, asset revision 1
+-- Podkop Tweaker | v4.11.0 | 23.10.2026 | Crash-safe locks, detached theme worker, unlocked Argon reads
 
-local APP_VERSION = "4.10.5"
+local APP_VERSION = "4.11.0"
 -- Bump when UI assets change within the same unpublished release train.
 local ASSET_REVISION = "1"
 
@@ -259,6 +259,9 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "argon_theme_update"},
         call("api_argon_theme_update")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "argon_theme_job"},
+        call("api_argon_theme_job")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "app_version"},
         call("api_app_version")).leaf = true
@@ -588,7 +591,14 @@ end
 function api_argon_typography_reset() json_api(true, ARG.typography_reset) end
 function api_argon_reinject() json_api(true, ARG.reinject) end
 function api_argon_theme_update()
-    json_api(true, ARG.theme_update, require("luci.http").formvalue("restart_id"))
+    local http = require("luci.http")
+    json_api(true, ARG.theme_update, {
+        async = http.formvalue("async"),
+        restart_id = http.formvalue("restart_id")
+    })
+end
+function api_argon_theme_job()
+    json_api(false, ARG.theme_job_status, require("luci.http").formvalue("id") or "")
 end
 
 function api_tweaker_appearance() json_api(false, ARG.appearance) end

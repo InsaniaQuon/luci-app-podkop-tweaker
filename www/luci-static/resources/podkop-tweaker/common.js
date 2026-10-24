@@ -380,6 +380,101 @@ window.PT = window.PT || {};
 		return id;
 	};
 
+	// Detached theme job flow (4.11.0): admission POST with a client-generated
+	// ID, bounded read-only job observation, then the shared restart
+	// verification. Expiry or a lost response never re-POSTs the mutation; the
+	// caller only refreshes read-only state.
+	PT.runThemeJob = function (cfg) {
+		var id = PT.newOperationId();
+		var generation = 0, done = false, timer = null;
+		var deadline = setTimeout(expired, 600000);
+		function stop() {
+			done = true;
+			clearTimeout(deadline);
+			clearTimeout(timer);
+		}
+		function finish(error, data) {
+			if (done) return;
+			stop();
+			cfg.onTerminal(error, data);
+		}
+		function expired() {
+			finish({ message: 'Theme update status is unknown: observation timed out. The job may still be running; use Refresh later.', kind: 'application', unknown: true, uncertain: true }, null);
+		}
+		function note(text, role) {
+			cfg.status.textContent = text;
+			cfg.status.style.color = PT.color(role || 'info');
+		}
+		PT.postJson(cfg.url, 'async=1&restart_id=' + id, function (resp, error) {
+			if (error) {
+				// A transport, parse or server failure leaves the admission
+				// outcome unknown: the job may already be registered and running.
+				if (error.kind !== 'application') error.unknown = true;
+				finish(error, null);
+				return;
+			}
+			if (!resp || resp.success !== true || resp.queued !== true || resp.restart_id !== id) {
+				finish({ message: (resp && resp.error) || 'The theme update was not accepted', details: resp && resp.details, kind: 'application' }, resp);
+				return;
+			}
+			poll();
+		}, 60000);
+		function poll() {
+			if (done) return;
+			generation++;
+			var current = generation;
+			PT.getJson(cfg.jobUrl + '?id=' + encodeURIComponent(id) + '&_pt=' + Date.now(), function (data, status) {
+				if (done || current !== generation) return;
+				if (status === 401 || status === 403) {
+					finish({ message: 'LuCI session expired or access denied. Sign in, then use Refresh.', kind: 'application', uncertain: true }, null);
+					return;
+				}
+				if (!data || data.error || data.id !== id) {
+					timer = setTimeout(poll, 3000);
+					return;
+				}
+				var result = data.result || {};
+				// Interrupted and start-unconfirmed observations arrive with a
+				// non-terminal raw state; treat them as read-only terminals.
+				if (data.state === 'failed' || data.interrupted === true || data.start_unconfirmed === true) {
+					finish({
+						message: result.error || (data.interrupted === true ? 'Theme worker was interrupted' : 'Theme update failed'),
+						details: result.details, phase: result.phase, partial: result.partial === true,
+						resume_available: result.resume_available === true || data.resume_available === true,
+						unknown: result.unknown === true || data.interrupted === true || data.start_unconfirmed === true, kind: 'application'
+					}, data);
+					return;
+				}
+				if (data.state === 'queued') {
+					note('Starting theme update worker...');
+					timer = setTimeout(poll, 2000);
+					return;
+				}
+				if (data.state === 'running') {
+					note('Updating theme...');
+					timer = setTimeout(poll, 3000);
+					return;
+				}
+				if (data.state === 'completed') {
+					if (data.restart && data.restart.queued !== true) {
+						finish({ message: data.restart.error || 'Theme applied, but the web restart could not be scheduled', details: data.restart.details, kind: 'application' }, data);
+						return;
+					}
+					note('Theme update applied. Waiting for LuCI restart...', 'success');
+					PT.waitForRestart(PT.urls.restartStatus, id, result.new_version || cfg.expectedVersion, function (error) {
+						if (error) { finish(error, null); return; }
+						var next = new URL(window.location.href);
+						next.searchParams.set('_pt_reload', id);
+						if (window.location.replace) window.location.replace(next.href); else window.location.reload();
+					});
+					return;
+				}
+				timer = setTimeout(poll, 3000);
+			}, 30000);
+		}
+		return { cancel: stop };
+	};
+
 	var modalEscapeBound = false;
 	// All close paths share the same optional cleanup; Esc closes the top overlay.
 	// Returns the hide function so callers can close programmatically.

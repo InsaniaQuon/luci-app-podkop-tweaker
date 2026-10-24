@@ -92,6 +92,7 @@ window.PT = {
         tweakerUpdate: '<%=url("admin/services/podkop-tweaker/api/tweaker_git_update")%>',
         checkUpdates: '<%=url("admin/services/podkop-tweaker/api/check_updates")%>',
         argonThemeUpdate: '<%=url("admin/services/podkop-tweaker/api/argon_theme_update")%>',
+        argonThemeJob: '<%=url("admin/services/podkop-tweaker/api/argon_theme_job")%>',
         clearCache: '<%=url("admin/services/podkop-tweaker/api/clear_cache")%>',
         restartStatus: '<%=url("admin/services/podkop-tweaker/api/restart_status")%>'
     }
@@ -380,14 +381,47 @@ window.PT = {
             !(lastData.argon_theme_update_available === true || lastData.argon_theme_resume_available === true)) return;
         var resume = lastData.argon_theme_resume_available === true;
         if (!confirm((resume ? 'Resume the saved Argon theme update?' : 'Update the Argon theme and its installed companion packages?') +
-            '\n\nSettings and typography are preserved (including CSS reinjection).\nThe web interface will restart after completion and the page will reload.')) return;
+            '\n\nSettings and typography are preserved (including CSS reinjection).\nThe update runs in a background worker; the web interface will restart after completion and the page will reload.')) return;
 
         var btn = document.getElementById('ps-argon-update-btn');
         var statusEl = document.getElementById('ps-argon-status');
+        webPending = true;
+        webGeneration++;
+        checkUpdatesBtn.disabled = refreshBtn.disabled = clearCacheBtn.disabled = true;
         if (btn) btn.disabled = true;
         if (statusEl) { statusEl.textContent = resume ? 'Resuming...' : 'Updating...'; statusEl.style.color = PT.color('info'); }
 
-        runWebUpdate(PT.urls.argonThemeUpdate, '', statusEl, btn, lastData && lastData.argon_theme_latest, 'theme');
+        // 4.11.0: a detached worker owns the pipeline. The page only observes
+        // the admitted job and then verifies the restart; a lost response or
+        // timeout never re-POSTs the mutation.
+        PT.runThemeJob({
+            url: PT.urls.argonThemeUpdate,
+            jobUrl: PT.urls.argonThemeJob,
+            status: statusEl,
+            expectedVersion: lastData && lastData.argon_theme_latest,
+            onTerminal: function(error) {
+                webPending = false;
+                checkUpdatesBtn.disabled = refreshBtn.disabled = clearCacheBtn.disabled = false;
+                if (btn) btn.disabled = false;
+                if (error) {
+                    if (statusEl) PT.setErr(statusEl, error.message, error.details);
+                    if (error.unknown) {
+                        var hint = document.createElement('span');
+                        hint.style.display = 'block';
+                        hint.textContent = 'The result is unknown. Use Refresh later to check the saved update state; do not retry automatically.';
+                        hint.style.fontSize = '12px';
+                        hint.style.color = PT.color('warning');
+                        if (statusEl) statusEl.appendChild(hint);
+                    } else if (lastData) {
+                        lastData.argon_theme_resume_available = error.resume_available === true;
+                        if (btn) {
+                            btn.textContent = error.resume_available ? 'Resume Theme Update' : 'Update Theme';
+                            btn.title = error.phase ? 'Failed stage: ' + error.phase : '';
+                        }
+                    }
+                }
+            }
+        });
     }
 
     function doUpdateTweaker(isDowngrade) {
