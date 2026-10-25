@@ -33,7 +33,7 @@ local CLEAR_LOADED_IDS = {
     "podkop-tweaker.diag", "podkop-tweaker.argon", "podkop-tweaker.subsched", "podkop-tweaker.theme", "podkop-tweaker.appearance",
     "podkop-tweaker.net", "podkop-tweaker.archive", "podkop-tweaker.dns_observation", "podkop-tweaker.web_restart",
     "podkop-tweaker.theme_packages", "podkop-tweaker.theme_config", "podkop-tweaker.theme_worker",
-    "podkop-tweaker.bundle", "podkop-tweaker.api_diag", "podkop-tweaker.api_argon",
+    "podkop-tweaker.bundle", "podkop-tweaker.api_diag", "podkop-tweaker.api_argon", "podkop-tweaker.visibility",
     "podkop-tweaker.api_stubby", "podkop-tweaker.stubby_check", "podkop-tweaker.api_podkop", "podkop-tweaker.api_subs",
     "podkop-tweaker.api_singbox", "podkop-tweaker.api_bundle", "podkop-tweaker.api_update",
     "pt-subs-lib", "pt-auto-update", "luci.sys", "luci.model.uci", "luci.http",

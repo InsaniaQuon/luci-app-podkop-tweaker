@@ -1,12 +1,20 @@
--- Podkop Tweaker | v4.10.2 | 17.10.2026 | Checked service application and immutable outbound/Fragment queries
--- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
+-- Podkop Tweaker | v4.12.1 | 24.10.2026 | Fragment visibility guards, typed REALITY outbound facts, pretty patch publication
 
 local H = require("podkop-tweaker.http")
 local SRV = require("podkop-tweaker.services")
 local LIB = require("podkop-tweaker.lib")
+local VIS = require("podkop-tweaker.visibility")
 
 local M = {}
 M.CONFIG_MAX_SIZE = SRV.SINGBOX_MAX_SIZE
+
+-- Hidden Fragment tools refuse these endpoints exactly like the hidden Argon
+-- tab refuses typography. The editor and the generic outbounds enumeration
+-- stay open: they are not Fragment-scoped.
+local function fragment_disabled()
+    if VIS.disabled("fragment_tools") then return { error = "Fragment tools are disabled" } end
+    return nil
+end
 
 function M.read_config()
     H.send_text_file(SRV.SINGBOX_CONFIG, { limit = M.CONFIG_MAX_SIZE, require_nonempty = true })
@@ -58,9 +66,12 @@ if (.outbounds | type) != "array" then error("Config outbounds must be an array"
             and (.tls == null or (.tls | type) == "object")
             and (.tls.enabled == null or (.tls.enabled | type) == "boolean")
             and (.tls.fragment == null or (.tls.fragment | type) == "boolean")
-            and (.tls.record_fragment == null or (.tls.record_fragment | type) == "boolean")) then
+            and (.tls.record_fragment == null or (.tls.record_fragment | type) == "boolean")
+            and (.tls.reality == null or (.tls.reality | type) == "object")
+            and (.tls.reality.enabled == null or (.tls.reality.enabled | type) == "boolean")) then
             {tag: (.tag // ""), type, server: (.server // ""), tls_enabled: (.tls.enabled // false),
-                has_fragment: ((.tls.fragment // false) or (.tls.record_fragment // false))}
+                has_fragment: ((.tls.fragment // false) or (.tls.record_fragment // false)),
+                reality: ((.tls.reality.enabled // false))}
         else error("Invalid outbound shape") end
     ] as $rows | {outbound_count: ($rows | length), outbounds: $rows}
 end
@@ -74,7 +85,10 @@ end
 
 -- jq sees only a private immutable snapshot, never the live configuration path.
 -- Slurp plus the root guard rejects concatenated JSON documents natively too.
-local function query_config(expression, args, error_message)
+-- compact defaults true (enumeration replies stay machine-parsed); patch
+-- publications pass false so jq keeps its default pretty indentation instead
+-- of collapsing the live config into one unreadable line.
+local function query_config(expression, args, error_message, compact)
     local source, read_err = SRV.read_file(SRV.SINGBOX_CONFIG, M.CONFIG_MAX_SIZE)
     if not source then return nil, { success = false, error = "Cannot read config", details = read_err } end
     if not json_object(source) then
@@ -82,8 +96,8 @@ local function query_config(expression, args, error_message)
     end
     local stage, stage_err = SRV.stage_file(SRV.SINGBOX_CONFIG, source, { suffix = ".tmp-read", mode = "600" })
     if not stage then return nil, { success = false, error = "Cannot stage config snapshot", details = stage_err } end
-    local command = "jq -c -e -s" .. (args or "") .. " " .. LIB.shell_escape(JQ_OBJECT .. " | " .. expression) ..
-        " " .. LIB.shell_escape(stage)
+    local command = "jq " .. (compact == false and "" or "-c ") .. "-e -s" .. (args or "") .. " " ..
+        LIB.shell_escape(JQ_OBJECT .. " | " .. expression) .. " " .. LIB.shell_escape(stage)
     local ran, ok, output = pcall(SRV.exec_checked, command)
     local cleaned, cleanup_err = SRV.discard_stage(stage)
     if not cleaned then
@@ -110,7 +124,7 @@ function M.outbounds()
         for key, row in pairs(rows) do
             if type(key) ~= "number" or key < 1 or key > count or key ~= math.floor(key) or type(row) ~= "table"
                 or row.error ~= nil or type(row.tag) ~= "string" or type(row.type) ~= "string" or row.type == "" or type(row.server) ~= "string"
-                or type(row.tls_enabled) ~= "boolean" or type(row.has_fragment) ~= "boolean"
+                or type(row.tls_enabled) ~= "boolean" or type(row.has_fragment) ~= "boolean" or type(row.reality) ~= "boolean"
                 or row.tls_enabled and not row.tag:match("^[a-zA-Z0-9_%-%.]+$") then
                 return { success = false, error = "Invalid outbounds response" }
             end
@@ -122,6 +136,8 @@ function M.outbounds()
 end
 
 function M.patch_fragment(tags_raw, mode_raw, use_fragment_raw, use_record_fragment_raw, fallback_delay_raw)
+    local guard = fragment_disabled()
+    if guard then return guard end
     local json = require("luci.jsonc")
 
     local tags = json.parse(tags_raw or "[]")
@@ -163,7 +179,7 @@ function M.patch_fragment(tags_raw, mode_raw, use_fragment_raw, use_record_fragm
     end
     local function patch_locked()
         local expression = 'if (.outbounds | type) != "array" then error("Config outbounds must be an array") else ' .. jq_expr .. ' end'
-        local patched, source_or_error = query_config(expression, jq_args, "jq patch failed")
+        local patched, source_or_error = query_config(expression, jq_args, "jq patch failed", false)
         if not patched then return source_or_error end
         if not json_object(patched) then return { success = false, error = "jq patch failed", details = "Expected one JSON object" } end
         local current, read_err = SRV.read_file(SRV.SINGBOX_CONFIG, M.CONFIG_MAX_SIZE)
@@ -189,6 +205,8 @@ function M.patch_fragment(tags_raw, mode_raw, use_fragment_raw, use_record_fragm
 end
 
 function M.wrapper_status()
+    local guard = fragment_disabled()
+    if guard then return guard end
     local original, original_err, original_errno = SRV.read_file("/etc/init.d/podkop.orig", LIB.UCI_MAX_SIZE)
     if not original and original_errno ~= 2 then return { error = "Cannot read wrapper original", details = original_err } end
     local installed = original ~= nil
@@ -275,6 +293,8 @@ local function typed_fragment_settings(sections, missing)
 end
 
 function M.wrapper_toggle(action, fragment_raw, record_fragment_raw, fallback_delay_raw)
+    local guard = fragment_disabled()
+    if guard then return guard end
     if action ~= "enable" and action ~= "disable" and action ~= "reinstall" then
         return { error = "Invalid action" }
     end
@@ -329,6 +349,8 @@ function M.wrapper_toggle(action, fragment_raw, record_fragment_raw, fallback_de
 end
 
 function M.fragment_settings()
+    local guard = fragment_disabled()
+    if guard then return guard end
     local sections, read_err, missing = read_fragment_config()
     if not sections then return { success = false, error = "Cannot read Fragment settings", details = read_err } end
     local settings, settings_err = typed_fragment_settings(sections, missing)

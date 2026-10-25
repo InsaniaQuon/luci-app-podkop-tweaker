@@ -30,6 +30,9 @@ local function begin_bundle(opts)
     opts.sys = opts.sys or {}
     table.insert(opts.sys, { match = "sing-box check", out = (opts.check or "") .. "\nPT_EXIT:" .. (opts.check and "1" or "0") .. "\n" })
     table.insert(opts.sys, { match = function(command)
+        return command:find("ubus", 1, true) and command:find("PT_EXIT:", 1, true)
+    end, out = '{"sing-box":{"instances":{}}}\nPT_EXIT:0\n' })
+    table.insert(opts.sys, { match = function(command)
         return command:find("pidof ", 1, true) and command:find("PT_EXIT:", 1, true)
     end, out = "\nPT_EXIT:1\n" })
     table.insert(opts.sys, { match = function(command)
@@ -46,6 +49,9 @@ local function begin_bundle(opts)
     local uci = require("luci.model.uci").cursor()
     uci:set("podkop-tweaker", "settings", "settings")
     uci:set("podkop-tweaker", "settings", "show_argon_tab", "1")
+    if not opts.fragment_hidden then
+        uci:set("podkop-tweaker", "settings", "show_fragment_tools", "1")
+    end
     return H.reload("podkop-tweaker.api_bundle")
 end
 
@@ -242,6 +248,145 @@ describe("api_bundle.import application", function()
         assert.is_nil(uci:get("argon", "typography", "font_size"))
         -- css not injected
         assert.falsy(H.vfs_read(CSS):find("Podkop Tweaker Typography", 1, true))
+    end)
+
+    it("hidden fragment tools: fragment item silently skipped in the transport", function()
+        local BND = begin_bundle({ fragment_hidden = true })
+        H.vfs_write("/etc/config/podkop-fragment", FRAG_CFG)
+        local r = BND.import(bundle_str({
+            fragment = { content = FRAG_CFG }
+        }), nil, nil)
+        assert.falsy(r.results.fragment)
+        assert.same({ "fragment" }, r.skipped, "the skipped transport still carries the name for older tabs")
+        assert.equal(FRAG_CFG, H.vfs_read("/etc/config/podkop-fragment"))
+    end)
+
+    describe("api_bundle singbox-uci", function()
+        local SB_UCI_PATH = "/etc/config/sing-box"
+        local SB_UCI_OK = "config sing-box 'main'\n\toption enabled '1'\n\toption user 'root'\n" ..
+            "\toption conffile '/etc/sing-box/config.json'\n"
+        local PODKOP_WITH_PATH = "config settings 'settings'\n\toption config_path '/etc/sing-box/config.json'\n"
+
+        local function begin_uci(opts)
+            opts = opts or {}
+            opts.podkop_cfg = opts.podkop_cfg or PODKOP_WITH_PATH
+            local BND = begin_bundle(opts)
+            H.vfs_write("/etc/config/podkop", opts.podkop_cfg)
+            return BND
+        end
+
+        it("standalone item applies against the live podkop config and restarts sing-box", function()
+            local BND = begin_uci({})
+            local r = BND.import(bundle_str({ ["singbox-uci"] = { content = SB_UCI_OK } }), nil, nil)
+            assert.is_true(r.results["singbox-uci"].ok, r.results["singbox-uci"].error)
+            assert.equal(SB_UCI_OK, H.vfs_read(SB_UCI_PATH))
+            assert.truthy(H.vfs_read(SB_UCI_PATH .. ".bundle-backup") or H.vfs_read(SB_UCI_PATH))
+            assert.equal(1, restart_count("sing-box"))
+            assert.equal(0, restart_count("podkop"))
+            assert.is_true(r.restarts.singbox.success, "restart metadata is attributed to the item result")
+        end)
+
+        it("uci + json together produce one sing-box restart", function()
+            local BND = begin_uci({})
+            local r = BND.import(bundle_str({
+                singbox = { content = SB_JSON },
+                ["singbox-uci"] = { content = SB_UCI_OK }
+            }), nil, nil)
+            assert.is_true(r.results.singbox.ok)
+            assert.is_true(r.results["singbox-uci"].ok)
+            assert.equal(1, restart_count("sing-box"))
+            assert.equal(0, restart_count("podkop"))
+            assert.is_true(r.results["singbox-uci"].restarting, "both attributed items carry the shared restart")
+        end)
+
+        it("podkop + uci restart both services under the uniform rule", function()
+            local BND = begin_uci({})
+            local r = BND.import(bundle_str({
+                podkop = { content = PODKOP_WITH_PATH },
+                ["singbox-uci"] = { content = SB_UCI_OK }
+            }), nil, nil)
+            assert.is_true(r.results.podkop.ok)
+            assert.is_true(r.results["singbox-uci"].ok)
+            assert.equal(1, restart_count("podkop"))
+            assert.equal(1, restart_count("sing-box"))
+        end)
+
+        it("unchanged uci applies without a restart request", function()
+            local BND = begin_uci({})
+            H.vfs_write(SB_UCI_PATH, SB_UCI_OK)
+            local r = BND.import(bundle_str({ ["singbox-uci"] = { content = SB_UCI_OK } }), nil, nil)
+            assert.is_true(r.results["singbox-uci"].ok)
+            assert.falsy(r.restarts.singbox)
+            assert.equal(0, restart_count("sing-box"))
+        end)
+
+        it("conffile mismatch is rejected with both paths and the reference source", function()
+            local foreign = "config sing-box 'main'\n\toption enabled '1'\n\toption user 'root'\n" ..
+                "\toption conffile '/tmp/custom.json'\n"
+            local BND = begin_uci({})
+            local r = BND.import(bundle_str({ ["singbox-uci"] = { content = foreign } }), nil, nil)
+            assert.is_false(r.results["singbox-uci"].ok)
+            assert.matches("conffile '/tmp/custom.json'", r.results["singbox-uci"].error)
+            assert.matches("config_path '/etc/sing%-box/config%.json'", r.results["singbox-uci"].error)
+            assert.matches("current router configuration", r.results["singbox-uci"].error)
+            assert.is_nil(H.vfs_read(SB_UCI_PATH))
+            assert.equal(0, restart_count("sing-box"))
+        end)
+
+        it("enabled/user/config_path requirements are explicit rejections, not healing", function()
+            local cases = {
+                { content = "config sing-box 'main'\n\toption user 'root'\n\toption conffile '/etc/sing-box/config.json'\n",
+                    error_pattern = "enabled '1'" },
+                { content = "config sing-box 'main'\n\toption enabled '0'\n\toption conffile '/etc/sing-box/config.json'\n",
+                    error_pattern = "enabled '1'" },
+                { content = "config sing-box 'main'\n\toption enabled '1'\n\toption user 'sing-box'\n\toption conffile '/etc/sing-box/config.json'\n",
+                    error_pattern = "user 'root'" },
+                { content = "config sing-box 'main'\n\toption enabled '1'\n\toption user 'root'\n",
+                    error_pattern = "do not set conffile" }
+            }
+            for _, case in ipairs(cases) do
+                local BND = begin_uci({})
+                local r = BND.import(bundle_str({ ["singbox-uci"] = { content = case.content } }), nil, nil)
+                assert.is_false(r.results["singbox-uci"].ok)
+                assert.matches(case.error_pattern, r.results["singbox-uci"].error)
+                assert.is_nil(H.vfs_read(SB_UCI_PATH))
+                H.finish()
+            end
+        end)
+
+        it("missing podkop config_path is a rejection, never an invented default", function()
+            local BND = begin_uci({ podkop_cfg = "config settings 'settings'\n\toption dns_server '1.1.1.1'\n" })
+            local r = BND.import(bundle_str({ ["singbox-uci"] = { content = SB_UCI_OK } }), nil, nil)
+            assert.is_false(r.results["singbox-uci"].ok)
+            assert.matches("config_path is not set", r.results["singbox-uci"].error)
+            assert.is_nil(H.vfs_read(SB_UCI_PATH))
+        end)
+
+        it("selected but failed podkop item skips the dependent uci item", function()
+            local BND = begin_uci({})
+            local r = BND.import(bundle_str({
+                podkop = { content = "invalid uci garbage" },
+                ["singbox-uci"] = { content = SB_UCI_OK }
+            }), nil, nil)
+            assert.is_false(r.results.podkop.ok)
+            assert.is_false(r.results["singbox-uci"].ok)
+            assert.matches("Podkop configuration was not applied", r.results["singbox-uci"].error)
+            assert.is_nil(H.vfs_read(SB_UCI_PATH))
+            assert.equal(0, restart_count("sing-box"))
+        end)
+
+        it("selected and applied podkop item is the reference source", function()
+            local custom = "config settings 'settings'\n\toption config_path '/etc/sing-box/custom.json'\n"
+            local aligned = "config sing-box 'main'\n\toption enabled '1'\n\toption user 'root'\n" ..
+                "\toption conffile '/etc/sing-box/custom.json'\n"
+            local BND = begin_uci({})
+            local r = BND.import(bundle_str({
+                podkop = { content = custom },
+                ["singbox-uci"] = { content = aligned }
+            }), nil, nil)
+            assert.is_true(r.results["singbox-uci"].ok, r.results["singbox-uci"].error)
+            assert.equal(aligned, H.vfs_read(SB_UCI_PATH))
+        end)
     end)
 
     it("invalid positional subs data -> per-item validation error", function()
@@ -1016,7 +1161,7 @@ describe("bundle uncertainty and primary failure preservation", function()
             local details = "native restart output\n" .. string.rep("restart diagnostic\n", 800) .. "last restart detail"
             local api = begin_bundle({
                 sys = {
-                    { match = "pidof ", out = "321\nPT_EXIT:0\n" },
+                    { match = "ubus", out = '{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":321}}}}\nPT_EXIT:0\n' },
                     { match = "/etc/init.d/podkop restart", out = function()
                         -- Fail only the finishing release, after the write
                         -- phase already released the resource cleanly.

@@ -40,6 +40,10 @@ Author: InsaniaQuon
                     <td class="ps-sysinfo-label">Sing-box</td>
                     <td class="ps-sysinfo-value" id="ps-info-singbox">-</td>
                 </tr>
+                <tr id="ps-row-sb-features" style="display:none;">
+                    <td class="ps-sysinfo-label">Sing-box Features</td>
+                    <td class="ps-sysinfo-value" id="ps-info-sb-features" style="white-space:normal;word-break:break-word;">-</td>
+                </tr>
                 <tr id="ps-row-argon">
                     <td class="ps-sysinfo-label">Argon Theme</td>
                     <td class="ps-sysinfo-value" id="ps-info-argon">-</td>
@@ -160,6 +164,15 @@ window.PT = {
         return false;
     }
 
+    // Derived build label from the binary's Tags line; describes the binary,
+    // not the installed package. Unknown/absent tags carry no label.
+    function buildLabel(data) {
+        if (typeof data.sing_box_tags !== 'string' || !data.sing_box_tags) return '';
+        if (data.sing_box_tags.indexOf('podkop_slim') >= 0) return ' (Podkop engine, slim)';
+        if (data.sing_box_tags.indexOf('podkop_full') >= 0) return ' (Podkop engine, full)';
+        return ' (upstream build)';
+    }
+
     function renderError(msg) {
         loadingEl.style.display = 'none';
         tableEl.style.display = 'none';
@@ -197,7 +210,16 @@ window.PT = {
 
         document.getElementById('ps-info-luci').textContent = data.luci_app_version || 'unknown';
         document.getElementById('ps-info-stubby').textContent = data.stubby_version || 'unknown';
-        document.getElementById('ps-info-singbox').textContent = data.sing_box_version || 'unknown';
+        document.getElementById('ps-info-singbox').textContent = (data.sing_box_version || 'unknown') + buildLabel(data);
+        // Additive build facts: the Features line names capabilities the fork
+        // adds (absence is normal for upstream sing-box, not a package name).
+        var featuresRow = document.getElementById('ps-row-sb-features');
+        if (typeof data.sing_box_features === 'string' && data.sing_box_features) {
+            document.getElementById('ps-info-sb-features').textContent = data.sing_box_features;
+            featuresRow.style.display = '';
+        } else {
+            featuresRow.style.display = 'none';
+        }
         document.getElementById('ps-info-os').textContent = data.openwrt_version || 'unknown';
         document.getElementById('ps-info-device').textContent = data.device_model || 'unknown';
 

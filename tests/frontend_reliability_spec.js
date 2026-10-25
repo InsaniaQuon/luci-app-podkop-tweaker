@@ -95,8 +95,12 @@ function setup(view, urls, transport = {}) {
         }
         if (view === 'singbox') get('diff-parent').appendChild(get('ps-diff-stats'));
     }
-    const scripts = [...source.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
-    vm.runInContext(scripts.at(-1)[1], context);
+    // Execute every inline page script that is plain JavaScript: the LuCI
+    // bootstrap keeps its <%= %> placeholders and optional blocks (for example
+    // the Fragment tools) live in their own script tags.
+    const scripts = [...source.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)]
+        .filter(match => match[1].trim() && !match[1].includes('<%'));
+    for (const match of scripts) vm.runInContext(match[1], context);
     return { get, window, context, requests, events, FormData,
         escape() { for (const fn of documentEvents.keydown || []) fn({ key: 'Escape', preventDefault() {}, stopPropagation() {} }); },
         last(url) { return requests.filter(r => r.url === url).at(-1); },
@@ -139,7 +143,7 @@ const typographySettings = { font_size: '18', font_family: 'Verdana', font_famil
     line_height: '1.7', letter_spacing: '0.2', menu_font_size: '1.1', menu_padding: '14' };
 const singboxUrls = { read: '/read', save: '/save', status: '/status', rollback: '/rollback', toggle: '/toggle',
     outbounds: '/outbounds', patchFragment: '/patch', wrapperStatus: '/wrapper/status', wrapperToggle: '/wrapper/toggle', fragmentSettings: '/fragment/settings' };
-const typedOutbound = { tag: 'proxy', type: 'vless', server: '<img src=x onerror=literal()>', tls_enabled: true, has_fragment: false };
+const typedOutbound = { tag: 'proxy', type: 'vless', server: '<img src=x onerror=literal()>', tls_enabled: true, has_fragment: false, reality: false };
 const formReadFailures = [
     { name: 'network', run: r => r.onerror() }, { name: 'timeout', run: r => r.ontimeout() }, { name: 'abort', run: r => r.abort() },
     ...[null, [], {}, '<html>LuCI login</html>', { error: 'Current settings cannot be read', details: '<script>complete literal IO details</script>\n' + 'read failed\n'.repeat(100) }]
@@ -413,6 +417,8 @@ const invalidOutbounds = [null, [], {}, { outbounds: [] }, { outbound_count: '0'
     { outbound_count: 1, outbounds: [{ ...typedOutbound, error: 'Enumeration failed for this entry' }] },
     { outbound_count: 1, outbounds: [{ ...typedOutbound, server: {} }] },
     { outbound_count: 1, outbounds: [{ ...typedOutbound, has_fragment: 1 }] },
+    { outbound_count: 1, outbounds: [{ ...typedOutbound, reality: 'yes' }] },
+    { outbound_count: 1, outbounds: [{ tag: 'proxy', type: 'vless', server: 's', tls_enabled: true, has_fragment: false }] },
     { outbound_count: 1, outbounds: [{ ...typedOutbound, tls_enabled: false, tag: null }] },
     { outbound_count: 1, outbounds: [{ ...typedOutbound, tag: 'proxy%invalid' }] },
     { outbound_count: 1, outbounds: [{ ...typedOutbound, tag: '\" onclick=literal()' }] },
@@ -438,7 +444,7 @@ for (const failure of [...formReadFailures, ...invalidOutbounds.map(data => ({ n
     assert.match(html, /&lt;img src=x onerror=literal\(\)&gt;/);
     assert.doesNotMatch(html, /<img|<script/);
 }
-for (const outbounds of [[], {}, [{ tag: '', type: 'direct', server: '', tls_enabled: false, has_fragment: false }], [{ tag: 'direct', type: 'direct', server: '', tls_enabled: false, has_fragment: false }]]) {
+for (const outbounds of [[], {}, [{ tag: '', type: 'direct', server: '', tls_enabled: false, has_fragment: false, reality: false }], [{ tag: 'direct', type: 'direct', server: '', tls_enabled: false, has_fragment: false, reality: false }]]) {
     const s = setup('singbox', singboxUrls); s.get('ps-patch-btn').click();
     s.last('/outbounds').reply({ outbound_count: Array.isArray(outbounds) ? outbounds.length : 0, outbounds });
     assert.equal(s.get('ps-patch-list').textContent, 'No TLS outbounds found.', 'valid empty/non-TLS result is distinct from a failed read');

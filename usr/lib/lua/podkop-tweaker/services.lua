@@ -6,9 +6,13 @@ M.stubby = { config = "/etc/config/stubby", backup = "/etc/config/stubby.auto-ba
 M.singbox = { config = "/etc/sing-box/config.json", backup = "/etc/sing-box/config.json.auto-backup", restart_cmd = "/etc/init.d/sing-box restart 2>&1" }
 M.SINGBOX_CONFIG, M.SINGBOX_BACKUP = M.singbox.config, M.singbox.backup
 M.SINGBOX_MAX_SIZE = 2097152
-M.ops = { podkop = { svc = M.podkop, init = "podkop", pid = "sing-box" },
+-- procd_service switches service_status from the legacy pidof census to the
+-- procd instance identity. sing-box needs it: "sing-box check"/"decode-link"
+-- share the binary name with the service process. stubby keeps pidof because
+-- its package instance naming is not verified on the target router.
+M.ops = { podkop = { svc = M.podkop, init = "podkop", pid = "sing-box", procd_service = "sing-box" },
     stubby = { svc = M.stubby, init = "stubby", pid = "stubby" },
-    singbox = { svc = M.singbox, init = "sing-box", pid = "sing-box" } }
+    singbox = { svc = M.singbox, init = "sing-box", pid = "sing-box", procd_service = "sing-box" } }
 M.SUBS_FILE = "/etc/config/podkop-tweaker-subs.json"
 M.UPDATE_LOG_FILE, M.UPDATE_LOG_MAX = "/etc/config/pt-update.log", 25
 M.LOCK_ROOT = "/var/lock"
@@ -100,6 +104,52 @@ function M.read_file(path, limit)
     if not content then return nil, read_err, 5 end
     if not closed then return nil, "Cannot close file: " .. tostring(close_err), 5 end
     return content
+end
+
+-- Bounded single-shot execution for short status queries. A BusyBox timeout
+-- wrapper bounds the process lifetime, so a hung command cannot block the read
+-- or the close; read_stream bounds the captured bytes. Exit 124 is a known
+-- timeout failure. Output truncated past the bound loses the final marker and
+-- is unknown per the shared ST2 contract; the command is never replayed.
+function M.exec_bounded(command, options)
+    options = options or {}
+    local seconds = math.max(1, math.min(30, math.floor(tonumber(options.timeout) or 3)))
+    local limit = math.max(256, math.min(65536, math.floor(tonumber(options.limit) or 16384)))
+    local failures = {}
+    local function failed(stage, err, errno, exception)
+        failures[#failures + 1] = { stage = stage, error = tostring(err or "No result returned"),
+            errno = errno, exception = exception or nil }
+    end
+    local function unknown(raw)
+        local details = type(raw) == "string" and raw or ""
+        for _, failure in ipairs(failures) do
+            local message = "Command outcome is unknown: " .. failure.stage ..
+                (failure.exception and " exception: " or " failed: ") .. failure.error ..
+                (failure.errno ~= nil and (" (errno=" .. tostring(failure.errno) .. ")") or "")
+            details = details .. (details ~= "" and "\n" or "") .. message
+        end
+        return false, details, nil, { unknown = true, errors = failures }
+    end
+    local opened, pipe, open_err, open_errno = pcall(function()
+        return io.popen("( timeout " .. seconds .. " " .. command ..
+            " ) </dev/null 2>&1; printf '\\nPT_EXIT:%s\\n' \"$?\"", "r")
+    end)
+    if not opened then failed("open", pipe, nil, true); return unknown() end
+    if not pipe then failed("open", open_err, open_errno); return unknown() end
+    local read, raw, read_err = pcall(function() return M.read_stream(pipe, limit + 64) end)
+    if not read then failed("read", raw, nil, true); raw = nil
+    elseif type(raw) ~= "string" then failed("read", read_err or "Bounded read did not return complete text") end
+    local close, closed, close_err, close_errno = pcall(function() return pipe:close() end)
+    if not close then failed("close", closed, nil, true)
+    elseif not closed then failed("close", close_err, close_errno) end
+    if #failures > 0 then return unknown(type(raw) == "string" and raw or nil) end
+    local details, code = raw:match("^(.*)\nPT_EXIT:([0-9]+)\n$")
+    local number = code and #code <= 3 and tonumber(code) or nil
+    if not number or number > 255 or tostring(number) ~= code then
+        failed("marker", "Missing or invalid final PT_EXIT marker")
+        return unknown(raw)
+    end
+    return number == 0, details, number
 end
 
 -- Low-level byte writer. Production callers use it only for reserved stages;
@@ -627,19 +677,7 @@ local function process_ops(value)
     return M.ops[name]
 end
 
-function M.service_status(value)
-    local ops = process_ops(value)
-    if not ops or type(ops.pid) ~= "string" or not ops.pid:match("^[A-Za-z0-9_.%-]+$") then return { error = "Unknown service process" } end
-    local ok, output, code = M.exec_checked("pidof " .. LIB.shell_escape(ops.pid) .. " 2>/dev/null")
-    if code == 1 and not output:match("%S") then return { running = false } end
-    if not ok then return { error = "Cannot query service process", details = output } end
-    if output:gsub("%d", ""):match("%S") then return { error = "Invalid service process response" } end
-    local pid
-    for digits in output:gmatch("%d+") do
-        local n = tonumber(digits)
-        if n > 0 and n <= 2147483647 and (not pid or n < pid) then pid = n end
-    end
-    if not pid then return { error = "Empty service process response" } end
+local function instance_identity(pid)
     local response = { running = true, pid = tostring(pid) }
     local stat, err = M.read_file("/proc/" .. pid .. "/stat", 4096)
     local fields = stat and stat:match("^%d+ %b() (.+)$")
@@ -650,6 +688,60 @@ function M.service_status(value)
     end
     if not response.instance then response.identity_error = err or "Cannot read service process identity" end
     return response
+end
+
+-- procd instance identity: exactly one running instance identifies the service
+-- process; a response without a running instance is a known stop; ambiguity,
+-- timeouts and malformed data are unknown, never a guessed PID.
+local function procd_status(ops)
+    if type(ops.procd_service) ~= "string" or not ops.procd_service:match("^[A-Za-z0-9_.%-]+$") then
+        return { error = "Unknown service process" }
+    end
+    local query = "ubus -t 3 call service list " .. LIB.shell_escape('{"name":"' .. ops.procd_service .. '"}')
+    local ok, output = M.exec_bounded(query, { timeout = 3 })
+    if not ok then return { error = "Cannot query service process", details = output } end
+    local parsed
+    local ran, candidate = pcall(function() return require("luci.jsonc").parse(output) end)
+    if ran and type(candidate) == "table" then parsed = candidate end
+    if not parsed then return { error = "Invalid service process response", details = output } end
+    local entry = parsed[ops.procd_service]
+    if type(entry) ~= "table" then return { running = false } end
+    if entry.instances ~= nil and type(entry.instances) ~= "table" then
+        return { error = "Invalid service process response" }
+    end
+    local instances = type(entry.instances) == "table" and entry.instances or {}
+    local pid, running = nil, 0
+    for _, instance in pairs(instances) do
+        if type(instance) ~= "table" then return { error = "Invalid service process response" } end
+        if instance.running == true then
+            local number = instance.pid
+            if type(number) ~= "number" or number <= 0 or number > 2147483647 or number ~= math.floor(number) then
+                return { error = "Invalid service process response" }
+            end
+            running = running + 1
+            pid = number
+        end
+    end
+    if running == 0 then return { running = false } end
+    if running > 1 then return { error = "Ambiguous service process response" } end
+    return instance_identity(pid)
+end
+
+function M.service_status(value)
+    local ops = process_ops(value)
+    if not ops or type(ops.pid) ~= "string" or not ops.pid:match("^[A-Za-z0-9_.%-]+$") then return { error = "Unknown service process" } end
+    if ops.procd_service then return procd_status(ops) end
+    local ok, output, code = M.exec_checked("pidof " .. LIB.shell_escape(ops.pid) .. " 2>/dev/null")
+    if code == 1 and not output:match("%S") then return { running = false } end
+    if not ok then return { error = "Cannot query service process", details = output } end
+    if output:gsub("%d", ""):match("%S") then return { error = "Invalid service process response" } end
+    local pid
+    for digits in output:gmatch("%d+") do
+        local n = tonumber(digits)
+        if n > 0 and n <= 2147483647 and (not pid or n < pid) then pid = n end
+    end
+    if not pid then return { error = "Empty service process response" } end
+    return instance_identity(pid)
 end
 
 function M.restart_service(value)

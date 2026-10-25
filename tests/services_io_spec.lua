@@ -48,6 +48,10 @@ local function begin(opts)
             fixture.restarts[#fixture.restarts + 1] = command
             return opts.restart_output or checked_output("", 0)
         end },
+        { match = "ubus", out = function(command)
+            if opts.pid_output then return opts.pid_output end
+            return checked_output('{"sing-box":{"instances":{}}}', 0)
+        end },
         { match = "pidof ", out = function(command)
             return opts.pid_output or (command:find("PT_EXIT:", 1, true) and checked_output("", 1) or "")
         end },
@@ -86,8 +90,12 @@ after_each(function()
 end)
 
 describe("observed service-toggle outcomes", function()
-    for _, case in ipairs({ { action = "start", pid = checked_output("", 1), running = false },
-        { action = "stop", pid = checked_output("55", 0), running = true } }) do
+    local function procd_running(pid)
+        return checked_output('{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":' ..
+            pid .. '}}}}', 0)
+    end
+    for _, case in ipairs({ { action = "start", pid = checked_output('{"sing-box":{"instances":{}}}', 0), running = false },
+        { action = "stop", pid = procd_running(55), running = true } }) do
         it("does not confirm " .. case.action .. " when the checked command leaves the opposite observed state", function()
             local S = begin({ pid_output = case.pid })
             H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
@@ -445,7 +453,8 @@ describe("checked restart certainty and prior process facts", function()
     }) do
         local test = case
         it("classifies an " .. test.name .. " restart without discarding the previous instance", function()
-            local S, fixture = begin({ pid_output = checked_output("55", 0), restart_output = test.output })
+            local S, fixture = begin({ pid_output = checked_output('{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":55}}}}', 0),
+                restart_output = test.output })
             H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
             local response = S.restart_service("singbox")
             assert.equal(test.code == 0, response.success)
@@ -477,9 +486,9 @@ describe("checked restart certainty and prior process facts", function()
     end
 
     for _, case in ipairs({
-        { name = "known absence", pid = checked_output("", 1), running = false, known = true },
+        { name = "known absence", pid = checked_output('{"sing-box":{"instances":{}}}', 0), running = false, known = true },
         { name = "failed process query", pid = checked_output("cannot query", 2), known = false },
-        { name = "unreadable process identity", pid = checked_output("55", 0), running = true, known = false }
+        { name = "unreadable process identity", pid = checked_output('{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":55}}}}', 0), running = true, known = false }
     }) do
         local test = case
         it("retains " .. test.name .. " on an unknown restart outcome", function()
@@ -504,7 +513,8 @@ describe("checked restart certainty and prior process facts", function()
         }) do
             local test = case
             it("keeps " .. requested .. " " .. test.name .. " separate from an accepted command", function()
-                local S = begin({ toggle_output = test.output, pid_output = checked_output("55", 0) })
+                local S = begin({ toggle_output = test.output,
+                    pid_output = checked_output('{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":55}}}}', 0) })
                 H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
                 local response = S.service_toggle("singbox", requested)
                 assert.is_false(response.success)

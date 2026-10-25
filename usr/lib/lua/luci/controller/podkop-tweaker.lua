@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.11.0 | 23.10.2026 | Crash-safe locks, detached theme worker, unlocked Argon reads
+-- Podkop Tweaker | v4.12.1 | 24.10.2026 | Podkop-engine polish: derived build label, pretty patch output
 
-local APP_VERSION = "4.11.0"
+local APP_VERSION = "4.12.1"
 -- Bump when UI assets change within the same unpublished release train.
 local ASSET_REVISION = "1"
 
@@ -305,6 +305,7 @@ local function render_page(template_name, extra)
         asset_version = asset_version,
         csrf_token = H.ensure_csrf_token(),
         show_argon = (uci:get("podkop-tweaker", "settings", "show_argon_tab") == "1"),
+        show_fragment = (uci:get("podkop-tweaker", "settings", "show_fragment_tools") == "1"),
         active = template_name,
         pt_theme = theme,
         pt_theme_mode = mode,

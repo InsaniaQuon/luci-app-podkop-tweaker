@@ -70,7 +70,7 @@ local function begin_subs(opts)
     opts.uci = copy_uci(opts.uci or UCI_SEED)
     local network = opts.popen
     local checked = opts.sys or {}
-    checked[#checked + 1] = { match = "pidof 'sing-box'", out = "\nPT_EXIT:1\n" }
+    checked[#checked + 1] = { match = "ubus", out = '{"sing-box":{"instances":{}}}\nPT_EXIT:0\n' }
     checked[#checked + 1] = { match = "/etc/init.d/podkop restart", out = "\nPT_EXIT:0\n" }
     checked[#checked + 1] = { match = "crontab ", out = "\nPT_EXIT:0\n" }
     checked[#checked + 1] = { match = "(mkdir -p /etc/hotplug.d/iface)", out = "\nPT_EXIT:0\n" }
@@ -950,7 +950,7 @@ describe("subscription release failures preserve actual outcomes", function()
         it("keeps checked metadata and primary diagnostics after " .. case.name .. " and release failure", function()
             local options = mktemp_world(fresh)
             options.sys = {
-                { match = "pidof ", out = "55\nPT_EXIT:0\n" },
+                { match = "ubus", out = '{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":55}}}}\nPT_EXIT:0\n' },
                 { match = "/etc/init.d/podkop restart", out = function()
                     H.state().failures[podkop_lock] = { rmdir = true }
                     return case.output

@@ -1,16 +1,16 @@
--- Podkop Tweaker | bundle import/export logic
--- Author: InsaniaQuon
+-- Podkop Tweaker | v4.12.0 | 24.10.2026 | Bundle logic with engine service settings item
 
 local LIB = require("podkop-tweaker.lib")
 local SRV = require("podkop-tweaker.services")
 local ARGON = require("podkop-tweaker.argon")
+local VIS = require("podkop-tweaker.visibility")
 local SCHED = require("podkop-tweaker.subsched")
 
 local S = require("pt-subs-lib")
 
 local M = {}
 
-M.ITEMS = { "podkop", "stubby", "singbox", "fragment", "argon", "tweaker", "subs" }
+M.ITEMS = { "podkop", "stubby", "singbox", "singbox-uci", "fragment", "argon", "tweaker", "subs" }
 
 local UCI_LIMIT = 1048576
 -- Podkop is required by the application. Optional components may be absent on
@@ -20,6 +20,7 @@ local EXPORT_FILES = {
     podkop = { path = SRV.podkop.config, limit = UCI_LIMIT },
     stubby = { path = SRV.stubby.config, limit = UCI_LIMIT, optional = true },
     singbox = { path = SRV.SINGBOX_CONFIG, limit = SRV.SINGBOX_MAX_SIZE, optional = true },
+    ["singbox-uci"] = { path = "/etc/config/sing-box", limit = UCI_LIMIT, optional = true },
     fragment = { path = "/etc/config/podkop-fragment", limit = UCI_LIMIT, optional = true },
     tweaker = { path = "/etc/config/podkop-tweaker", limit = UCI_LIMIT, optional = true }
 }
@@ -36,8 +37,12 @@ function M.read_file(path, limit)
 end
 
 -- item | nil,error,{status,path} | nil,nil,{reason,path,optional}.
--- Hidden Argon is deliberately invisible, rather than an export failure.
+-- Hidden Argon and hidden Fragment tools are deliberately invisible, rather
+-- than export failures.
 function M.export_item(name)
+    if (name == "argon" or name == "fragment") and VIS.disabled(name == "argon" and "argon_tab" or "fragment_tools") then
+        return nil
+    end
     local file = EXPORT_FILES[name]
     if file then
         local content, err, errno = M.read_file(file.path, file.limit)
@@ -336,6 +341,117 @@ local function apply_uci(name, path, key, content, env)
     end)
 end
 
+-- Options of one named UCI section. uci_statements returns values without
+-- their quotes, so bare strings compare directly.
+local function uci_section_options(content, section_type, section_name)
+    local statements, err = LIB.uci_statements(content, true)
+    if not statements then return nil, err end
+    local in_section, options = false, {}
+    for _, statement in ipairs(statements) do
+        local tokens = statement.tokens
+        if tokens[1] == "config" then
+            if tokens[2] == section_type and (section_name == nil or tokens[3] == section_name) then
+                in_section = true
+            elseif in_section then
+                in_section = false
+            end
+        elseif in_section and tokens[1] == "option" and type(tokens[2]) == "string" and type(tokens[3]) == "string" then
+            options[tokens[2]] = tokens[3]
+        end
+    end
+    return options
+end
+
+-- Reference conffile for the restored engine service settings. When the same
+-- import selects the Podkop item, the reference is the applied file and a
+-- failed/uncertain Podkop application skips this dependent item outright;
+-- otherwise it is the verified current router file. No invented default:
+-- an absent config_path is rejected, not guessed.
+local function singbox_reference_path(env)
+    local source
+    if env.podkop_selected then
+        if env.podkop_applied ~= true then
+            return nil, "Podkop configuration was not applied; sing-box service settings skipped"
+        end
+        source = "bundle podkop item"
+    else
+        source = "current router configuration"
+    end
+    local content, read_err = M.read_file("/etc/config/podkop", UCI_LIMIT)
+    if not content then
+        return nil, "Cannot read Podkop configuration: " .. tostring(read_err or "/etc/config/podkop")
+    end
+    local valid, validation_err = LIB.validate_uci_config(content)
+    if not valid then return nil, "Cannot parse Podkop configuration: " .. tostring(validation_err) end
+    local settings, settings_err = uci_section_options(content, "settings", nil)
+    if not settings then return nil, "Cannot parse Podkop configuration: " .. tostring(settings_err) end
+    local path = settings.config_path
+    if type(path) ~= "string" or path == "" then
+        return nil, "Podkop config_path is not set; sing-box service settings skipped"
+    end
+    return path, nil, source
+end
+
+local function apply_singbox_uci(content, env)
+    local valid, validation_err = LIB.validate_uci_config(content)
+    if not valid then return false, validation_err end
+    local main, main_err = uci_section_options(content, "sing-box", "main")
+    if not main then return false, "Cannot parse sing-box service settings: " .. tostring(main_err) end
+    -- Podkop forces enabled/user on every start; a restored file that differs
+    -- describes a foreign context and is rejected, not silently healed.
+    if main.enabled ~= "1" then
+        return false, "Restored sing-box service settings must set enabled '1'"
+    end
+    if main.user ~= nil and main.user ~= "root" then
+        return false, "Restored sing-box service settings must keep user 'root'"
+    end
+    if type(main.conffile) ~= "string" or main.conffile == "" then
+        return false, "Restored sing-box service settings do not set conffile"
+    end
+    local reference, reference_err, source = singbox_reference_path(env)
+    if not reference then return false, reference_err end
+    if main.conffile ~= reference then
+        return false, "conffile '" .. main.conffile .. "' does not match Podkop config_path '" ..
+            reference .. "' (reference: " .. source .. ")"
+    end
+    local path = "/etc/config/sing-box"
+    return locked_item("singbox", "singbox-uci", env, function(state)
+        local current, read_err, errno = M.read_file(path, UCI_LIMIT)
+        if current == nil and errno ~= 2 then
+            state.details = read_err
+            return false, "Cannot read current configuration: " .. tostring(read_err or path), state
+        end
+        if current == content then
+            state.unchanged = true
+            return true, nil, state
+        end
+        if current ~= nil then
+            local usable = LIB.validate_uci_config(current)
+            if usable then
+                local backed_up, backup_err = write_file(path .. ".bundle-backup", current)
+                if not backed_up then
+                    state.details = backup_err
+                    return false, "Cannot create backup: " .. tostring(backup_err), state
+                end
+                state.backup_created = true
+            else
+                state.warning = "Current configuration is empty or invalid; previous bundle backup was preserved"
+            end
+        end
+        local latest, latest_err, latest_errno = M.read_file(path, UCI_LIMIT)
+        if latest == nil and latest_errno ~= 2 then
+            state.details = latest_err
+            return false, "Cannot re-read current configuration: " .. tostring(latest_err or path), state
+        end
+        if latest ~= current then return false, "Configuration changed during import; read it again before retrying", state end
+        local written, write_err = write_file(path, content)
+        if not written then state.details = write_err; return false, write_err, state end
+        mark_applied(state)
+        env.restart_singbox = true
+        return true, nil, state
+    end)
+end
+
 function M.apply_item(name, item, env)
     env = env or {}
     if type(item) ~= "table" then
@@ -345,12 +461,20 @@ function M.apply_item(name, item, env)
         return false, "Item content must be text"
     end
     if name == "podkop" then
-        return apply_service(name, item.content or "", env)
+        env.podkop_selected = true
+        local ok, err, info = apply_service(name, item.content or "", env)
+        if ok then env.podkop_applied = true end
+        return ok, err, info
     elseif name == "stubby" then
         return apply_service(name, item.content or "", env)
     elseif name == "singbox" then
         return apply_service(name, item.content or "", env)
+    elseif name == "singbox-uci" then
+        return apply_singbox_uci(item.content or "", env)
     elseif name == "fragment" then
+        if VIS.disabled("fragment_tools") then
+            return false, "Fragment tools are disabled"
+        end
         return apply_uci(name, "/etc/config/podkop-fragment", "singbox", item.content or "", env)
     elseif name == "tweaker" then
         return apply_uci(name, "/etc/config/podkop-tweaker", "tweaker", item.content or "", env)

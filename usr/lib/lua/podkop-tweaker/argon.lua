@@ -232,8 +232,8 @@ function M.apply(settings)
 end
 
 function M.tab_disabled()
-    local uci = require("luci.model.uci").cursor()
-    return uci:get("podkop-tweaker", "settings", "show_argon_tab") ~= "1"
+    -- Same published contract; the read moved to the shared visibility gate.
+    return require("podkop-tweaker.visibility").disabled("argon_tab")
 end
 
 return M

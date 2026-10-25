@@ -1,5 +1,4 @@
--- Podkop Tweaker | v4.10.2 | 17.10.2026 | Shared checked service application and restart metadata
--- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
+-- Podkop Tweaker | v4.12.0 | 24.10.2026 | Shared checked service application, restart metadata and engine build facts
 
 local H = require("podkop-tweaker.http")
 local SRV = require("podkop-tweaker.services")
@@ -78,6 +77,19 @@ local function theme_status(force)
     return info
 end
 
+-- Additive engine build facts from one bounded query. Tags and Features
+-- describe the installed binary, not the installed package name; upstream
+-- sing-box has no Features line and that absence is normal, not an error.
+local function engine_build_info()
+    local ok, output = SRV.exec_bounded("sing-box version", { timeout = 3 })
+    if not ok or type(output) ~= "string" then return nil, nil end
+    local tags = output:match("\nTags:%s*([^\r\n]+)")
+    local features = output:match("\nFeatures:%s*([^\r\n]+)")
+    if tags then tags = tags:gsub("^%s+", ""):gsub("%s+$", "") end
+    if features then features = features:gsub("^%s+", ""):gsub("%s+$", "") end
+    return tags ~= "" and tags or nil, features ~= "" and features or nil
+end
+
 function M.system_info()
     local sys = require("luci.sys")
 
@@ -88,11 +100,14 @@ function M.system_info()
     local tweaker = UPD.cached_update() or {}
 
     if not info or not info.podkop_version then
+        local sb_tags, sb_features = engine_build_info()
         return {
             podkop_version = "unknown",
             podkop_latest_version = "unknown",
             luci_app_version = "unknown",
             sing_box_version = "unknown",
+            sing_box_tags = sb_tags,
+            sing_box_features = sb_features,
             openwrt_version = "unknown",
             device_model = "unknown",
             update_available = false,
@@ -113,6 +128,7 @@ function M.system_info()
     local snapshot = podkop_update_snapshot(info, false) or {}
 
     local stubby_ver = sys.exec("stubby -V 2>/dev/null"):match("Stubby%s+(%S+)") or "not installed"
+    local sb_tags, sb_features = engine_build_info()
 
     return {
         podkop_version = info.podkop_version or "unknown",
@@ -120,6 +136,8 @@ function M.system_info()
         luci_app_version = info.luci_app_version or "unknown",
         stubby_version = stubby_ver,
         sing_box_version = info.sing_box_version or "unknown",
+        sing_box_tags = sb_tags,
+        sing_box_features = sb_features,
         openwrt_version = info.openwrt_version or "unknown",
         device_model = info.device_model or "unknown",
         update_available = snapshot.update_available or false,

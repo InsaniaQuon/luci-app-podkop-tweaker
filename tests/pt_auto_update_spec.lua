@@ -17,7 +17,7 @@ local SUB_ENTRY = '{"main":[{"subscription_url":"https://sub/1","proxy_name":"Ol
 local function run_auto(opts)
     opts = opts or {}
     local network, checked = opts.popen, opts.sys or {}
-    checked[#checked + 1] = { match = "pidof 'sing-box'", out = "\nPT_EXIT:1\n" }
+    checked[#checked + 1] = { match = "ubus", out = '{"sing-box":{"instances":{}}}\nPT_EXIT:0\n' }
     checked[#checked + 1] = { match = "/etc/init.d/podkop restart", out = "\nPT_EXIT:0\n" }
     opts.sys = checked
     opts.popen = function(command)
@@ -345,7 +345,6 @@ describe("pt-auto-update", function()
     for _, requested in ipairs({ false, true }) do
         it("preserves the standalone restart outcome if release fails (requested=" .. tostring(requested) .. ")", function()
             run_auto({ strict = true, uci = UCI_MAIN, sys = {
-                { match = "pidof ", out = "\nPT_EXIT:1\n" },
                 { match = "/etc/init.d/podkop restart", out = function()
                     H.state().failures["/var/lock/podkop-tweaker-podkop.lock"] = { rmdir = true }
                     return requested and "\nPT_EXIT:0\n" or "primary restart diagnostics\nPT_EXIT:7\n"

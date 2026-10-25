@@ -168,7 +168,10 @@ Author: InsaniaQuon
             <label class="ps-check-item"><input type="checkbox" value="podkop" checked /><span>Podkop config</span><span class="ps-check-note">contains credentials</span></label>
             <label class="ps-check-item"><input type="checkbox" value="stubby" checked /><span>Stubby config</span></label>
             <label class="ps-check-item"><input type="checkbox" value="singbox" /><span>Sing-box config</span></label>
+            <label class="ps-check-item"><input type="checkbox" value="singbox-uci" /><span>Sing-box service settings</span></label>
+<% if show_fragment then %>
             <label class="ps-check-item"><input type="checkbox" value="fragment" /><span>Fragment settings</span></label>
+<% end %>
 <% if show_argon then %>
             <label class="ps-check-item"><input type="checkbox" value="argon" checked /><span>Argon typography</span></label>
 <% end %>
@@ -249,16 +252,28 @@ window.PT = {
     }
 };
 </script>
+<script>
+<%
+    local hidden_items = {}
+    if not show_fragment then hidden_items[#hidden_items + 1] = "'fragment'" end
+    if not show_argon then hidden_items[#hidden_items + 1] = "'argon'" end
+%>
+window.PT_HIDDEN_ITEMS = [<%= table.concat(hidden_items, ",") %>];
+</script>
 <script src="<%=resource%>/podkop-tweaker/common.js?v=<%=asset_version%>"></script>
 
 <script>
 (function() {
     PT.checkStale();
 
+    var HIDDEN_ITEMS = window.PT_HIDDEN_ITEMS || [];
+    function isHiddenItem(name) { return HIDDEN_ITEMS.indexOf(name) >= 0; }
+
     var ITEM_LABELS = {
         podkop: 'Podkop config',
         stubby: 'Stubby config',
         singbox: 'Sing-box config',
+        'singbox-uci': 'Sing-box service settings',
         fragment: 'Fragment settings',
         argon: 'Argon typography',
         tweaker: 'Tweaker settings',
@@ -268,11 +283,15 @@ window.PT = {
         podkop: { replaces: '/etc/config/podkop', restarts: 'Podkop' },
         stubby: { replaces: '/etc/config/stubby', restarts: 'Stubby' },
         singbox: { replaces: '/etc/sing-box/config.json', restarts: 'sing-box' },
+        'singbox-uci': { replaces: '/etc/config/sing-box', restarts: 'sing-box' },
         fragment: { replaces: '/etc/config/podkop-fragment' },
         argon: { replaces: 'Argon typography (UCI + CSS)' },
         tweaker: { replaces: '/etc/config/podkop-tweaker' },
         subs: { replaces: 'subscriptions file, auto-update schedule' }
     };
+    // Items whose restart verification shares one service watcher poll.
+    var ITEM_SERVICE = { 'singbox-uci': 'singbox' };
+    function serviceOf(name) { return ITEM_SERVICE[name] || name; }
 
     var errorBtn = document.getElementById('ps-error-btn');
     var errorModal = document.getElementById('ps-error-modal');
@@ -294,8 +313,8 @@ window.PT = {
     // Podkop and sing-box observe the same worker, but have independent ACKs.
     // Separate watchers prevent a second bundle poll from cancelling the first.
     var singboxWatcher = PT.statusWatcher(PT.urls.singboxStatus || PT.urls.status);
-    var serviceWatchers = { podkop: podkopWatcher, stubby: stubbyWatcher, singbox: singboxWatcher };
-    var serviceNames = { podkop: 'Podkop worker', stubby: 'Stubby', singbox: 'sing-box' };
+    var serviceWatchers = { podkop: podkopWatcher, stubby: stubbyWatcher, singbox: singboxWatcher, 'singbox-uci': singboxWatcher };
+    var serviceNames = { podkop: 'Podkop worker', stubby: 'Stubby', singbox: 'sing-box', 'singbox-uci': 'sing-box' };
     function isService(name) { return Object.prototype.hasOwnProperty.call(serviceWatchers, name); }
 
     function refreshStubbyStatus() {
@@ -533,6 +552,7 @@ window.PT = {
         var names = Object.keys(bundle.items);
         for (var i = 0; i < names.length; i++) {
             var name = names[i];
+            if (isHiddenItem(name)) continue;
             var known = ITEM_LABELS.hasOwnProperty(name);
             var label = document.createElement('label');
             label.className = 'ps-check-item' + (known ? '' : ' is-disabled');
@@ -573,9 +593,12 @@ window.PT = {
     function updateBundleSummary() {
         var replaces = [];
         var restarts = [];
+        var podkopChecked = false, singboxJsonChecked = false;
         reviewList.querySelectorAll('input[type="checkbox"]').forEach(function(b) {
             if (b.checked && !b.disabled) {
                 var c = ITEM_CONSEQ[b.value];
+                if (b.value === 'podkop') podkopChecked = true;
+                if (b.value === 'singbox') singboxJsonChecked = true;
                 if (c) {
                     if (c.replaces) replaces.push(c.replaces);
                     if (c.restarts) restarts.push(c.restarts);
@@ -594,6 +617,12 @@ window.PT = {
             var l2 = document.createElement('div');
             l2.textContent = 'Will restart: ' + restarts.join(', ');
             reviewSummary.appendChild(l2);
+        }
+        if (podkopChecked && singboxJsonChecked) {
+            var note = document.createElement('div');
+            note.style.color = PT.color('warning');
+            note.textContent = 'Podkop regenerates the sing-box config on restart; the imported config.json will be overwritten.';
+            reviewSummary.appendChild(note);
         }
     }
 
@@ -680,10 +709,16 @@ window.PT = {
         return null;
     }
 
+    // Hidden items stay in the skipped transport for older tabs; this page
+    // filters them from every visible line and counter.
+    function visibleSkipped(skipped) {
+        return skipped.filter(function(name) { return !isHiddenItem(name); });
+    }
+
     function renderBundleResults(resp, proofs, selected) {
         reviewResults.innerHTML = '';
         var results = record(resp.results) ? resp.results : {};
-        var names = Object.keys(results), skipped = skippedItems(resp) || [];
+        var names = Object.keys(results), skipped = visibleSkipped(skippedItems(resp) || []);
         for (var i = 0; i < names.length; i++) {
             var n = names[i], r = results[n];
             var label = Object.prototype.hasOwnProperty.call(ITEM_LABELS, n) ? ITEM_LABELS[n] : n;
@@ -760,19 +795,26 @@ window.PT = {
                     finishOperation(sequence, text, 'error', details, unknown || !error);
                     return;
                 }
-                if (names.length === 0 && skipped.length > 0 && !data.error) details = '';
+                if (names.length === 0 && skipped !== null && skipped.length > 0 && !data.error) details = '';
+                var visSkipped = skipped ? visibleSkipped(skipped) : [];
 
-                var proofs = {}, tasks = [];
+                var proofs = {};
+                var serviceTasks = {};
                 names.forEach(function(name) {
                     var item = results[name], ack = restartAck(name, data);
                     if (isService(name) && item.ok === true && !itemError(item, ack) && ack && ack.success !== false &&
                         (ack.restarting === true || item.restarting === true)) {
                         proofs[name] = { pending: true };
-                        tasks.push({ name: name, ack: ack });
+                        var svc = serviceOf(name);
+                        if (!serviceTasks[svc]) serviceTasks[svc] = { ack: ack, items: [] };
+                        serviceTasks[svc].items.push(name);
                     }
                 });
+                // One poll per service watcher: a second poll on the same
+                // watcher would cancel the first and strand the import.
+                var taskList = Object.keys(serviceTasks);
                 if (sequence === reviewSequence) renderBundleResults(data, proofs, selected);
-                var pending = tasks.length;
+                var pending = taskList.length;
                 function finish() {
                     var completed = 0, failed = 0, applied = data.applied === true, unverified = 0;
                     names.forEach(function(name) {
@@ -784,29 +826,31 @@ window.PT = {
                     var transportFailed = error && error.kind !== 'application';
                     var partial = data.success !== true || data.partial === true || failed > 0 || !!data.error || transportFailed || data.complete === false && completed > 0;
                     var text = unknown ? (applied || completed > 0 ? 'Bundle partially applied; finishing result incomplete. ' : 'Bundle result incomplete. ') + 'Inspect configurations and reload before another import. ' :
-                        names.length === 0 && skipped.length > 0 && !data.error ? 'No selected items applied: ' :
+                        names.length === 0 && !data.error ? 'No selected items applied: ' :
                             partial ? (applied || completed > 0 ? 'Bundle partially applied: ' : 'Bundle import failed: ') : 'Bundle item results: ';
-                    text += completed + ' accepted, ' + failed + ' failed, ' + skipped.length + ' skipped.';
+                    text += completed + ' accepted, ' + failed + ' failed, ' + visSkipped.length + ' skipped.';
                     if (unverified > 0) text += ' ' + unverified + ' service restart(s) unverified; see per-item results.';
-                    else if (tasks.length > 0) text += ' Requested service process transitions confirmed.';
+                    else if (taskList.length > 0) text += ' Requested service process transitions confirmed.';
                     if (data.error) text += ' ' + data.error;
                     if (sequence === reviewSequence) {
                         renderBundleResults(data, proofs, selected);
                         if (results.podkop && (results.podkop.applied === true || results.podkop.ok === true) &&
                             (itemError(results.podkop, restartAck('podkop', data)) || !proofs.podkop || proofs.podkop.confirmed !== true)) reviewRollbackBtn.style.display = 'inline-block';
                     }
-                    finishOperation(sequence, text, unknown || failed > 0 || data.error || transportFailed ? 'error' : partial || unverified > 0 || skipped.length > 0 ? 'warning' : 'success', details, unknown);
+                    finishOperation(sequence, text, unknown || failed > 0 || data.error || transportFailed ? 'error' : partial || unverified > 0 || visSkipped.length > 0 ? 'warning' : 'success', details, unknown);
                 }
                 if (pending === 0) { finish(); return; }
                 operationStatus(sequence, 'Bundle items saved. Verifying requested service process transitions...', 'info');
-                tasks.forEach(function(task) {
+                taskList.forEach(function(svc) {
+                    var task = serviceTasks[svc];
                     function done(result) {
-                        proofs[task.name] = result && result.confirmed === true ? result : result || { confirmed: false, known: false };
+                        var proof = result && result.confirmed === true ? result : result || { confirmed: false, known: false };
+                        task.items.forEach(function(n) { proofs[n] = proof; });
                         if (sequence === reviewSequence) renderBundleResults(data, proofs, selected);
                         pending--;
                         if (pending === 0) finish();
                     }
-                    serviceWatchers[task.name].poll(done, done, task.ack);
+                    serviceWatchers[svc].poll(done, done, task.ack);
                 });
             });
     }

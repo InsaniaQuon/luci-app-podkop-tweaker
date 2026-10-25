@@ -1,11 +1,11 @@
--- Podkop Tweaker | checked bundle export and per-item import finishing
--- Hybrid exception: export owns the download transport.
+-- Podkop Tweaker | v4.12.0 | 24.10.2026 | Checked bundle export and per-item import finishing with service attribution
 
 local H = require("podkop-tweaker.http")
 local SRV = require("podkop-tweaker.services")
 local S = require("pt-subs-lib")
 local BUNDLE = require("podkop-tweaker.bundle")
 local AR = require("podkop-tweaker.argon")
+local VIS = require("podkop-tweaker.visibility")
 local UPD = require("podkop-tweaker.api_update")
 
 local M = {}
@@ -13,6 +13,14 @@ local M = {}
 local BUNDLE_FORMAT = "podkop-tweaker-bundle"
 local BUNDLE_VERSION = 1
 M.MAX_SIZE = 4194304
+
+-- Restart attribution: which item results carry a service restart outcome.
+-- One restart per service is shared by every attributed item.
+local RESTART_ITEMS = {
+    podkop = { "podkop" },
+    stubby = { "stubby" },
+    singbox = { "singbox", "singbox-uci" }
+}
 
 local function copy_result(info)
     local result = {}
@@ -38,11 +46,15 @@ end
 function M.export()
     local http = require("luci.http")
     H.no_cache()
+    -- Visibility snapshot for this request: hidden items are silently ignored,
+    -- never reported as read failures (same contract as hidden Argon).
+    local fragment_hidden = VIS.disabled("fragment_tools")
     local requested = {}
     local items_param = http.formvalue("items") or ""
     for it in items_param:gmatch("[%w%-]+") do
         if BUNDLE.is_known_item(it) then requested[it] = true end
     end
+    if fragment_hidden then requested["fragment"] = nil end
 
     local bundle = {
         format = BUNDLE_FORMAT,
@@ -146,15 +158,19 @@ function M.import(content, file_raw, sel_param)
         for it in sel_param:gmatch("[%w%-]+") do selected[it] = true end
     end
 
-    -- argon settings are invisible when the tab is hidden: ignore the item
-    -- entirely (both directions) instead of surfacing a per-item error
+    -- argon settings are invisible when the tab is hidden, and fragment items
+    -- are invisible when Fragment tools are hidden: ignore the items entirely
+    -- (both directions) instead of surfacing per-item errors. The names stay
+    -- in the skipped transport array for older already-open tabs.
     local argon_ignored = AR.tab_disabled()
+    local fragment_ignored = VIS.disabled("fragment_tools")
 
     local skipped = {}
     for name, _ in pairs(bundle.items) do
         if not BUNDLE.is_known_item(name)
             or type(bundle.items[name]) ~= "table"
             or (name == "argon" and argon_ignored)
+            or (name == "fragment" and fragment_ignored)
             or (selection_used and not selected[name]) then
             table.insert(skipped, name)
         end
@@ -166,6 +182,7 @@ function M.import(content, file_raw, sel_param)
     for _, name in ipairs(BUNDLE.ITEMS) do
         if type(bundle.items[name]) == "table"
             and not (name == "argon" and argon_ignored)
+            and not (name == "fragment" and fragment_ignored)
             and (not selection_used or selected[name]) then
             local called, ok, err, info = pcall(BUNDLE.apply_item, name, bundle.items[name], env)
             if not called then
@@ -183,41 +200,56 @@ function M.import(content, file_raw, sel_param)
 
     local restarts = {}
     for _, name in ipairs({ "podkop", "stubby", "singbox" }) do
-        if env["restart_" .. name] and results[name].unknown ~= true then
-            local observed
-            local called, restart, lock_err, uncertain = pcall(SRV.with_lock, name, function()
-                observed = SRV.restart_service(name)
-                return observed
-            end)
-            if not called then
-                restart = finishing_failure(observed, "Cannot request service restart: internal error", restart, nil, true)
-            elseif restart == nil then
-                local message = lock_err or "Cannot acquire or release service restart lock"
-                restart = finishing_failure(observed, message, message, message, uncertain == true or type(observed) == "table")
-            elseif type(restart) ~= "table" then
-                restart = finishing_failure(observed, "Invalid service restart response", nil, nil, true)
-            elseif restart.unknown == true then
-                restart = copy_result(restart)
-                restart.success = false
-                restart.error = restart.error or "Service restart outcome is unknown"
+        if env["restart_" .. name] then
+            -- Uniform rule: every successfully applied item requests its own
+            -- service; one restart per service carries to all attributed items.
+            local attributed, actionable = {}, false
+            for _, item_name in ipairs(RESTART_ITEMS[name]) do
+                if results[item_name] then
+                    attributed[#attributed + 1] = item_name
+                    if results[item_name].unknown ~= true then actionable = true end
+                end
             end
-            restarts[name] = restart
-            local result = results[name]
-            result.restart = restart
-            result.restarting = restart.restarting == true
-            result.verification_required = restart.verification_required
-            if result.verification_required == nil then result.verification_required = true end
-            for _, key in ipairs({ "previous_running", "previous_instance", "previous_identity_known" }) do result[key] = restart[key] end
-            result.unknown = restart.unknown == true or result.unknown or nil
-            for _, key in ipairs({ "lock_error", "primary_error", "primary_details" }) do
-                if restart[key] ~= nil then result[key] = restart[key] end
-            end
-            if restart.success ~= true then
-                result.ok = false
-                result.restart_required = restart.restarting ~= true or nil
-                result.error = "Configuration saved, but " .. tostring(restart.error or "service restart failed")
-                if restart.details then
-                    result.details = (result.details and (result.details .. "\n") or "") .. restart.details
+            if actionable or #attributed == 0 then
+                local observed
+                local called, restart, lock_err, uncertain = pcall(SRV.with_lock, name, function()
+                    observed = SRV.restart_service(name)
+                    return observed
+                end)
+                if not called then
+                    restart = finishing_failure(observed, "Cannot request service restart: internal error", restart, nil, true)
+                elseif restart == nil then
+                    local message = lock_err or "Cannot acquire or release service restart lock"
+                    restart = finishing_failure(observed, message, message, message, uncertain == true or type(observed) == "table")
+                elseif type(restart) ~= "table" then
+                    restart = finishing_failure(observed, "Invalid service restart response", nil, nil, true)
+                elseif restart.unknown == true then
+                    restart = copy_result(restart)
+                    restart.success = false
+                    restart.error = restart.error or "Service restart outcome is unknown"
+                end
+                restarts[name] = restart
+                for _, item_name in ipairs(attributed) do
+                    if results[item_name].unknown ~= true then
+                        local result = results[item_name]
+                        result.restart = restart
+                        result.restarting = restart.restarting == true
+                        result.verification_required = restart.verification_required
+                        if result.verification_required == nil then result.verification_required = true end
+                        for _, key in ipairs({ "previous_running", "previous_instance", "previous_identity_known" }) do result[key] = restart[key] end
+                        result.unknown = restart.unknown == true or result.unknown or nil
+                        for _, key in ipairs({ "lock_error", "primary_error", "primary_details" }) do
+                            if restart[key] ~= nil then result[key] = restart[key] end
+                        end
+                        if restart.success ~= true then
+                            result.ok = false
+                            result.restart_required = restart.restarting ~= true or nil
+                            result.error = "Configuration saved, but " .. tostring(restart.error or "service restart failed")
+                            if restart.details then
+                                result.details = (result.details and (result.details .. "\n") or "") .. restart.details
+                            end
+                        end
+                    end
                 end
             end
         end

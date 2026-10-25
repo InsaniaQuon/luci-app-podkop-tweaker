@@ -13,7 +13,7 @@ local function begin(options)
     H.begin({ strict = true, failures = options.failures, uci = options.uci or { podkop = {
         H.sec("main", "section", { connection_type = "proxy", proxy_config_type = "url", proxy_string = OLD }) } },
         popen = {
-            { match = "pidof 'sing-box'", out = "\nPT_EXIT:1\n" },
+            { match = "ubus", out = '{"sing-box":{"instances":{}}}\nPT_EXIT:0\n' },
             { match = "/etc/init.d/podkop restart", out = function(command)
                 if type(options.restart) == "function" then return options.restart(command) end
                 return options.restart or "\nPT_EXIT:0\n"

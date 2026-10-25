@@ -1,4 +1,4 @@
--- api_singbox_spec | v1.2.0 | 19.10.2026 | Direct checked pipes, detached-hook migration/status and UCI-preserving wrapper repair
+-- api_singbox_spec | v1.3.0 | 24.10.2026 | procd identity, reality rows and Fragment visibility guards
 
 package.path = "./usr/lib/lua/?.lua;./tests/?.lua;" .. package.path
 
@@ -9,6 +9,7 @@ local BAK = "/etc/sing-box/config.json.auto-backup"
 local ORIG = "/etc/init.d/podkop.orig"
 local INIT_PODKOP = "/etc/init.d/podkop"
 local FRAGMENT_CONFIG = "/etc/config/podkop-fragment"
+local SB_UCI = "/etc/config/sing-box"
 local FRAGMENT_RAW = "config fragment 'settings'\n\toption fragment 'true'\n\toption record_fragment 'false'\n\toption fragment_fallback_delay '300ms'\n"
 
 local SB_OK = '{"outbounds":[{"type":"direct"},{"type":"mixed","listen":"127.0.0.1","listen_port":2080}],"route":{"final":"proxy"}}'
@@ -41,10 +42,15 @@ local function wrapper_init(start_hooks, reload_hooks, body)
         "}\n\nreload_service() {\n\tstart_service\n" .. lines(reload_hooks) .. "}\n"
 end
 
-local function pid_reply(output)
+local PROCD_STOP = '{"sing-box":{"instances":{}}}\nPT_EXIT:0\n'
+local function procd_reply(output)
     return { match = function(cmd)
-        return cmd:find("pidof", 1, true) and cmd:find("sing-box", 1, true)
+        return cmd:find("ubus", 1, true) and cmd:find("service", 1, true)
     end, out = output }
+end
+local function procd_running(pid)
+    return procd_reply('{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":' .. pid ..
+        '}}}}\nPT_EXIT:0\n')
 end
 
 local function begin_sbx(opts)
@@ -57,9 +63,15 @@ local function begin_sbx(opts)
     for _, action in ipairs({ "restart", "start", "stop" }) do
         table.insert(opts.popen, service_reply(action, "\nPT_EXIT:0\n"))
     end
-    table.insert(opts.popen, pid_reply("\nPT_EXIT:1\n"))
+    table.insert(opts.popen, procd_reply(PROCD_STOP))
     H.begin(opts)
+    if opts.fragment_tools then
+        -- Endpoint behaviour with tools enabled, without polluting the seeded
+        -- UCI world that wrapper tests compare byte-for-byte afterwards.
+        require("podkop-tweaker.visibility").fragment_tools = function() return true end
+    end
     if opts.seed_cfg == nil then H.vfs_write(CFG, SB_OK) end
+    if opts.seed_sb_uci ~= nil then H.vfs_write(SB_UCI, opts.seed_sb_uci) end
     return H.reload("podkop-tweaker.api_singbox")
 end
 
@@ -132,7 +144,7 @@ describe("api_singbox Save/Import integration", function()
     end)
 
     it("publishes checked bytes, keeps a usable backup and forwards process-generation facts", function()
-        local SBX = begin_sbx({ popen = { pid_reply("55\nPT_EXIT:0\n") } })
+        local SBX = begin_sbx({ popen = { procd_running(55) } })
         H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
         assert_restart(SBX.save_config('{"new":true}'), true, "55:400")
         assert.equal('{"new":true}', H.vfs_read(CFG))
@@ -202,7 +214,7 @@ describe("api_singbox Save/Import integration", function()
         local details = string.rep("restart failed\n", 200)
         local SBX = begin_sbx({ popen = {
             service_reply("restart", details .. "\nPT_EXIT:17\n"),
-            pid_reply("55\nPT_EXIT:0\n")
+            procd_running(55)
         } })
         H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
         local r = SBX.save_config('{"new":true}')
@@ -239,8 +251,8 @@ describe("api_singbox Save/Import integration", function()
 end)
 
 describe("api_singbox service status/toggle/rollback", function()
-    it("exposes a running instance, known absence and failed query distinctly", function()
-        local SBX = begin_sbx({ popen = { pid_reply("55\nPT_EXIT:0\n") } })
+    it("exposes a running procd instance, known absence and failed query distinctly", function()
+        local SBX = begin_sbx({ popen = { procd_running(55) } })
         H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
         local r = SBX.service_status()
         assert.is_true(r.running)
@@ -250,10 +262,38 @@ describe("api_singbox service status/toggle/rollback", function()
         SBX = begin_sbx()
         assert.is_false(SBX.service_status().running)
         H.finish()
-        SBX = begin_sbx({ popen = { pid_reply("\nPT_EXIT:2\n") } })
+        SBX = begin_sbx({ popen = { procd_reply("\nPT_EXIT:2\n") } })
         local unknown = SBX.service_status()
         assert.truthy(unknown.error)
         assert.is_nil(unknown.running)
+    end)
+
+    it("treats ambiguity, foreign shapes and bad PIDs as unknown, never a guess", function()
+        for _, raw in ipairs({
+            '{"sing-box":{"instances":{"a":{"running":true,"pid":50},"b":{"running":true,"pid":51}}}}',
+            '{"sing-box":{"instances":{"a":{"running":true}}}}',
+            '{"sing-box":{"instances":{"a":{"running":true,"pid":0}}}}',
+            '{"sing-box":{"instances":{"a":{"running":true,"pid":"50"}}}}',
+            '{"sing-box":{"instances":42}}', 'not json'
+        }) do
+            local SBX = begin_sbx({ popen = { procd_reply(raw .. "\nPT_EXIT:0\n") } })
+            local r = SBX.service_status()
+            assert.truthy(r.error, raw)
+            assert.is_nil(r.running, raw)
+            assert.is_nil(r.pid, raw)
+            H.finish()
+        end
+        -- A response without the service record and an instance-shaped entry
+        -- that is not a table are both unknown shapes; a stopped instance and
+        -- a record with no instances are known stops.
+        for _, raw in ipairs({
+            '{"sing-box":{"instances":{"a":{"running":false}}}}',
+            '{"sing-box":{"instances":{}}}', '{}'
+        }) do
+            local SBX = begin_sbx({ popen = { procd_reply(raw .. "\nPT_EXIT:0\n") } })
+            assert.is_false(SBX.service_status().running, raw)
+            H.finish()
+        end
     end)
 
     it("does not claim success on quiet nonzero toggle commands", function()
@@ -311,7 +351,7 @@ describe("api_singbox service status/toggle/rollback", function()
     }) do
         it("preserves the primary " .. case.name .. " failure evidence when resource release also fails", function()
             local details = string.rep("complete " .. case.name .. " service failure\n", 100)
-            local SBX = begin_sbx({ popen = { service_reply(case.action, details .. "\nPT_EXIT:7\n"), pid_reply("55\nPT_EXIT:0\n") },
+            local SBX = begin_sbx({ popen = { service_reply(case.action, details .. "\nPT_EXIT:7\n"), procd_running(55) },
                 failures = { ["/var/lock/podkop-fragment.lock"] = { rmdir = true } } })
             H.vfs_write("/proc/55/stat", "55 (sing-box) S " .. string.rep("0 ", 18) .. "400\n")
             H.vfs_write(BAK, SB_ORIG)
@@ -350,8 +390,8 @@ describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)
 
     it("parses compact actual JSON with escaped quotes, slashes and control escapes", function()
         local rows = {
-            { tag = 'a"quoted', type = "direct", server = "server\\path\nname", tls_enabled = false, has_fragment = false },
-            { tag = "b", type = "vmess", server = "server\\path\nname", tls_enabled = true, has_fragment = true }
+            { tag = 'a"quoted', type = "direct", server = "server\\path\nname", tls_enabled = false, has_fragment = false, reality = false },
+            { tag = "b", type = "vmess", server = "server\\path\nname", tls_enabled = true, has_fragment = true, reality = true }
         }
         local expected = { outbound_count = 2, outbounds = rows }
         local SBX = begin_sbx({ popen = { jq_out(H.json.stringify(expected)) } })
@@ -369,6 +409,7 @@ describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)
         '{"outbound_count":1,"outbounds":[{"tag":"bad;tag","type":"vless","server":"s","tls_enabled":true,"has_fragment":false}]}',
         '{"outbound_count":1,"outbounds":[{"tag":"x","type":"vless","server":"s","tls_enabled":false,"has_fragment":false,"error":"failed"}]}',
         '{"outbound_count":1,"outbounds":[{"tag":"x","type":"vless","server":"s","tls_enabled":"true","has_fragment":false}]}',
+        '{"outbound_count":1,"outbounds":[{"tag":"x","type":"vless","server":"s","tls_enabled":true,"has_fragment":false,"reality":"true"}]}',
         '{"outbound_count":2,"outbounds":[{"tag":"x","type":"vless","server":"s","tls_enabled":true,"has_fragment":false},null]}'
     }) do
         it("does not normalize malformed/non-list jq output into valid empty outbounds: " .. raw, function()
@@ -481,7 +522,37 @@ describe("api_singbox.outbounds SB2 (controlled jq, not native filter execution)
     end
 end)
 
+describe("api_singbox Fragment visibility guards", function()
+    it("refuses the four Fragment endpoints while tools are hidden", function()
+        local SBX = begin_sbx()
+        local guard = { error = "Fragment tools are disabled" }
+        assert.same(guard, SBX.patch_fragment('["proxy"]', "remove"))
+        assert.same(guard, SBX.wrapper_status())
+        assert.same(guard, SBX.wrapper_toggle("disable"))
+        assert.same(guard, SBX.fragment_settings())
+        assert.equal(0, #commands_containing("/etc/init.d/podkop-fragment"), "no wrapper mutation while hidden")
+        assert.equal(0, #commands_containing("jq "), "no patch mutation while hidden")
+    end)
+
+    it("keeps the editor and the generic outbounds enumeration open", function()
+        local SBX = begin_sbx({ popen = { jq_out('{"outbound_count":0,"outbounds":[]}') } })
+        assert.same({ outbound_count = 0, outbounds = {} }, SBX.outbounds())
+        assert.is_false(SBX.service_status().running)
+    end)
+
+    it("serves the Fragment endpoints once the flag is enabled", function()
+        local SBX = begin_sbx({ fragment_tools = true })
+        assert.same({ installed = false, stale = false }, SBX.wrapper_status())
+    end)
+end)
+
 describe("api_singbox.patch_fragment resource coordination", function()
+    local plain_begin_sbx = begin_sbx
+    local function begin_sbx(opts)
+        opts = opts or {}
+        opts.fragment_tools = true
+        return plain_begin_sbx(opts)
+    end
     it("preserves tag/method/delay validation", function()
         local SBX = begin_sbx()
         assert.same({ error = "No outbounds selected" }, SBX.patch_fragment("zz"))
@@ -497,6 +568,19 @@ describe("api_singbox.patch_fragment resource coordination", function()
         local SBX = begin_sbx({ seed_cfg = false })
         assert.equal("Cannot read config", SBX.patch_fragment('["proxy"]', "apply", "1", "1").error)
         assert.equal(0, #commands_containing("/etc/init.d/sing-box restart"))
+    end)
+
+    it("publishes pretty-printed bytes and never compacts the live config", function()
+        local pretty = '{\n  "outbounds": [\n    {\n      "tag": "proxy",\n      "type": "vless",\n      "server": "s",\n      "tls": {\n        "enabled": true,\n        "record_fragment": true\n      }\n    }\n  ]\n}'
+        local SBX = begin_sbx({ popen = { { match = "jq ", out = function(cmd)
+            assert.falsy(cmd:find("jq -c", 1, true), "patch publication must not request compact output")
+            return pretty .. "\nPT_EXIT:0\n"
+        end } } })
+        H.vfs_write(BAK, SB_ORIG)
+        assert_restart(SBX.patch_fragment('["proxy"]', "apply", nil, "1"))
+        assert.equal(pretty, H.vfs_read(CFG), "published bytes keep jq's default indentation")
+        assert.equal(pretty:find("\n", 1, true), 2, "the published config stays multi-line")
+        assert_no_stages()
     end)
 
     it("does not steal a busy shared shell lock or perform jq before acquisition", function()
@@ -654,6 +738,12 @@ describe("api_singbox.patch_fragment resource coordination", function()
 end)
 
 describe("api_singbox.wrapper_status", function()
+    local plain_begin_sbx = begin_sbx
+    local function begin_sbx(opts)
+        opts = opts or {}
+        opts.fragment_tools = true
+        return plain_begin_sbx(opts)
+    end
     it("not installed", function()
         local SBX = begin_sbx({})
         assert.same({ installed = false, stale = false }, SBX.wrapper_status())
@@ -818,6 +908,12 @@ describe("api_singbox.wrapper_status", function()
 end)
 
 describe("api_singbox.wrapper_toggle", function()
+    local plain_begin_sbx = begin_sbx
+    local function begin_sbx(opts)
+        opts = opts or {}
+        opts.fragment_tools = true
+        return plain_begin_sbx(opts)
+    end
     local function exit_responder(out)
         return { match = function(cmd)
             local checked = require("podkop-tweaker.services").checked_command
@@ -1142,6 +1238,12 @@ describe("api_singbox.wrapper_toggle", function()
 end)
 
 describe("api_singbox.fragment_settings", function()
+    local plain_begin_sbx = begin_sbx
+    local function begin_sbx(opts)
+        opts = opts or {}
+        opts.fragment_tools = true
+        return plain_begin_sbx(opts)
+    end
     local function assert_read_only()
         assert.same({}, H.commits())
         assert.equal(0, #H.exec_cmds())
@@ -1178,7 +1280,12 @@ describe("api_singbox.fragment_settings", function()
         H.vfs_write(FRAGMENT_CONFIG, FRAGMENT_RAW)
         local uci = fragment_rpc_reply({ settings = H.sec("settings", "fragment", {
             fragment = "true", record_fragment = "false", fragment_fallback_delay = "300ms", enabled = "0", unknown = "keep" }) })
-        uci.get = function() error("per-option get cannot establish native parse success") end
+        uci.get = function(self, config)
+            -- The visibility gate reads podkop-tweaker; per-option reads of the
+            -- fragment package still cannot establish native parse success.
+            if config == "podkop-tweaker" then return "1" end
+            error("per-option get cannot establish native parse success")
+        end
         assert.same({ fragment = true, record_fragment = false, fallback_delay = "300ms",
             settings_source = "uci", config_missing = false }, SBX.fragment_settings())
         assert.equal(FRAGMENT_RAW, H.vfs_read(FRAGMENT_CONFIG))

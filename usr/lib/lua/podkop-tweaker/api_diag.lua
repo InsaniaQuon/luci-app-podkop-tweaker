@@ -1,7 +1,8 @@
--- Podkop Tweaker | v4.2.0 | 23.08.2026 | V2 pure handlers: args in -> response table out; HTTP layer moved to controller adapter
+-- Podkop Tweaker | v4.12.0 | 24.10.2026 | V2 pure handlers: args in -> response table out; procd-backed proxy gate
 
 local DIAG = require("podkop-tweaker.diag")
 local DNS_OBSERVATION = require("podkop-tweaker.dns_observation")
+local SRV = require("podkop-tweaker.services")
 
 local M = {}
 
@@ -78,8 +79,11 @@ function M.proxy()
         return { results = {}, error = "No mixed inbound found in sing-box config" }
     end
 
-    local pid = require("podkop-tweaker.http").get_service_pid("sing-box")
-    if not pid then
+    local status = SRV.service_status(SRV.ops.singbox)
+    if status.error then
+        return { results = {}, error = "Cannot query sing-box status", details = status.details }
+    end
+    if status.running ~= true then
         return { results = {}, error = "sing-box is not running" }
     end
 

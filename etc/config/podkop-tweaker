@@ -1,6 +1,7 @@
 
 config settings 'settings'
 	option show_argon_tab '0'
+	option show_fragment_tools '0'
 
 config appearance 'appearance'
 	option profile 'soft'

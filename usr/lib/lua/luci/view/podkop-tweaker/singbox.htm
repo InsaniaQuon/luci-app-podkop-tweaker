@@ -18,11 +18,13 @@ Author: InsaniaQuon
                 <button class="btn cbi-button" id="ps-toggle-btn" style="display:none;margin-left:6px;font-size:11px;padding:2px 8px;"></button>
             </div>
         </div>
+        <% if show_fragment then %>
         <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <button class="btn cbi-button" id="ps-patch-btn">Patch Fragment</button>
             <button class="btn cbi-button" id="ps-wrapper-btn" disabled>Checking Wrapper...</button>
             <span id="ps-wrapper-status" style="font-size:12px;font-weight:600;"></span>
         </div>
+        <% end %>
 
         <div class="ps-editor-wrap">
             <div class="ps-line-numbers" id="ps-line-numbers">1</div>
@@ -75,6 +77,7 @@ Author: InsaniaQuon
     </div>
 </div>
 
+<% if show_fragment then %>
 <div class="ps-modal" id="ps-patch-modal" style="display:none;">
     <div class="ps-modal-content">
         <h3>Patch Fragment</h3>
@@ -176,6 +179,7 @@ Author: InsaniaQuon
         </div>
     </div>
 </div>
+<% end %>
 
 <link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=asset_version%>">
 <script>
@@ -227,7 +231,16 @@ window.PT = {
             return { msg: resp.error || resp.details, line: m ? parseInt(m[1]) : null };
         }
     });
+    // Shared with the optional Fragment block below; kept on PT so the two
+    // inline scripts stay independent of source order.
+    window.PT._singboxCtx = ctx;
+})();
+</script>
 
+<% if show_fragment then %>
+<script>
+(function() {
+    var ctx = window.PT._singboxCtx;
     // === Fragment Patch ===
     var patchBtn = document.getElementById('ps-patch-btn');
     var patchModal = document.getElementById('ps-patch-modal');
@@ -260,6 +273,7 @@ window.PT = {
         var valid = outbounds.every(function(o) {
             return o && typeof o === 'object' && !Array.isArray(o) && !('error' in o) && typeof o.type === 'string' && o.type.length > 0 &&
                 typeof o.server === 'string' && typeof o.tls_enabled === 'boolean' && typeof o.has_fragment === 'boolean' &&
+                typeof o.reality === 'boolean' &&
                 typeof o.tag === 'string' &&
                 (!o.tls_enabled || /^[a-zA-Z0-9_.-]+$/.test(o.tag));
         });
@@ -305,11 +319,17 @@ window.PT = {
                     var fragInfo = o.has_fragment
                         ? ' <span style="color:var(--ps-success);font-size:11px;">(patched)</span>'
                         : ' <span style="color:var(--ps-text-dim);font-size:11px;">(unpatched)</span>';
+                    // Focused bench (podkop-engine.md): tested REALITY client paths
+                    // accept the Fragment options without splitting the ClientHello.
+                    var realityInfo = o.reality
+                        ? ' <span style="color:var(--ps-warning);font-size:11px;">(REALITY: no observed fragment effect)</span>'
+                        : '';
                     html += '<div style="margin:4px 0;display:flex;align-items:center;gap:6px;">'
                         + '<input type="checkbox" class="ps-patch-cb" data-tag="' + PT.escapeAttr(o.tag) + '">'
                         + '<strong>' + label + '</strong>'
                         + '<span style="color:var(--ps-text-dim);font-size:11px;">(' + PT.escapeHtml(o.type) + ')</span>'
                         + fragInfo
+                        + realityInfo
                         + '</div>';
                 });
                 patchList.innerHTML = html;
@@ -577,6 +597,8 @@ window.PT = {
     wrapperControls();
     checkWrapper();
 })();
+</script>
+<% end %>
 </script>
 
 <%+footer%>

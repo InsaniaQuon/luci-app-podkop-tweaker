@@ -29,9 +29,10 @@ local INFO_JSON = '{"podkop_version":"1.9.2","podkop_latest_version":"2.0.0",' .
     '"luci_app_version":"4.1.0","sing_box_version":"1.10.0",' ..
     '"openwrt_version":"25.12.5","device_model":"GL-MT6000"}'
 
-local function pid_reply(output)
+local PROCD_STOP = '{"sing-box":{"instances":{}}}\nPT_EXIT:0\n'
+local function procd_reply(output)
     return { match = function(cmd)
-        return cmd:find("pidof", 1, true) and cmd:find("sing-box", 1, true)
+        return cmd:find("ubus", 1, true) and cmd:find("service", 1, true)
     end, out = output }
 end
 
@@ -44,7 +45,9 @@ local function begin_podkop(opts)
     for _, action in ipairs({ "restart", "start", "stop", "enable", "disable" }) do
         table.insert(pipes, service_reply(action, "\nPT_EXIT:0\n"))
     end
-    table.insert(pipes, pid_reply("\nPT_EXIT:1\n"))
+    table.insert(pipes, procd_reply(PROCD_STOP))
+    -- Additive engine build facts: absent/failed output yields nil fields.
+    table.insert(pipes, { match = "sing-box version", out = opts.singbox_version or "" })
     if type(network) == "function" then
         pipes[#pipes + 1] = { match = function(command) return not command:find("PT_EXIT:", 1, true) end, out = network }
     end
@@ -131,11 +134,28 @@ describe("api_podkop.system_info", function()
         assert.equal("4.1.0", r.luci_app_version)
         assert.equal("0.4.3", r.stubby_version)
         assert.equal("1.10.0", r.sing_box_version)
+        assert.is_nil(r.sing_box_tags, "upstream without Tags/Features lines is normal")
+        assert.is_nil(r.sing_box_features)
         assert.equal("GL-MT6000", r.device_model)
         assert.is_true(r.update_available)
         assert.equal("4.1.0", r.tweaker_version)
         assert.is_nil(r.tweaker_latest)
         assert.falsy(r.error)
+    end)
+
+    it("exposes additive engine build facts when the binary reports them", function()
+        local fork_output = "sing-box version 1.14.3-pdk-r15\n\nEnvironment: go1.26.8 linux/amd64\n" ..
+            "Tags: with_quic,with_utls,podkop_slim\nFeatures: urltest.fallbacks,tools.decode-link\n"
+        local PDK = begin_podkop({ sys = sys_ok(), singbox_version = fork_output .. "\nPT_EXIT:0\n" })
+        local r = PDK.system_info()
+        assert.equal("with_quic,with_utls,podkop_slim", r.sing_box_tags)
+        assert.equal("urltest.fallbacks,tools.decode-link", r.sing_box_features)
+        assert.equal("1.10.0", r.sing_box_version, "the podkop-reported version stays authoritative")
+        H.finish()
+        local PDK2 = begin_podkop({ sys = sys_ok(), popen = { { match = "sing-box version", out = "\nPT_EXIT:1\n" } } })
+        local r2 = PDK2.system_info()
+        assert.is_nil(r2.sing_box_tags, "a failed bounded query is not an engine fact")
+        assert.is_nil(r2.sing_box_features)
     end)
 
     it("no update when versions equal or latest unknown", function()
@@ -270,7 +290,11 @@ describe("api_podkop.system_info", function()
         -- Even an obsolete check stub cannot invent an installed theme.
         require("podkop-tweaker.theme").check = function() error("theme check must not run without Argon") end
         assert.is_false(PDK.check_updates().theme.update_available)
-        assert.equal(0, #H.popen_cmds(), "no release request, including force check")
+        local engine_queries = 0
+        for _, command in ipairs(H.popen_cmds()) do
+            if command:find("sing-box version", 1, true) then engine_queries = engine_queries + 1 end
+        end
+        assert.equal(0, #H.popen_cmds() - engine_queries, "no release request, including force check")
     end)
 
     it("podkop update snapshot cached for 24h overrides live latest", function()
@@ -482,9 +506,8 @@ describe("api_podkop.save_config/import_config", function()
 
     it("quiet nonzero restart is an applied-disk failure, not a successful save", function()
         local PDK = begin_podkop({ sys = {
-            service_reply("restart", "\nPT_EXIT:19\n"),
-            pid_reply("42\nPT_EXIT:0\n")
-        } })
+            service_reply("restart", "\nPT_EXIT:19\n")
+        }, popen = { procd_reply('{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":42}}}}\nPT_EXIT:0\n') } })
         H.vfs_write("/proc/42/stat", "42 (sing-box) S " .. string.rep("0 ", 18) .. "101\n")
         H.vfs_write(CFG, OLD)
         local r = PDK.save_config(VALID)
@@ -504,8 +527,8 @@ describe("api_podkop.save_config/import_config", function()
 end)
 
 describe("api_podkop.service_status/toggle", function()
-    it("status via pidof sing-box", function()
-        local PDK = begin_podkop({ strict = true, sys = { pid_reply("42\nPT_EXIT:0\n") } })
+    it("status via the procd sing-box instance", function()
+        local PDK = begin_podkop({ strict = true, popen = { procd_reply('{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":42}}}}\nPT_EXIT:0\n') } })
         H.vfs_write("/proc/42/stat", "42 (sing-box) S " .. string.rep("0 ", 18) .. "101\n")
         local r = PDK.service_status()
         assert.is_true(r.running)
@@ -516,8 +539,8 @@ describe("api_podkop.service_status/toggle", function()
         assert.is_false(PDK2.service_status().running)
     end)
 
-    it("toggle: invalid rejected; start/stop exec + pid echo", function()
-        local PDK = begin_podkop({ strict = true, sys = { pid_reply("7\nPT_EXIT:0\n") } })
+    it("toggle: invalid rejected; start/stop exec + instance echo", function()
+        local PDK = begin_podkop({ strict = true, popen = { procd_reply('{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":7}}}}\nPT_EXIT:0\n') } })
         H.vfs_write("/proc/7/stat", "7 (sing-box) S " .. string.rep("0 ", 18) .. "102\n")
         assert.same({ success = false, error = "Invalid action" }, PDK.service_toggle("reload"))
         local started = PDK.service_toggle("start")
@@ -534,11 +557,10 @@ describe("api_podkop.service_status/toggle", function()
     end)
 
     it("preserves Unknown status and failed service-command diagnostics", function()
-        local details = string.rep("pid query failed\n", 40)
+        local details = string.rep("procd query failed\n", 40)
         local PDK = begin_podkop({ strict = true, sys = {
-            pid_reply(details .. "\nPT_EXIT:2\n"),
             service_reply("start", "\nPT_EXIT:1\n")
-        } })
+        }, popen = { procd_reply(details .. "\nPT_EXIT:2\n") } })
         local status = PDK.service_status()
         assert.truthy(status.error)
         assert.is_nil(status.running)

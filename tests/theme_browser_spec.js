@@ -245,7 +245,11 @@ function copyFixture(name) {
         const endpoint = expr.match(/api\/([^"']+)/);
         return endpoint ? '/copyapi/' + endpoint[1] : '';
     });
-    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${assetBaseVersion}"></head><body><div class="main-right">${markup}</div><script>${bootstrap};${browserRequestObserver}window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:undefined});document.addEventListener('copy',event=>{window.copyWrites.push(document.activeElement.value);event.preventDefault();});</script><script src="/common.js?v=${assetBaseVersion}"></script><script>${scripts[scripts.length - 1][1]}</script></body></html>`;
+    // All plain-JavaScript inline blocks run in source order; the <%= %>
+    // bootstrap is replaced above and optional blocks stay in their own tags.
+    const inline = scripts.slice(1).filter(match => match[1].trim() && !match[1].includes('<%'))
+        .map(match => match[1]).join('\n');
+    return `<!doctype html><html><head><meta charset="utf-8"><style>${lightTheme}${darkTheme}</style><link rel="stylesheet" href="/common.css?v=${assetBaseVersion}"></head><body><div class="main-right">${markup}</div><script>${bootstrap};${browserRequestObserver}window.copyWrites=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:undefined});document.addEventListener('copy',event=>{window.copyWrites.push(document.activeElement.value);event.preventDefault();});</script><script src="/common.js?v=${assetBaseVersion}"></script><script>${inline}</script></body></html>`;
 }
 
 const copyLogLines = Array.from({ length: 15 }, (_, i) => [`12:${String(i).padStart(2, '0')} 09.10.2026|manual|updated=1|unchanged=0|failed=0`, `  main-${i}: updated`, `    detail ${i}: <script>plain text</script>`]).flat();
@@ -287,8 +291,8 @@ function subscriptionJournalLines(finished = false, malformed = malformedJournal
     ];
 }
 const fixtureTLSOutbounds = { outbound_count: 2, outbounds: [
-    { tag: 'fixture-vless', type: 'vless', server: 'vless.fixture.test', tls_enabled: true, has_fragment: false },
-    { tag: 'fixture-trojan', type: 'trojan', server: 'trojan.fixture.test', tls_enabled: true, has_fragment: true }
+    { tag: 'fixture-vless', type: 'vless', server: 'vless.fixture.test', tls_enabled: true, has_fragment: false, reality: true },
+    { tag: 'fixture-trojan', type: 'trojan', server: 'trojan.fixture.test', tls_enabled: true, has_fragment: true, reality: false }
 ] };
 const contentRequests = [], subscriptionRequests = [];
 const subscriptionSettings = { auto_update_interval: 4, auto_update_start: '01:30', auto_update_on_restart: true, log_display_count: 10 };

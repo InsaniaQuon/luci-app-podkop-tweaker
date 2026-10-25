@@ -96,11 +96,14 @@ end)
 describe("api_diag.proxy", function()
     local SB_MIXED = '{\n  "inbounds": [\n    { "type": "tun", "listen_port": 9000 },' ..
         '\n    { "type": "mixed", "listen": "127.0.0.1", "listen_port": 8080 }\n  ]\n}\n'
+    local PROCD_RUNNING = '{"sing-box":{"instances":{"sing-box.main":{"running":true,"pid":777}}}}'
 
-    local function begin_with(sb_content, sys_out, curl_raw)
+    local function begin_with(sb_content, procd_body, curl_raw)
         H.begin({
-            sys = sys_out and { { match = "pidof sing-box", out = sys_out } } or {},
             popen = function(cmd)
+                if cmd:find("ubus", 1, true) then
+                    return (procd_body == nil and PROCD_RUNNING or procd_body) .. "\nPT_EXIT:0\n"
+                end
                 if cmd:find("%-x http://127%.0%.0%.1:%d+") then return curl_raw or "" end
                 return ""
             end
@@ -109,7 +112,7 @@ describe("api_diag.proxy", function()
     end
 
     it("mixed inbound + running service -> OK result", function()
-        begin_with(SB_MIXED, "777\n", "200 0.123456\n")
+        begin_with(SB_MIXED, nil, "200 0.123456\n")
         local DIA = H.reload("podkop-tweaker.api_diag")
         local resp = DIA.proxy()
         assert.falsy(resp.error)
@@ -120,27 +123,35 @@ describe("api_diag.proxy", function()
         assert.equal("OK", e.status)
     end)
 
-    it("no mixed inbound -> exact error, no pidof call", function()
-        begin_with('{ "inbounds": [ { "type": "tun", "listen_port": 9000 } ] }', "", "")
+    it("no mixed inbound -> exact error, no status query", function()
+        begin_with('{ "inbounds": [ { "type": "tun", "listen_port": 9000 } ] }', nil, "")
         local DIA = H.reload("podkop-tweaker.api_diag")
         local resp = DIA.proxy()
         assert.same({ results = {}, error = "No mixed inbound found in sing-box config" }, resp)
-        local pid_calls = 0
-        for _, c in ipairs(H.exec_cmds()) do
-            if c:find("pidof", 1, true) then pid_calls = pid_calls + 1 end
+        local status_calls = 0
+        for _, c in ipairs(H.popen_cmds()) do
+            if c:find("ubus", 1, true) then status_calls = status_calls + 1 end
         end
-        assert.equal(0, pid_calls)
+        assert.equal(0, status_calls)
     end)
 
     it("service down -> error before curl", function()
-        begin_with(SB_MIXED, "", "")
+        begin_with(SB_MIXED, '{"sing-box":{"instances":{}}}', "")
         local DIA = H.reload("podkop-tweaker.api_diag")
         assert.same({ results = {}, error = "sing-box is not running" }, DIA.proxy())
-        assert.equal(0, #H.popen_cmds())
+        assert.equal(1, #H.popen_cmds())
+    end)
+
+    it("query failure is distinct from a stopped service", function()
+        begin_with(SB_MIXED, "garbage", "")
+        local DIA = H.reload("podkop-tweaker.api_diag")
+        local resp = DIA.proxy()
+        assert.equal("Cannot query sing-box status", resp.error)
+        assert.equal(1, #H.popen_cmds(), "no curl runs after a failed status query")
     end)
 
     it("garbage curl output -> code 0 FAIL with elapsed fallback", function()
-        begin_with(SB_MIXED, "1\n", "000\n")
+        begin_with(SB_MIXED, nil, "000\n")
         local DIA = H.reload("podkop-tweaker.api_diag")
         local e = DIA.proxy().results[1]
         assert.equal(0, e.http_code)
@@ -149,7 +160,7 @@ describe("api_diag.proxy", function()
     end)
 
     it("http 500 -> FAIL", function()
-        begin_with(SB_MIXED, "1\n", "500 0.25\n")
+        begin_with(SB_MIXED, nil, "500 0.25\n")
         local DIA = H.reload("podkop-tweaker.api_diag")
         local e = DIA.proxy().results[1]
         assert.equal(500, e.http_code)
@@ -160,8 +171,11 @@ describe("api_diag.proxy", function()
     it("config_path override from podkop uci is honored", function()
         H.begin({
             uci = { podkop = { H.sec("sb", "section", { config_path = "/opt/sb.json" }) } },
-            sys = { { match = "pidof sing-box", out = "9\n" } },
-            popen = function(cmd) if cmd:find(":9090") then return "204 0.05\n" end return "" end
+            popen = function(cmd)
+                if cmd:find("ubus", 1, true) then return PROCD_RUNNING .. "\nPT_EXIT:0\n" end
+                if cmd:find(":9090") then return "204 0.05\n" end
+                return ""
+            end
         })
         H.vfs_write("/opt/sb.json", '{ "inbounds": [ { "type": "mixed", "listen_port": 9090 } ] }')
         local DIA = H.reload("podkop-tweaker.api_diag")

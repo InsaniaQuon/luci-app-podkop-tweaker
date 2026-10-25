@@ -1,4 +1,4 @@
--- Podkop Tweaker | HTTP helpers: CSRF, cache headers, service pid
+-- Podkop Tweaker | HTTP helpers: CSRF, cache headers, bounded downloads
 -- Author: InsaniaQuon
 
 local M = {}
@@ -152,11 +152,6 @@ function M.send_download(path, filename, not_found_msg)
     http.prepare_content("application/octet-stream")
     http.header("Content-Disposition", 'attachment; filename="' .. filename .. '"')
     http.write(content)
-end
-
-function M.get_service_pid(process_name)
-    local sys = require("luci.sys")
-    return sys.exec("pidof " .. process_name .. " 2>/dev/null"):match("(%d+)")
 end
 
 return M
