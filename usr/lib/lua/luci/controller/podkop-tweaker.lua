@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.12.1 | 24.10.2026 | Podkop-engine polish: derived build label, pretty patch output
+-- Podkop Tweaker | v4.12.2 | 24.10.2026 | Honest chain_info: named Podkop settings source, verified-absent vs failed read, configured-not-live chain
 
-local APP_VERSION = "4.12.1"
+local APP_VERSION = "4.12.2"
 -- Bump when UI assets change within the same unpublished release train.
 local ASSET_REVISION = "1"
 

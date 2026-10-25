@@ -240,8 +240,21 @@ describe("api_stubby service status/toggle/rollback", function()
 end)
 
 describe("api_stubby.chain_info", function()
-    local function read_chain(stubby, podkop)
-        return begin_stubby({ uci = { stubby = stubby or {}, podkop = podkop or {} } }).chain_info()
+    local function read_chain(stubby, podkop, get_all_error)
+        podkop = podkop or {}
+        local api = begin_stubby({ uci = { stubby = stubby or {}, podkop = podkop } })
+        -- The harness UCI fake ships no get_all; provide the native package
+        -- read the production code relies on (name -> section map), with an
+        -- optional forced RPC failure.
+        local uci = require("luci.model.uci").cursor()
+        uci.get_all = function(self, config)
+            assert.equal("podkop", config)
+            if get_all_error then return nil, get_all_error end
+            local map = {}
+            for _, section in ipairs(podkop) do map[section[".name"]] = section end
+            return map
+        end
+        return api.chain_info()
     end
 
     it("preserves string/list listener values", function()
@@ -249,18 +262,37 @@ describe("api_stubby.chain_info", function()
         assert.equal("127.0.0.1@53, ::1@53", read_chain({ H.sec("global", "stubby", { listen_address = { "127.0.0.1@53", "::1@53" } }) }).stubby_listen)
     end)
 
-    it("maps resolvers and existing defaults; last configured Podkop DNS remains authoritative", function()
+    it("reads dns_server from the named settings section Podkop itself uses", function()
         local r = read_chain({
             H.sec("r1", "resolver", { address = "1.1.1.1", tls_auth_name = "cf" }),
             H.sec("r2", "resolver", { address = "9.9.9.9", tls_port = "8553" }), H.sec("r3", "resolver", {})
-        }, { H.sec("a", "section", { dns_server = "1.1.1.1" }), H.sec("b", "section", { dns_server = "9.9.9.9" }) })
+        }, { H.sec("settings", "settings", { dns_server = "127.0.0.53", dns_type = "udp" }) })
         assert.equal("", r.stubby_listen)
         assert.same({
             { address = "1.1.1.1", tls_auth_name = "cf", tls_port = "853" },
             { address = "9.9.9.9", tls_auth_name = "", tls_port = "8553" },
             { address = "", tls_auth_name = "", tls_port = "853" }
         }, r.resolvers)
-        assert.equal("9.9.9.9", r.podkop_dns)
+        assert.equal("127.0.0.53", r.podkop_dns)
+    end)
+
+    it("returns a DoH URL value as-is", function()
+        local r = read_chain({}, { H.sec("settings", "settings", { dns_server = "https://9.9.9.9/dns-query" }) })
+        assert.equal("https://9.9.9.9/dns-query", r.podkop_dns)
+    end)
+
+    it("empty string is the honest absent-option fact after a successful read", function()
+        assert.equal("", read_chain({}, { H.sec("settings", "settings", { dns_type = "udp" }) }).podkop_dns)
+        assert.equal("", read_chain({}, { H.sec("main", "section", { dns_server = "9.9.9.9" }) }).podkop_dns,
+            "a section-typed dns_server is not the source Podkop reads")
+    end)
+
+    it("a failed whole-package read is an explicit error, never defaults", function()
+        local r = read_chain({ H.sec("global", "stubby", { listen_address = "127.0.0.53@53" }) }, nil, "UCI RPC failed")
+        assert.equal("Cannot read Podkop configuration", r.error)
+        assert.equal("UCI RPC failed", r.details)
+        assert.is_nil(r.podkop_dns)
+        assert.is_nil(r.resolvers)
     end)
 end)
 

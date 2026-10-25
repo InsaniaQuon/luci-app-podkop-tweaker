@@ -857,12 +857,13 @@ for (const endpoint of localDiagnostics) for (const httpStatus of [200, 500]) {
 // DNS budget scales with all upstream queries, not the grouped chain labels;
 // unknown chain facts retain a conservative fallback instead of a short cap.
 for (const [chain, count] of [
-    [{ resolvers: Array.from({ length: 24 }, (_, i) => ({ address: '192.0.2.' + (i + 1), tls_auth_name: 'same provider' })) }, 24],
-    [{ resolvers: Array(6).fill({ address: '192.0.2.53', tls_auth_name: 'same provider' }) }, 6],
-    [{ resolvers: {} }, 6], [null, 16], [{ error: 'Cannot read chain' }, 16],
+    [{ podkop_dns: '', resolvers: Array.from({ length: 24 }, (_, i) => ({ address: '192.0.2.' + (i + 1), tls_auth_name: 'same provider' })) }, 24],
+    [{ podkop_dns: '', resolvers: Array(6).fill({ address: '192.0.2.53', tls_auth_name: 'same provider' }) }, 6],
+    [{ podkop_dns: '', resolvers: {} }, 6], [null, 16], [{ error: 'Cannot read chain' }, 16],
     [{ success: false, resolvers: [] }, 16], [{ unknown: true, resolvers: [] }, 16],
-    [{ resolvers: [null] }, 16], [{ resolvers: [{ address: 1 }] }, 16],
+    [{ resolvers: [null] }, 16],     [{ resolvers: [{ address: 1 }] }, 16],
     [{ resolvers: [{ address: '192.0.2.53', tls_auth_name: {} }] }, 16],
+    [{ podkop_dns: 53, resolvers: Array(6).fill({ address: '192.0.2.53' }) }, 16],
     ...[NaN, Infinity, -Infinity, -1, 1.5, '6', 4294967295].map(length => [{ resolvers: { length } }, 16]),
     [{ resolvers: new Array(4294967295) }, 16]
 ]) {
@@ -873,10 +874,41 @@ for (const [chain, count] of [
     s.requests[0].reply(dnsResponse); assert.equal(logs(s)[0].status, 'OK');
 }
 
+// The chain view draws only facts it actually read: the Stubby branch appears
+// when the configured Podkop DNS is exactly the Stubby listener IP; "" is the
+// honest not-set fact of a successful read; any other value stays in the
+// Podkop DNS line without a fabricated Stubby path.
+for (const [chain, checks] of [
+    [{ stubby_listen: '127.0.0.53@53', podkop_dns: '127.0.0.53',
+        resolvers: [{ address: '192.0.2.53', tls_auth_name: 'dot.example', tls_port: '853' }] },
+        { stubby: true, upstreams: true, dns: 'Podkop DNS: 127.0.0.53' }],
+    [{ stubby_listen: '127.0.0.53@53', podkop_dns: '9.9.9.9', resolvers: [{ address: '192.0.2.53', tls_auth_name: 'dot.example' }] },
+        { stubby: false, upstreams: false, dns: 'Podkop DNS: 9.9.9.9' }],
+    [{ stubby_listen: '127.0.0.53@53', podkop_dns: 'https://9.9.9.9/dns-query', resolvers: [] },
+        { stubby: false, upstreams: false, dns: 'Podkop DNS: https://9.9.9.9/dns-query' }],
+    [{ stubby_listen: '127.0.0.53@53', podkop_dns: '', resolvers: [] },
+        { stubby: false, upstreams: false, dns: 'Podkop DNS: not set' }]
+]) {
+    const s = setup(); diagnostics(s, chain);
+    const html = s.get('ps-chain-content').innerHTML;
+    assert.equal(html.includes('id="chain-stubby"'), checks.stubby, 'stubby branch drawn: ' + checks.stubby);
+    assert.equal(html.includes('id="chain-upstream-0"'), checks.upstreams, 'upstream rows drawn: ' + checks.upstreams);
+    assert.ok(html.includes(checks.dns), 'configured dns line: ' + checks.dns);
+    assert.ok(html.includes('not live traffic proof'), 'the configured-not-live note stays visible');
+    assert.equal(html.includes('Stubby branch not drawn'), !checks.stubby);
+}
+// A non-string podkop_dns or a failed read is a broken/failed response, never
+// a chain with fabricated facts.
+for (const chain of [{ stubby_listen: '127.0.0.53@53', podkop_dns: 53, resolvers: [] },
+    { error: 'Cannot read Podkop configuration' }]) {
+    const s = setup(); diagnostics(s, chain);
+    assert.equal(s.get('ps-chain-content').textContent, 'Failed to load chain info');
+}
+
 // Exercise both sides of the actual signed-32-bit timer boundary through the
 // real page/chain response. Reuse one provider label to avoid a giant DOM fixture.
 for (const [count, expected] of [[35789, 2147470000], [35790, 2147483647], [40000, 2147483647]]) {
-    const s = setup(); diagnostics(s, { resolvers: Array(count).fill({ address: '192.0.2.53', tls_auth_name: 'one provider' }) });
+    const s = setup(); diagnostics(s, { podkop_dns: '', resolvers: Array(count).fill({ address: '192.0.2.53', tls_auth_name: 'one provider' }) });
     s.get('ps-dns-run').click();
     assert.equal(s.requests[0].timeout, expected, 'large counts saturate safely instead of wrapping to an immediate timeout');
     assert.ok(Number.isInteger(s.requests[0].timeout) && s.requests[0].timeout >= 490000 && s.requests[0].timeout <= 2147483647);

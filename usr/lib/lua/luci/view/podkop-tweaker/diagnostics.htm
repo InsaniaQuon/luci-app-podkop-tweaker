@@ -354,6 +354,10 @@ window.PT = {
         if (!envelope(data)) return null;
         if (emptyObject(data.resolvers)) return [];
         if (!Array.isArray(data.resolvers)) return null;
+        // podkop_dns must be a verified string: "" is the honest "not set"
+        // fact of a successful read, while a non-string is a broken response
+        // that must never become a configuration statement.
+        if (typeof data.podkop_dns !== 'string') return null;
         var rows = data.resolvers;
         // Visit every index: Array.every skips holes, which cannot establish a
         // typed resolver count. Array-like objects never supply the count.
@@ -365,9 +369,22 @@ window.PT = {
         return rows;
     }
 
+    // The Stubby branch is drawn only when the configured Podkop DNS is exactly
+    // the IP of the first Stubby listener; anything else (public IP, DoH URL)
+    // does not flow through this Stubby and must not be drawn as if it did.
+    function stubbyBranchDrawn(data) {
+        if (!data.podkop_dns) return false;
+        if (!/^\d+\.\d+\.\d+\.\d+$/.test(data.podkop_dns)) return false;
+        var listen = typeof data.stubby_listen === 'string' ? data.stubby_listen.split(',')[0].trim() : '';
+        var stubbyIp = listen.split('@')[0];
+        return !!stubbyIp && stubbyIp === data.podkop_dns;
+    }
+
     function buildChainHtml(data, resolvers) {
-        var stubbyListen = data.stubby_listen || '127.0.0.53@53';
-        var podkopDns = data.podkop_dns || '127.0.0.53';
+        var stubbyListen = typeof data.stubby_listen === 'string' && data.stubby_listen
+            ? data.stubby_listen : '127.0.0.53@53';
+        var podkopDns = data.podkop_dns || 'not set';
+        var stubbyDrawn = stubbyBranchDrawn(data);
         _chainResolverCount = resolvers.length;
 
         var grouped = Object.create(null);
@@ -379,28 +396,32 @@ window.PT = {
             grouped[name].push(r.address + ':' + (r.tls_port || '853'));
         }
 
-        _chainUpstreamNames = orderedNames;
+        _chainUpstreamNames = stubbyDrawn ? orderedNames : [];
 
         var html = '';
         html += span('chain-client', 'Client -> dnsmasq (:53)');
         html += span('chain-sep-c1', '              |');
         html += span('chain-sep-c2', '              v');
-        html += span('chain-singbox', '         sing-box (' + podkopDns + ', FakeIP)');
+        html += span('chain-singbox', '         sing-box (FakeIP)');
         html += span('chain-sep-s1', '              |');
         html += span('chain-fakeip', '              +-- domain in list -> FakeIP (instant, no real DNS)');
         html += span('chain-sep-s2', '              |');
-        html += span('chain-direct', '              +-- direct domain / bootstrap');
-        html += span('chain-sep-d1', '                     |');
-        html += span('chain-sep-d2', '                     v');
-        html += span('chain-stubby', '              stubby (' + stubbyListen + ', DoT)');
-        html += span('chain-sep-st1', '                     |');
-
-        for (var j = 0; j < orderedNames.length; j++) {
-            var n = orderedNames[j];
-            var addrs = grouped[n].join('; ');
-            var prefix = (j < orderedNames.length - 1) ? '              +-- ' : '              \\-- ';
-            html += span('chain-upstream-' + j, prefix + n + ' (' + addrs + ')');
+        html += span('chain-direct', '              +-- direct / bootstrap -> Podkop DNS: ' + podkopDns);
+        if (stubbyDrawn) {
+            html += span('chain-sep-d1', '                     |');
+            html += span('chain-sep-d2', '                     v');
+            html += span('chain-stubby', '              stubby (' + stubbyListen + ', DoT)');
+            html += span('chain-sep-st1', '                     |');
+            for (var j = 0; j < orderedNames.length; j++) {
+                var n = orderedNames[j];
+                var addrs = grouped[n].join('; ');
+                var prefix = (j < orderedNames.length - 1) ? '              +-- ' : '              \\-- ';
+                html += span('chain-upstream-' + j, prefix + n + ' (' + addrs + ')');
+            }
+        } else {
+            html += span('chain-nostubby', '              (Podkop DNS is not the local Stubby listener; Stubby branch not drawn)');
         }
+        html += span('chain-note', '        Configured chain - not live traffic proof');
 
         return html;
     }

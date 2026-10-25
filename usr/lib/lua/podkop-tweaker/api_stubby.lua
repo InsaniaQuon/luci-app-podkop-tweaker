@@ -1,4 +1,4 @@
--- Podkop Tweaker | v4.10.4 | 19.10.2026 | Factual ST1 observations and bounded literal init repair
+-- Podkop Tweaker | v4.12.2 | 24.10.2026 | chain_info reads the named Podkop settings section with a checked whole-package parse
 -- Hybrid exceptions kept as-is: read_config, export_config, download_backup (transport endpoints)
 
 local SRV = require("podkop-tweaker.services")
@@ -115,12 +115,18 @@ function M.chain_info()
         })
     end)
 
+    -- The whole-package read confirms the native parse before any field is
+    -- reported; the named "settings" section is the same source Podkop itself
+    -- reads. A failed package read is an explicit error, never defaults.
+    local sections, sections_err = uci:get_all("podkop")
+    if type(sections) ~= "table" then
+        return { error = "Cannot read Podkop configuration", details = tostring(sections_err or "unknown UCI error") }
+    end
     local podkop_dns = ""
-    uci:foreach("podkop", "section", function(s)
-        if s.dns_server then
-            podkop_dns = s.dns_server
-        end
-    end)
+    local settings = sections.settings
+    if type(settings) == "table" and type(settings.dns_server) == "string" then
+        podkop_dns = settings.dns_server
+    end
 
     return {
         stubby_listen = stubby_listen,
