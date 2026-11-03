@@ -1,9 +1,9 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.12.2 | 24.10.2026 | Honest chain_info: named Podkop settings source, verified-absent vs failed read, configured-not-live chain
+-- Podkop Tweaker | v4.13.0 | 02.11.2026 | Repeated DNS Checks (rounds on dig), doc-refresh pass 1
 
-local APP_VERSION = "4.12.2"
+local APP_VERSION = "4.13.0"
 -- Bump when UI assets change within the same unpublished release train.
-local ASSET_REVISION = "1"
+local ASSET_REVISION = "9"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")
@@ -11,9 +11,11 @@ local SUB = require("podkop-tweaker.api_subs")
 local STB = require("podkop-tweaker.api_stubby")
 local SBX = require("podkop-tweaker.api_singbox")
 local DIA = require("podkop-tweaker.api_diag")
+local PROBE = require("podkop-tweaker.dns_probe")
 local ARG = require("podkop-tweaker.api_argon")
 local BND = require("podkop-tweaker.api_bundle")
 local UPD = require("podkop-tweaker.api_update")
+local ENGINE = require("podkop-tweaker.engine_update")
 
 UPD.init(APP_VERSION)
 
@@ -263,6 +265,9 @@ function index()
     entry({"admin", "services", "podkop-tweaker", "api", "argon_theme_job"},
         call("api_argon_theme_job")).leaf = true
 
+    entry({"admin", "services", "podkop-tweaker", "api", "engine_update"},
+        call("api_engine_update")).leaf = true
+
     entry({"admin", "services", "podkop-tweaker", "api", "app_version"},
         call("api_app_version")).leaf = true
     entry({"admin", "services", "podkop-tweaker", "api", "restart_status"},
@@ -275,6 +280,11 @@ function index()
         call("api_dns_observation_start")).leaf = true
     entry({"admin", "services", "podkop-tweaker", "api", "dns_observation_results"},
         call("api_dns_observation_results")).leaf = true
+
+    entry({"admin", "services", "podkop-tweaker", "api", "diag_dns_context"},
+        call("api_diag_dns_context")).leaf = true
+    entry({"admin", "services", "podkop-tweaker", "api", "diag_dns_round"},
+        call("api_diag_dns_round")).leaf = true
 end
 
 local function render_page(template_name, extra)
@@ -571,6 +581,19 @@ function api_dns_observation_results()
     json_api(true, DIA.dns_observation_results, http.formvalue("id") or "")
 end
 
+-- === Repeated DNS Checks (plan v2: context GET + round POST) ===
+
+function api_diag_dns_context() json_api(false, PROBE.context) end
+
+function api_diag_dns_round()
+    local http = require("luci.http")
+    json_api(true, PROBE.round,
+        http.formvalue("domain") or "",
+        http.formvalue("round"),
+        http.formvalue("order") or "",
+        http.formvalue("context_id") or "")
+end
+
 -- === Argon ===
 
 function api_argon_typography() json_api(false, ARG.typography) end
@@ -664,6 +687,11 @@ end
 function api_clear_cache() json_api(true, UPD.clear_cache, require("luci.http").formvalue("restart_id")) end
 function api_restart_status() json_api(false, UPD.restart_status, require("luci.http").formvalue("id") or "") end
 function api_check_updates() json_api(true, PDK.check_updates) end
+
+function api_engine_update()
+    local http = require("luci.http")
+    json_api(true, ENGINE.apply, http.formvalue("target") or "")
+end
 function api_read_update_log() json_api(false, UPD.read_log) end
 function api_tweaker_check_update() json_api(false, UPD.check_update) end
 function api_tweaker_git_update()

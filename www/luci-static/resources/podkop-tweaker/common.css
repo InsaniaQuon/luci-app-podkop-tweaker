@@ -214,6 +214,7 @@ editor (--ps-editor-bg). All text, borders and status colors are semantic.
 .ps-sysinfo-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px}
 .ps-sysinfo-status{font-size:13px;font-weight:600;white-space:nowrap}
 .ps-ver-outdated{color:var(--ps-warning);font-size:12px;font-weight:600}
+.ps-downgrade-offset{margin-left:28px}
 .ps-sub-section{border:1px solid var(--ps-border);border-radius:8px;margin-bottom:16px;overflow:hidden}
 .ps-sub-section-header{display:flex;align-items:center;padding:12px 16px;background:var(--ps-bg-alt);color:var(--ps-text);border-bottom:1px solid var(--ps-border)}
 .ps-sub-section-name{font-weight:700;font-size:14px;color:var(--ps-text)}

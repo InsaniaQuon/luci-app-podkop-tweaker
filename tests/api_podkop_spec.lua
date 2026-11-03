@@ -48,6 +48,11 @@ local function begin_podkop(opts)
     table.insert(pipes, procd_reply(PROCD_STOP))
     -- Additive engine build facts: absent/failed output yields nil fields.
     table.insert(pipes, { match = "sing-box version", out = opts.singbox_version or "" })
+    -- Engine release facts: deterministic no-network answers for the
+    -- engine_update helpers (package census and GitHub curl). Scoped to the
+    -- engine repository so the theme release responder stays authoritative.
+    table.insert(pipes, { match = "apk list --installed", out = "\nPT_EXIT:0\n" })
+    table.insert(pipes, { match = "podkop-net/podkop-engine", out = "" })
     if type(network) == "function" then
         pipes[#pipes + 1] = { match = function(command) return not command:find("PT_EXIT:", 1, true) end, out = network }
     end

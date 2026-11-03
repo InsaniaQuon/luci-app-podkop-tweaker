@@ -10,20 +10,28 @@ LuCI web interface for managing Podkop proxy client on OpenWrt routers.
 - **Diagnostics** — DNS chain, local DNS/proxy/end-to-end tests, manual browser DNS observation, Podkop Diagnostics shortcut and JSON run log
 - **Subscriptions** — vless/vmess/ss/trojan subscriptions per proxy slot, manual/cron/WAN updates, scheduler status and journal
 - **Import/Export** — selected-item JSON bundle backups and raw config imports, review before applying and automatic backups
-- **System Information** — component versions, update checks and interactive Podkop update via ttyd
+- **System Information** — component versions, update checks, interactive Podkop update via ttyd and podkop-engine update/rollback/slim-full switch
 - **Local Update / Git Update** — self-update from an archive or GitHub Releases, same-version reinstall and LuCI cache cleanup
 - **Argon Config** (optional) — global theme typography and app appearance profiles, monospace settings and status colors with live preview
 - **Copy text** — clipboard controls for editors, logs, diagrams, diff previews and complete error details
 
 ## Requirements
 
-- **OpenWrt** with classic LuCI/Lua support (24.10.x / 25.12.x)
-- `luci-lua-runtime` — Lua runtime for classic LuCI server-side templates
-- `Podkop` — proxy client (sing-box based)
-- `curl` — HTTP requests
-- `stubby` — optional, for Stubby configuration and DNS-over-TLS diagnostics
-- `ttyd` — optional, for interactive Podkop updates
-- `cron` — optional, for scheduled subscription updates
+Everything is developed and verified against one tested stack:
+
+| Component | Tested | Role |
+|---|---|---|
+| OpenWrt | **25.12.6** (apk) | classic LuCI/Lua runtime (`luci-lua-runtime`); 24.10/opkg is not tested |
+| Podkop | **0.7.24** | proxy client: owns `/etc/config/podkop`, generates and restarts sing-box |
+| podkop-engine | **1.14.4-r20** (slim) | the supported sing-box build: engine version/label, update, rollback and slim↔full switch target it; with the stock feed `sing-box` package the app still edits configs and runs diagnostics, but engine features stay hidden |
+
+Pulled in automatically by Podkop: `curl`, `jq`, `kmod-nft-tproxy`, `ca-bundle`.
+
+Optional: `stubby` (Stubby editor, DoT diagnostics and the DNS chain view), `ttyd`
+(interactive Podkop update terminal), `cron` (scheduled subscription updates).
+
+Newer or slightly older releases of these components will generally work, but
+only the matrix above is actually tested — no guarantees outside it.
 
 ## Installation
 

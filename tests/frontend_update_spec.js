@@ -39,7 +39,7 @@ class Form {
 const repo = path.resolve(__dirname, '..');
 const common = fs.readFileSync(path.join(repo, 'www/luci-static/resources/podkop-tweaker/common.js'), 'utf8');
 const urls = { upload: '/upload', apply: '/apply', systemInfo: '/info', checkUpdates: '/check',
-    tweakerUpdate: '/git', argonThemeUpdate: '/theme', argonThemeJob: '/themejob', clearCache: '/cache', restartStatus: '/restart/status', appVersion: '/version' };
+    tweakerUpdate: '/git', argonThemeUpdate: '/theme', argonThemeJob: '/themejob', clearCache: '/cache', restartStatus: '/restart/status', appVersion: '/version', engineUpdate: '/engine', serviceStatus: '/svcstatus' };
 
 function setup(viewName) {
     const requests = [], elements = {}, calls = [], timers = [], events = {}, prompts = [];

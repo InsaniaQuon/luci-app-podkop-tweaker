@@ -14,6 +14,7 @@ Author: InsaniaQuon
             <h3>System Information</h3>
             <button class="btn cbi-button" id="ps-check-updates">Check for updates</button>
             <button class="btn cbi-button" id="ps-refresh-info">Refresh</button>
+            <span class="ps-sysinfo-status" id="ps-update-status"></span>
         </div>
 
         <div class="ps-sysinfo-loading" id="ps-sysinfo-loading">Loading system information...</div>
@@ -44,6 +45,10 @@ Author: InsaniaQuon
                     <td class="ps-sysinfo-label">Sing-box Features</td>
                     <td class="ps-sysinfo-value" id="ps-info-sb-features" style="white-space:normal;word-break:break-word;">-</td>
                 </tr>
+                <tr id="ps-row-engine" style="display:none;">
+                    <td class="ps-sysinfo-label">Podkop Engine</td>
+                    <td class="ps-sysinfo-value" id="ps-info-engine" style="white-space:normal;word-break:break-word;">-</td>
+                </tr>
                 <tr id="ps-row-argon">
                     <td class="ps-sysinfo-label">Argon Theme</td>
                     <td class="ps-sysinfo-value" id="ps-info-argon">-</td>
@@ -68,7 +73,6 @@ Author: InsaniaQuon
             <button class="btn cbi-button" id="ps-clear-cache" style="display:none;">
                 Clear LuCI Cache
             </button>
-            <span class="ps-sysinfo-status" id="ps-update-status"></span>
         </div>
 
         <div class="ps-warning-box">
@@ -77,8 +81,9 @@ Author: InsaniaQuon
                 <li><strong>Podkop:</strong> Opens a terminal window (ttyd) for interactive update. Backup is created automatically. Click Refresh after completion.</li>
                 <li><strong>Podkop Tweaker:</strong> LuCI will restart during update. Page reloads automatically. Do not power off the router.</li>
                 <li><strong>Argon Theme:</strong> Updates the theme and its installed companion packages, preserving settings and typography (with CSS reinjection). A saved update plan can be resumed explicitly. LuCI restarts after completion; the page reloads automatically.</li>
+                <li><strong>Podkop Engine:</strong> Updates the patched sing-box engine package from its GitHub releases, rolls back to the previous release or switches the slim/full flavor at the same version. The package is SHA-256-verified before installation; Podkop restarts, so proxying briefly interrupts. No automatic updates.</li>
                 <li><strong>Clear Cache:</strong> Clears LuCI internal cache and restarts the web interface. Use if the page shows outdated information after an update.</li>
-                <li><strong>Check for updates:</strong> Forces a fresh check for Podkop, Podkop Tweaker and Argon Theme. Otherwise each source is checked automatically once a day.</li>
+                <li><strong>Check for updates:</strong> Forces a fresh check for Podkop, Podkop Tweaker, Argon Theme and the Podkop engine. Otherwise each source is checked automatically once a day.</li>
             </ul>
         </div>
     </div>
@@ -98,7 +103,9 @@ window.PT = {
         argonThemeUpdate: '<%=url("admin/services/podkop-tweaker/api/argon_theme_update")%>',
         argonThemeJob: '<%=url("admin/services/podkop-tweaker/api/argon_theme_job")%>',
         clearCache: '<%=url("admin/services/podkop-tweaker/api/clear_cache")%>',
-        restartStatus: '<%=url("admin/services/podkop-tweaker/api/restart_status")%>'
+        restartStatus: '<%=url("admin/services/podkop-tweaker/api/restart_status")%>',
+        engineUpdate: '<%=url("admin/services/podkop-tweaker/api/engine_update")%>',
+        serviceStatus: '<%=url("admin/services/podkop-tweaker/api/service_status")%>'
     }
 };
 </script>
@@ -198,6 +205,8 @@ window.PT = {
         renderTweakerRow(data);
         // Argon Theme
         renderArgonRow(data);
+        // Podkop Engine (only when the engine binary is installed)
+        renderEngineRow(data);
     }
 
     function renderInfo(data) {
@@ -215,7 +224,8 @@ window.PT = {
         // adds (absence is normal for upstream sing-box, not a package name).
         var featuresRow = document.getElementById('ps-row-sb-features');
         if (typeof data.sing_box_features === 'string' && data.sing_box_features) {
-            document.getElementById('ps-info-sb-features').textContent = data.sing_box_features;
+            // Display-only readability formatting; the API value stays exact.
+            document.getElementById('ps-info-sb-features').textContent = data.sing_box_features.split(',').join(', ');
             featuresRow.style.display = '';
         } else {
             featuresRow.style.display = 'none';
@@ -254,7 +264,7 @@ window.PT = {
             if (btn) { btn.disabled = webPending || !tweakerDownloadUrl; btn.addEventListener('click', function() { doUpdateTweaker(false); }); }
         } else if (gt) {
             cell.innerHTML = 'v' + PT.escapeHtml(ver) + ' <span style="font-size:12px;color:var(--ps-warning)">(Newer than repo v' + PT.escapeHtml(latest) + ')</span>' +
-                ' <button class="btn cbi-button" id="ps-tweaker-downgrade-btn" style="font-size:12px;padding:2px 8px">Downgrade from Git</button>' +
+                ' <button class="btn cbi-button ps-downgrade-offset" id="ps-tweaker-downgrade-btn" style="font-size:12px;padding:2px 8px">Downgrade from Git</button>' +
                 '<span id="ps-tweaker-status" style="font-size:12px;margin-left:6px"></span>';
             var dgBtn = document.getElementById('ps-tweaker-downgrade-btn');
             if (dgBtn) { dgBtn.disabled = webPending || !tweakerDownloadUrl; dgBtn.addEventListener('click', function() { doUpdateTweaker(true); }); }
@@ -297,6 +307,134 @@ window.PT = {
                 PT.setErr(status, data.argon_theme_error, data.argon_theme_details);
             }
         }
+    }
+
+    function renderEngineRow(data) {
+        var row = document.getElementById('ps-row-engine');
+        var cell = document.getElementById('ps-info-engine');
+        var e = data.engine;
+        if (!e || e.installed !== true) {
+            if (row) row.style.display = 'none';
+            cell.textContent = '';
+            return;
+        }
+        if (row) row.style.display = '';
+
+        var html = PT.escapeHtml(e.version || 'unknown') +
+            ' <span style="font-size:12px;color:var(--ps-muted)">(flavor: ' + PT.escapeHtml(e.flavor || 'slim') + ')</span>';
+        if (e.update_available === true && e.latest_version) {
+            html += ' <span class="ps-ver-outdated">(Update available ' + PT.escapeHtml(e.latest_version) + ')</span>' +
+                ' <button class="btn cbi-button cbi-button-apply" id="ps-engine-update-btn" style="font-size:12px;padding:2px 8px">Update Engine</button>';
+        }
+        if (e.flavor) {
+            var other = e.flavor === 'full' ? 'slim' : 'full';
+            html += ' <button class="btn cbi-button" id="ps-engine-switch-btn" style="font-size:12px;padding:2px 8px">Switch to ' + other + '</button>';
+        }
+        if (e.rollback_version) {
+            // Explicit downgrade to the nearest older engine release, set
+            // apart behind a tab-like offset; the confirm dialog names the
+            // exact target version.
+            html += ' <button class="btn cbi-button ps-downgrade-offset" id="ps-engine-downgrade-btn" style="font-size:12px;padding:2px 8px">Downgrade</button>';
+        }
+        html += '<span id="ps-engine-status" style="font-size:12px;margin-left:6px"></span>';
+        if (e.error) {
+            cell.textContent = PT.escapeHtml(e.version || '');
+            var status = document.createElement('span');
+            cell.appendChild(status);
+            PT.setErr(status, e.error, e.details);
+            return;
+        }
+        cell.innerHTML = html;
+        var upBtn = document.getElementById('ps-engine-update-btn');
+        if (upBtn) upBtn.addEventListener('click', function() { doEngineUpdate('latest'); });
+        var dgBtn = document.getElementById('ps-engine-downgrade-btn');
+        if (dgBtn) dgBtn.addEventListener('click', function() { doEngineUpdate('rollback'); });
+        var swBtn = document.getElementById('ps-engine-switch-btn');
+        if (swBtn) swBtn.addEventListener('click', function() { doEngineUpdate('switch'); });
+    }
+
+    function finishEngine(statusEl, text, kind) {
+        webPending = false;
+        checkUpdatesBtn.disabled = refreshBtn.disabled = clearCacheBtn.disabled = false;
+        if (statusEl) {
+            statusEl.textContent = text;
+            statusEl.style.color = PT.color(kind === 'ok' ? 'success' : kind === 'warn' ? 'warning' : 'error');
+        }
+        if (kind === 'ok') loadInfo();
+    }
+
+    function pollEngineRestart(prior, statusEl, ver, attempt) {
+        attempt = attempt || 0;
+        if (attempt > 30) {
+            finishEngine(statusEl, 'Engine ' + ver + ' installed, but the restart is not verified yet. Press Refresh later.', 'warn');
+            return;
+        }
+        // Self-rescheduling bounded poll: a new sing-box instance confirms the
+        // process transition; late/failed status reads just reschedule.
+        setTimeout(function() {
+            PT.getJson(PT.urls.serviceStatus, function(data) {
+                if (data && data.running === true && typeof data.instance === 'string'
+                    && (!prior || data.instance !== prior)) {
+                    finishEngine(statusEl, 'Engine ' + ver + ' installed, service restarted (instance ' + data.instance + ').', 'ok');
+                } else {
+                    pollEngineRestart(prior, statusEl, ver, attempt + 1);
+                }
+            });
+        }, 2000);
+    }
+
+    function doEngineUpdate(target) {
+        if (webPending) return;
+        var e = lastData && lastData.engine;
+        if (!e || e.installed !== true || e.error) return;
+        var ver = target === 'rollback' ? e.rollback_version : e.latest_version;
+        var action, msg;
+        if (target === 'switch') {
+            var other = e.flavor === 'full' ? 'slim' : 'full';
+            action = 'Switch the Podkop engine flavor to ' + other + '?';
+            msg = '\n\nThe engine version stays the same (' + e.version + '); only the package is replaced (slim and full differ in supported outbound types).\n' +
+                (e.flavor === 'full'
+                    ? 'Warning: outbound types available only in full (vmess, tor, snell, ssh, shadowtls, anytls, hysteria, naive) will stop passing sing-box check.\n'
+                    : '') +
+                '\nThe package is downloaded from GitHub (through the local proxy when podkop list downloads use it) and verified by SHA-256. Proxying briefly interrupts while sing-box restarts.';
+            if (!confirm(action + msg)) return;
+        } else {
+            if (!ver) return;
+            action = target === 'rollback' ? 'Roll the Podkop engine back to ' + ver + '?' : 'Update the Podkop engine to ' + ver + '?';
+            if (!confirm(action + '\n\nThe package is downloaded from GitHub (through the local proxy when podkop list downloads use it) and verified by SHA-256 before installation.\nProxying briefly interrupts while sing-box restarts.')) return;
+        }
+
+        var btn = document.getElementById(target === 'rollback' ? 'ps-engine-downgrade-btn'
+            : target === 'switch' ? 'ps-engine-switch-btn' : 'ps-engine-update-btn');
+        var statusEl = document.getElementById('ps-engine-status');
+        webPending = true;
+        webGeneration++;
+        var generation = webGeneration;
+        checkUpdatesBtn.disabled = refreshBtn.disabled = clearCacheBtn.disabled = true;
+        if (btn) btn.disabled = true;
+        if (statusEl) { statusEl.textContent = 'Downloading and installing...'; statusEl.style.color = PT.color('info'); }
+
+        PT.postJson(PT.urls.engineUpdate, 'target=' + encodeURIComponent(target), function(resp, error) {
+            if (generation !== webGeneration) return;
+            if (error) {
+                finishEngine(statusEl, '', null);
+                if (statusEl) PT.setErr(statusEl, error.message, error.details);
+                if (btn) btn.disabled = false;
+                return;
+            }
+            if (!resp || resp.success !== true) {
+                finishEngine(statusEl, '', null);
+                if (statusEl) PT.setErr(statusEl, (resp && resp.error) || 'Engine update failed', resp && resp.details);
+                if (btn) btn.disabled = false;
+                return;
+            }
+            if (statusEl) statusEl.textContent = 'Verifying...';
+            if (resp.version_match === true) {
+                finishEngine(statusEl, 'Engine ' + (resp.version_after || ver) + ' installed.', 'ok');
+                return;
+            }
+            pollEngineRestart(resp.restart && resp.restart.prior_instance ? resp.restart.prior_instance : null, statusEl, ver);
+        }, 600000);
     }
 
     function loadInfo() {
@@ -357,6 +495,19 @@ window.PT = {
             lastData.argon_theme_phase = th.phase || null;
             lastData.argon_theme_error = th.error || null;
             lastData.argon_theme_details = th.details || null;
+            var en = resp.engine || {};
+            if (en.installed === true || lastData.engine) {
+                lastData.engine = {
+                    installed: en.installed === true,
+                    version: en.version || (lastData.engine && lastData.engine.version),
+                    flavor: en.flavor || (lastData.engine && lastData.engine.flavor),
+                    update_available: en.update_available === true,
+                    latest_version: en.latest_version || null,
+                    rollback_version: en.rollback_version || null,
+                    error: en.error || null,
+                    details: en.details || null
+                };
+            }
 
             renderRows(lastData);
             var bits = [];
@@ -367,6 +518,9 @@ window.PT = {
             else bits.push('Tweaker: ' + (tw.update_available ? 'update available' : 'up to date'));
             if (lastData.argon_theme_version) {
                 bits.push('Argon: ' + (th.error ? 'error' : th.resume_available ? 'resume available' : th.update_available ? 'update available' : 'up to date'));
+            }
+            if (lastData.engine && lastData.engine.installed === true) {
+                bits.push('Podkop Engine: ' + (en.error ? 'error' : en.update_available ? 'update available' : 'up to date'));
             }
             setUpdateStatus(bits.join('  |  '), th.error && lastData.argon_theme_version ? 'error' : 'success');
         }, 120000);

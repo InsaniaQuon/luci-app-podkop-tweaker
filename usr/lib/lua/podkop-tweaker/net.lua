@@ -11,13 +11,19 @@ end
 
 -- Pipe output is bounded even on curl builds whose max-filesize only checks
 -- Content-Length. Closing an over-limit pipe stops the producer (broken pipe).
-function M.fetch(url, limit, timeout, user_agent, https_only)
+-- The optional proxy argument routes the request through a local detour
+-- (used for github.com requests, which may be unreachable directly).
+function M.fetch(url, limit, timeout, user_agent, https_only, proxy)
     if not M.valid_url(url, https_only) then return nil, "Invalid HTTP(S) URL" end
     local protocols = https_only and "=https" or "=http,https"
     local cmd = "curl --disable --silent --show-error --fail --location --globoff --max-redirs 5" ..
         " --max-time " .. tostring(timeout or 15) .. " --max-filesize " .. tostring(limit) ..
         " --proto " .. LIB.shell_escape(protocols) .. " --proto-redir " .. LIB.shell_escape(protocols) ..
-        " -A " .. LIB.shell_escape(user_agent or "PodkopTweaker") .. " " .. LIB.shell_escape(url) ..
+        " -A " .. LIB.shell_escape(user_agent or "PodkopTweaker")
+    if proxy then
+        cmd = cmd .. " -x " .. LIB.shell_escape(proxy)
+    end
+    cmd = cmd .. " " .. LIB.shell_escape(url) ..
         " 2>/dev/null; printf '\\nPT_CURL_EXIT:%s\\n' \"$?\""
     local fd = io.popen(cmd, "r")
     if not fd then return nil, "Cannot start download" end

@@ -6,6 +6,7 @@ local LIB = require("podkop-tweaker.lib")
 local S = require("pt-subs-lib")
 local UPD = require("podkop-tweaker.api_update")
 local THEME = require("podkop-tweaker.theme")
+local ENGINE = require("podkop-tweaker.engine_update")
 
 local M = {}
 M.CONFIG_MAX_SIZE = LIB.UCI_MAX_SIZE
@@ -98,6 +99,7 @@ function M.system_info()
 
     local theme = theme_status(false)
     local tweaker = UPD.cached_update() or {}
+    local engine = ENGINE.status(false)
 
     if not info or not info.podkop_version then
         local sb_tags, sb_features = engine_build_info()
@@ -114,6 +116,7 @@ function M.system_info()
             tweaker_version = UPD.get_version(),
             tweaker_latest = tweaker.latest_version,
             tweaker_download_url = tweaker.download_url,
+            engine = engine,
             argon_theme_version = theme.current_version,
             argon_theme_latest = theme.latest_version,
             argon_theme_update_available = theme.update_available == true,
@@ -150,11 +153,12 @@ function M.system_info()
         argon_theme_resume_available = theme.resume_available == true,
         argon_theme_phase = theme.phase,
         argon_theme_error = theme.error,
-        argon_theme_details = theme.details
+        argon_theme_details = theme.details,
+        engine = engine
     }
 end
 
--- Force re-check of all three update sources (System Info "Check for updates" button).
+-- Force re-check of all update sources (System Info "Check for updates" button).
 function M.check_updates()
     local sys = require("luci.sys")
 
@@ -171,7 +175,10 @@ function M.check_updates()
     -- theme: refresh release facts and all live package/recovery metadata
     local theme = theme_status(true)
 
-    return { podkop = podkop, tweaker = tweaker, theme = theme }
+    -- engine: refresh the podkop-engine release decision for this device
+    local engine = ENGINE.status(true)
+
+    return { podkop = podkop, tweaker = tweaker, theme = theme, engine = engine }
 end
 
 function M.update_start()

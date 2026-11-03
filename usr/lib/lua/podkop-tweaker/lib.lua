@@ -45,6 +45,44 @@ function M.version_lt(a, b)
     return false
 end
 
+-- Podkop engine versions carry the upstream base plus a fork revision whose
+-- counter resets with every new base (1.14.4-r2 is newer than 1.13.21-r20),
+-- so comparisons always weigh the base before the revision. Accepts both the
+-- binary display form ("1.14.4-pdk-r20") and the release tag form ("v1.14.4-r20").
+function M.parse_engine_version(ver)
+    if type(ver) ~= "string" then return nil end
+    ver = ver:gsub("^v", "")
+    local major, minor, patch, rev = ver:match("^(%d+)%.(%d+)%.(%d+)%-pdk%-r(%d+)$")
+    if not major then
+        major, minor, patch, rev = ver:match("^(%d+)%.(%d+)%.(%d+)%-r(%d+)$")
+    end
+    if not major then return nil end
+    return { tonumber(major), tonumber(minor), tonumber(patch), tonumber(rev) }
+end
+
+function M.engine_version_lt(a, b)
+    local va = M.parse_engine_version(a)
+    local vb = M.parse_engine_version(b)
+    if not va or not vb then return false end
+    for i = 1, 4 do
+        if (va[i] or 0) < (vb[i] or 0) then return true end
+        if (va[i] or 0) > (vb[i] or 0) then return false end
+    end
+    return false
+end
+
+function M.engine_version_display(ver)
+    local parts = M.parse_engine_version(ver)
+    if not parts then return nil end
+    return string.format("%d.%d.%d-pdk-r%d", parts[1], parts[2], parts[3], parts[4])
+end
+
+function M.engine_version_tag(ver)
+    local parts = M.parse_engine_version(ver)
+    if not parts then return nil end
+    return string.format("%d.%d.%d-r%d", parts[1], parts[2], parts[3], parts[4])
+end
+
 function M.sanitize_section_name(name)
     if not name or name == "" then return nil end
     if not name:match("^[a-zA-Z0-9_%-]+$") then return nil end

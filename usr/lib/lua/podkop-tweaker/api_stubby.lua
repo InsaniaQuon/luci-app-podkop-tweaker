@@ -128,8 +128,19 @@ function M.chain_info()
         podkop_dns = settings.dns_server
     end
 
+    -- PE7: live service observation for the drawn Stubby branch. A
+    -- configured-but-stopped Stubby is an operationally different picture
+    -- from a running one; a failed status query adds no field — unknown
+    -- stays unknown and the chain keeps its configured-not-live note.
+    local stubby_running
+    local status, status_err = SRV.service_status(SRV.ops.stubby)
+    if type(status) == "table" and type(status.running) == "boolean" then
+        stubby_running = status.running
+    end
+
     return {
         stubby_listen = stubby_listen,
+        stubby_running = stubby_running,
         resolvers = resolvers,
         podkop_dns = podkop_dns
     }

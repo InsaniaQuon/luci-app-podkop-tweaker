@@ -650,13 +650,16 @@ for (const applied of [false, true]) {
     assert.equal(s.windowEvents.pagehide, undefined);
 }
 
-function diagnostics(s, chain = { resolvers: [] }) {
+function diagnostics(s, chain = { resolvers: [] }, probeContext = null) {
     s.window.PT.checkStale = () => {};
     s.window.PT.version = 'test-version';
-    s.window.PT.getJson = (url, callback) => { s.chainCallback = callback; if (chain !== null) callback(chain); };
+    s.window.PT.getJson = (url, callback) => {
+        if (url === '/probe/context') { s.probeContextCallback = callback; if (probeContext !== null) callback(probeContext); return; }
+        s.chainCallback = callback; if (chain !== null) callback(chain);
+    };
     s.exports = [];
     s.window.PT.downloadJson = (filename, data) => s.exports.push({ filename, data: JSON.parse(JSON.stringify(data)) });
-    s.window.PT.urls = { chainInfo: '/chain', dnsObservationStart: '/observe/start', dnsObservationResults: '/observe/results', diagDns: '/dns', diagProxy: '/proxy', diagE2e: '/e2e' };
+    s.window.PT.urls = { chainInfo: '/chain', dnsObservationStart: '/observe/start', dnsObservationResults: '/observe/results', diagDns: '/dns', diagProxy: '/proxy', diagE2e: '/e2e', diagDnsContext: '/probe/context', diagDnsRound: '/probe/round' };
     const source = fs.readFileSync(path.join(repo, 'usr/lib/lua/luci/view/podkop-tweaker/diagnostics.htm'), 'utf8');
     const scripts = [...source.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
     vm.runInContext(scripts[scripts.length - 1][1], s.context);
@@ -905,6 +908,22 @@ for (const chain of [{ stubby_listen: '127.0.0.53@53', podkop_dns: 53, resolvers
     assert.equal(s.get('ps-chain-content').textContent, 'Failed to load chain info');
 }
 
+// PE7: a stopped-but-configured Stubby gets a STOPPED suffix on the existing
+// chain line; a running or unknown service keeps the line unchanged.
+for (const [running, suffix] of [[false, true], [true, false], [undefined, false]]) {
+    const chain = { stubby_listen: '127.0.0.53@53', podkop_dns: '127.0.0.53',
+        resolvers: [{ address: '192.0.2.53', tls_auth_name: 'dot.example', tls_port: '853' }] };
+    if (running !== undefined) chain.stubby_running = running;
+    const s = setup(); diagnostics(s, chain);
+    const html = s.get('ps-chain-content').innerHTML;
+    const stopped = html.includes('STOPPED');
+    assert.equal(stopped, suffix, 'running=' + running + ' suffix=' + suffix);
+    assert.ok(html.includes('stubby (127.0.0.53@53, DoT)'), 'the base line text is unchanged');
+    assert.ok(html.includes('id="chain-stubby"'), 'branch stays drawn');
+    if (suffix) assert.ok(/chain-stubby[^>]*>\s*stubby \(127\.0\.0\.53@53, DoT\) \u2014 STOPPED/.test(html),
+        'the suffix belongs to the stubby line itself');
+}
+
 // Exercise both sides of the actual signed-32-bit timer boundary through the
 // real page/chain response. Reuse one provider label to avoid a giant DOM fixture.
 for (const [count, expected] of [[35789, 2147470000], [35790, 2147483647], [40000, 2147483647]]) {
@@ -1149,4 +1168,94 @@ for (const failed of [false, true]) {
     busy(s, false);
 }
 
-console.log('Frontend flows: PASS (bounded editor reads/baselines, checked service transitions, dirty snapshots/rollback, native Podkop navigation, Diagnostics queue and typed outcomes, exact progressive log/storage/export, deadlines and stale-resource cleanup, distinct typed browser DNS observation)');
+// === Repeated DNS Checks (plan v2: rounds, one accumulating Run Log entry) ===
+const probeContextOk = { qtype: 'A', context_id: 'ab12cd34',
+    paths: [{ name: 'Configured Podkop DNS', host: '127.0.0.53', port: 53 }, { name: 'Via dnsmasq', host: '127.0.0.1', port: 53 }],
+    targets: ['proxy.example.com'],
+    limits: { min_rounds: 1, max_rounds: 20, default_rounds: 10, min_interval: 1, max_interval: 5, default_interval: 1 } };
+function probeRound(round, order, statuses = ['ok', 'ok']) {
+    return { round, context_id: 'ab12cd34', actual_order: order, domain: 'proxy.example.com', qtype: 'A',
+        results: statuses.map((status, i) => ({
+            path_name: i === 0 ? 'Configured Podkop DNS' : 'Via dnsmasq',
+            server: i === 0 ? '127.0.0.53:53' : '127.0.0.1:53', order_position: i + 1, status,
+            execution: { known: true, exit_code: 0 },
+            dns: status === 'ok' ? { rcode: 'NOERROR', answers: [{ ip: '93.184.216.34', ttl: 300 }], query_time_ms: 40 + i }
+                : { rcode: 'SERVFAIL', answers: [], query_time_ms: 500 },
+            raw: 'raw output', raw_original_bytes: 100, raw_retained_bytes: 100 })) };
+}
+function startProbe(s, target = 'proxy.example.com', rounds = '2') {
+    s.get('ps-probe-target').value = target;
+    s.get('ps-probe-rounds').value = rounds;
+    s.get('ps-probe-run').click();
+}
+{
+    const s = setup(); diagnostics(s, { resolvers: [] }, probeContextOk);
+    assert.equal(s.get('ps-probe-target').children.length, 2, 'discovered target plus manual entry');
+    assert.equal(s.get('ps-probe-run').disabled, false);
+    startProbe(s);
+    busy(s, true); assert.equal(s.get('ps-probe-run').disabled, true);
+    assert.equal(s.requests.at(-1).url, '/probe/round');
+    assert.match(s.requests.at(-1).body, /domain=proxy\.example\.com/);
+    assert.match(s.requests.at(-1).body, /round=1/);
+    assert.match(s.requests.at(-1).body, /order=AB/);
+    assert.match(s.requests.at(-1).body, /context_id=ab12cd34/);
+    assert.match(s.requests.at(-1).body, /token=token/);
+    s.requests.at(-1).reply(probeRound(1, 'AB'));
+    assert.equal(logs(s).length, 1, 'one accumulating series entry from the first accepted round');
+    assert.equal(logs(s)[0].data.completion, 'running');
+    assert.deepEqual(logs(s)[0].data.rounds.map(r => r.round), [1]);
+    s.timer(1000);
+    assert.match(s.requests.at(-1).body, /round=2/);
+    assert.match(s.requests.at(-1).body, /order=BA/, 'path order alternates between rounds');
+    s.requests.at(-1).reply(probeRound(2, 'BA', ['ok', 'dns_fail']));
+    const entries = logs(s);
+    assert.equal(entries.length, 1, 'still one series entry');
+    assert.equal(entries[0].test, 'Repeated DNS Checks');
+    assert.equal(entries[0].status, 'FAIL', 'a DNS failure keeps the series FAIL');
+    assert.equal(entries[0].data.completion, 'completed');
+    assert.equal(entries[0].data.rounds.length, 2);
+    assert.equal(entries[0].data.summary['Configured Podkop DNS'].ok, 2);
+    assert.equal(entries[0].data.summary['Via dnsmasq'].dns_fail, 1);
+    assert.equal(s.get('ps-probe-body').children.length, 4, 'one row per path per round');
+    assert.match(s.get('ps-probe-summary').innerHTML, /Completed/);
+    busy(s, false);
+    assert.deepEqual(exportedLog(s), entries, 'the finished series exports exactly as displayed');
+}
+{
+    const s = setup(); diagnostics(s, { resolvers: [] }, probeContextOk);
+    startProbe(s);
+    s.requests.at(-1).reply(probeRound(1, 'AB'));
+    const pending = activeTimers(s).filter(timer => timer.delay === 1000);
+    assert.equal(pending.length, 1, 'the interval timer is scheduled between rounds');
+    s.get('ps-probe-stop').click();
+    const entries = logs(s);
+    assert.equal(entries[0].data.completion, 'stopped');
+    assert.equal(entries[0].status, 'FAIL', 'an incomplete series is never a full OK');
+    busy(s, false);
+    assert.equal(activeTimers(s).filter(timer => timer.delay === 1000).length, 0, 'stop clears the pending interval timer');
+    assert.equal(s.requests.length, 1, 'a stopped series dispatches no further rounds');
+}
+{
+    const s = setup(); diagnostics(s, { resolvers: [] }, probeContextOk);
+    startProbe(s);
+    s.requests.at(-1).reply({ error: 'DNS context changed; restart the series', error_code: 'context_changed' });
+    assert.equal(logs(s)[0].data.completion, 'context_changed');
+    assert.equal(logs(s)[0].status, 'FAIL');
+    busy(s, false);
+    assert.equal(s.requests.length, 1, 'context change stops the series');
+    assert.equal(activeTimers(s).length, 0, 'no interval timer is scheduled after a context change');
+}
+{
+    const s = setup(); diagnostics(s, { resolvers: [] }, probeContextOk);
+    startProbe(s, 'proxy.example.com', '2');
+    s.requests.at(-1).onerror();
+    assert.ok(logs(s)[0].data.rounds[0].transport_error, 'a lost round is recorded as unknown, never retried');
+    s.timer(1000);
+    assert.match(s.requests.at(-1).body, /round=2/, 'the series continues after one lost round');
+    s.requests.at(-1).onerror();
+    assert.equal(logs(s)[0].status, 'ERROR', 'no valid round at all is an ERROR series');
+    assert.match(logs(s)[0].error, /No round completed successfully/);
+    busy(s, false);
+}
+
+console.log('Frontend flows: PASS (bounded editor reads/baselines, checked service transitions, dirty snapshots/rollback, native Podkop navigation, Diagnostics queue and typed outcomes, exact progressive log/storage/export, deadlines and stale-resource cleanup, distinct typed browser DNS observation, repeated DNS-check rounds with one accumulating entry)');

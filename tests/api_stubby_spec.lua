@@ -294,6 +294,43 @@ describe("api_stubby.chain_info", function()
         assert.is_nil(r.podkop_dns)
         assert.is_nil(r.resolvers)
     end)
+
+    it("stubby_running reflects the live pidof census (PE7)", function()
+        -- default begin_stubby pidof responder: exit 1, empty output = known stop
+        local stopped = read_chain({ H.sec("global", "stubby", { listen_address = "127.0.0.53@53" }) },
+            { H.sec("settings", "settings", { dns_server = "127.0.0.53" }) })
+        assert.is_false(stopped.stubby_running)
+
+        -- running: pidof returns a pid with exit 0 (own responder wins first)
+        local api = begin_stubby({
+            uci = { stubby = { H.sec("global", "stubby", { listen_address = "127.0.0.53@53" }) },
+                podkop = { H.sec("settings", "settings", { dns_server = "127.0.0.53" }) } },
+            popen = { pid_reply("1234\nPT_EXIT:0\n") }
+        })
+        local uci = require("luci.model.uci").cursor()
+        uci.get_all = function(self, config)
+            local map = {}
+            for _, section in ipairs({ H.sec("settings", "settings", { dns_server = "127.0.0.53" }) }) do
+                map[section[".name"]] = section
+            end
+            return map
+        end
+        assert.is_true(api.chain_info().stubby_running)
+    end)
+
+    it("a failed status query leaves stubby_running absent (unknown stays unknown)", function()
+        local api = begin_stubby({
+            uci = { stubby = {}, podkop = {} },
+            popen = { { match = function(cmd) return cmd:find("pidof", 1, true) ~= nil end, out = "garbage without marker" } }
+        })
+        local uci = require("luci.model.uci").cursor()
+        uci.get_all = function(self, config)
+            return { settings = { dns_server = "127.0.0.53" } }
+        end
+        local r = api.chain_info()
+        assert.is_nil(r.stubby_running, "an unknown census must not become running or stopped")
+        assert.equal("127.0.0.53", r.podkop_dns)
+    end)
 end)
 
 describe("api_stubby.init_check/init_fix IO3", function()

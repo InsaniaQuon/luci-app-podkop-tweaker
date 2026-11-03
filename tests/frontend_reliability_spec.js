@@ -2018,7 +2018,7 @@ for (const invalid of [
     assert.equal(s.get('ps-file-input').disabled, true);
 }
 
-const infoUrls = { systemInfo: '/info', tweakerUpdate: '/git', argonThemeUpdate: '/theme', argonThemeJob: '/themejob', clearCache: '/clear', checkUpdates: '/check', restartStatus: '/restart/status', appVersion: '/version' };
+const infoUrls = { systemInfo: '/info', tweakerUpdate: '/git', argonThemeUpdate: '/theme', argonThemeJob: '/themejob', clearCache: '/clear', checkUpdates: '/check', restartStatus: '/restart/status', appVersion: '/version', engineUpdate: '/engine', serviceStatus: '/svcstatus' };
 {
     const s = setup('system-info', infoUrls);
     s.last('/info').reply({ tweaker_version: '4.9.0', tweaker_latest: '4.10.0', tweaker_download_url: 'https://github.com/InsaniaQuon/luci-app-podkop-tweaker/releases/download/v4.10.0/app.tar.gz' });
@@ -2256,6 +2256,128 @@ for (const knownFailure of [false, true]) {
     s.tick(1000);
     probe(s).reply({ id, state: 'applied', restarted: true, ready: true, installed_version: '3.0.0-r2' });
     assert.equal(s.reloads(), 1);
+}
+
+// Podkop Engine row: facts and actions come from the backend engine block;
+// upstream sing-box has no row at all. The one-click update/rollback keeps
+// the no-replay ownership rules and verifies the process transition itself.
+function engineInfo(fields = {}) {
+    return { tweaker_version: '4.13.0', sing_box_features: 'urltest.fallbacks,tools.decode-link',
+        engine: { installed: true, version: '1.14.4-pdk-r20', flavor: 'slim', update_available: true,
+            latest_version: '1.14.4-pdk-r21', rollback_version: '1.14.4-pdk-r19' }, ...fields };
+}
+function enginePage(fields) {
+    const s = setup('system-info', infoUrls);
+    s.last('/info').reply(engineInfo(fields));
+    return s;
+}
+{
+    const s = enginePage();
+    const html = s.get('ps-info-engine').innerHTML;
+    assert.match(html, /1\.14\.4-pdk-r20/);
+    assert.match(html, /id="ps-engine-update-btn"/);
+    // Downgrade is a plain button set apart behind a tab-like offset and
+    // rendered right of the flavor switch; the confirm dialog, not the
+    // label, names the target version.
+    assert.match(html, /class="btn cbi-button ps-downgrade-offset" id="ps-engine-downgrade-btn"[^>]*>Downgrade</);
+    assert.ok(html.indexOf('ps-engine-downgrade-btn') > html.indexOf('ps-engine-switch-btn'),
+        'the Downgrade button renders after (right of) the Switch button');
+    assert.doesNotMatch(html, /ps-engine-recovery/, 'no disclosure wrapper remains');
+    assert.equal(s.get('ps-row-engine').style.display, '');
+    // Features stay exact in the API value but render comma-space readable.
+    assert.equal(s.get('ps-info-sb-features').textContent, 'urltest.fallbacks, tools.decode-link');
+}
+{
+    const s = enginePage({ engine: { installed: false } });
+    assert.equal(s.get('ps-row-engine').style.display, 'none', 'no engine binary means no row and no actions');
+    s.get('ps-engine-update-btn').click();
+    assert.equal(s.requests.filter(r => r.url === '/engine').length, 0);
+}
+{
+    const s = enginePage({ engine: { installed: true, version: '1.14.4-pdk-r21', flavor: 'slim', update_available: false } });
+    const html = s.get('ps-info-engine').innerHTML;
+    assert.doesNotMatch(html, /ps-engine-update-btn/, 'no backend update flag means no update action');
+    assert.doesNotMatch(html, /ps-engine-downgrade-btn/, 'no rollback candidate means no Downgrade action');
+}
+{
+    const s = enginePage({ engine: { installed: true, version: '1.14.4-pdk-r20', error: 'Cannot read the engine release facts' } });
+    assert.doesNotMatch(s.get('ps-info-engine').innerHTML, /ps-engine-update-btn/, 'a failed check never unlocks actions');
+    assert.doesNotMatch(s.get('ps-info-engine').innerHTML, /ps-engine-downgrade-btn/, 'a failed check never unlocks the Downgrade action');
+    s.get('ps-engine-update-btn').click();
+    assert.equal(s.requests.filter(r => r.url === '/engine').length, 0);
+}
+{
+    const s = enginePage();
+    s.get('ps-engine-update-btn').click();
+    const post = s.last('/engine');
+    assert.equal(new URLSearchParams(post.body).get('target'), 'latest');
+    assert.equal(new URLSearchParams(post.body).has('token'), true);
+    assert.equal(s.get('ps-engine-update-btn').disabled, true);
+    assert.equal(s.get('ps-check-updates').disabled, true);
+    // Backend already proved the new binary: terminal success reloads info.
+    post.reply({ success: true, applied: true, version_match: true, version_after: '1.14.4-pdk-r21' });
+    assert.match(s.get('ps-engine-status').textContent, /1\.14\.4-pdk-r21 installed/);
+    assert.ok(s.requests.filter(r => r.url === '/info').length >= 2, 'success refreshes the table');
+    assert.equal(s.get('ps-check-updates').disabled, false);
+}
+{
+    const s = enginePage();
+    s.get('ps-engine-downgrade-btn').click();
+    const post = s.last('/engine');
+    assert.equal(new URLSearchParams(post.body).get('target'), 'rollback');
+    post.reply({ success: false, error: 'Engine package digest mismatch', details: 'sha256 differs' }, 200);
+    assert.equal(s.get('ps-check-updates').disabled, false, 'a known application failure unlocks the page');
+    assert.equal(s.get('ps-engine-downgrade-btn').disabled, false);
+    assert.match(s.get('ps-engine-status').textContent, /digest mismatch/);
+    assert.equal(s.requests.filter(r => r.url === '/engine').length, 1, 'failure never replays the POST');
+}
+{
+    const s = enginePage();
+    s.get('ps-engine-update-btn').click();
+    const post = s.last('/engine');
+    // Restart evidence pending: the page polls for a new sing-box instance.
+    post.reply({ success: true, version_match: false, restart: { prior_instance: '1796:8888', restarting: true } });
+    s.tick(2000);
+    s.last('/svcstatus').reply({ running: true, instance: '1796:8888' });
+    s.tick(2000);
+    s.last('/svcstatus').reply({ running: true, instance: '1900:9999' });
+    assert.match(s.get('ps-engine-status').textContent, /restarted \(instance 1900:9999\)/);
+    assert.equal(s.get('ps-check-updates').disabled, false);
+    assert.equal(s.requests.filter(r => r.url === '/engine').length, 1);
+}
+{
+    const s = enginePage();
+    s.get('ps-check-updates').click();
+    s.last('/check').reply({ podkop: { update_available: false }, tweaker: {},
+        theme: {},
+        engine: { installed: true, version: '1.14.4-pdk-r20', flavor: 'slim', update_available: true, latest_version: '1.14.4-pdk-r22' } });
+    assert.match(s.get('ps-info-engine').innerHTML, /1\.14\.4-pdk-r22/, 'a fresh check updates the engine row');
+    assert.match(s.get('ps-update-status').textContent, /Podkop Engine: update available/);
+}
+{
+    const s = enginePage();
+    assert.match(s.get('ps-info-engine').innerHTML, /Switch to full/);
+    s.get('ps-engine-switch-btn').click();
+    assert.equal(new URLSearchParams(s.last('/engine').body).get('target'), 'switch');
+    assert.equal(s.get('ps-engine-switch-btn').disabled, true);
+    s.last('/engine').reply({ success: true, applied: true, version_match: true, flavor_after: 'full', version_after: '1.14.4-pdk-r20' });
+    assert.match(s.get('ps-engine-status').textContent, /1\.14\.4-pdk-r20 installed/);
+    assert.ok(s.requests.filter(r => r.url === '/info').length >= 2, 'a finished switch refreshes the table');
+    assert.equal(s.get('ps-check-updates').disabled, false);
+}
+{
+    const s = enginePage({ engine: { installed: true, version: '1.14.4-pdk-r20', flavor: 'full', update_available: false } });
+    const html = s.get('ps-info-engine').innerHTML;
+    assert.match(html, /Switch to slim/);
+    assert.doesNotMatch(html, /ps-engine-update-btn/, 'full flavor stays actionable only through the backend flags');
+}
+{
+    const s = enginePage();
+    s.get('ps-engine-switch-btn').click();
+    s.last('/engine').reply({ success: false, error: 'No opposite-flavor engine asset matches this device' }, 200);
+    assert.equal(s.get('ps-engine-switch-btn').disabled, false);
+    assert.match(s.get('ps-engine-status').textContent, /opposite-flavor/);
+    assert.equal(s.requests.filter(r => r.url === '/engine').length, 1, 'no automatic switch retry');
 }
 
 const importUrls = { importBundle: '/bundle', importCfg: '/config', importStubby: '/stubby', importSingbox: '/singbox',
