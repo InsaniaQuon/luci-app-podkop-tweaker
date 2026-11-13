@@ -1,4 +1,4 @@
--- engine_update_spec | v1.0.0 | 01.11.2026 | podkop-engine release check and package update
+-- engine_update_spec | v1.1.0 | 13.11.2026 | + rollback-discovery race (short retry TTL, atom-fail marker)
 
 package.path = "./usr/lib/lua/?.lua;./tests/?.lua;" .. package.path
 
@@ -61,7 +61,12 @@ local function begin_engine(opts)
             out = function() return (state.apk or APK_SLIM) .. "\nPT_EXIT:0\n" end
         },
         { match = "releases/latest", out = function() return (opts.latest or "") .. "\nPT_CURL_EXIT:0\n" end },
-        { match = "releases.atom", out = (opts.atom or ATOM) .. "\nPT_CURL_EXIT:0\n" },
+        { match = "releases.atom", out = function()
+            -- atom_fail: no output and no exit marker -> the fetch itself
+            -- fails (network path), which is how a dead detour looks
+            if opts.atom_fail then return "" end
+            return (opts.atom or ATOM) .. "\nPT_CURL_EXIT:0\n"
+        end },
         { match = "releases/tags/", out = function() return (opts.tag_release or "") .. "\nPT_CURL_EXIT:0\n" end },
         { match = "wc -c", out = tostring(opts.stage_size or 100) .. "\nPT_EXIT:0\n" },
         { match = "sha256sum", out = (opts.stage_sha or DIGEST) .. "  /tmp/pt-engine.apk\nPT_EXIT:0\n" },
@@ -181,6 +186,50 @@ describe("engine_update.check", function()
         assert.is_false(info.update_available)
         assert.equal("1.14.4-pdk-r20", info.latest.version)
         assert.equal("1.14.4-pdk-r19", info.rollback.version)
+    end)
+
+    it("a failed atom fetch marks the cache and retries within the short TTL", function()
+        -- the post-apply race: the fresh check runs while the mixed detour is
+        -- still restarting, the atom fetch fails and the rollback candidate
+        -- must not be lost silently for the full 24 h
+        local opts = {
+            latest = release_json("v1.14.4-r21", "slim", 100, DIGEST),
+            tag_release = release_json("v1.14.4-r19", "slim", 90, DIGEST),
+            atom_fail = true
+        }
+        local ENG = begin_engine(opts)
+        local info = ENG.check(true)
+        assert.is_nil(info.rollback)
+        assert.equal("atom", info.rollback_error)
+        assert.is_nil(ENG.status(false).rollback_version)
+        -- backdate the marked cache past ROLLBACK_RETRY_TTL and let the
+        -- detour answer again: the next non-forced read redoes the discovery
+        local fd = io.open(ENG.CHECK_CACHE, "r")
+        local raw = fd:read("*a")
+        fd:close()
+        raw = raw:gsub('("checked_at"%s*:%s*)%d+', '%1' .. tostring(os.time() - 300))
+        H.vfs_write(ENG.CHECK_CACHE, raw)
+        opts.atom_fail = nil
+        local rechecked = ENG.check(false)
+        assert.equal("1.14.4-pdk-r19", rechecked.rollback.version)
+        assert.is_nil(rechecked.rollback_error)
+        assert.equal(2, count_substring("releases/latest"), "the expired marked cache redoes the whole check")
+    end)
+
+    it("no older tag is a clean cache: the full TTL applies, no marker", function()
+        local ENG = begin_engine({
+            latest = release_json("v1.14.4-r20", "slim", 100, DIGEST),
+            atom = '<?xml version="1.0"?><feed>' ..
+                '<entry><title>v1.14.4-r21</title></entry>' ..
+                '<entry><title>v1.14.4-r20</title></entry></feed>'
+        })
+        local info = ENG.check(true)
+        assert.is_nil(info.rollback)
+        assert.is_nil(info.rollback_error)
+        local calls = count_substring("releases/latest")
+        local cached = ENG.check(false)
+        assert.is_nil(cached.rollback)
+        assert.equal(calls, count_substring("releases/latest"), "a clean cache serves the full TTL")
     end)
 
     it("older latest release on another line is not an update", function()

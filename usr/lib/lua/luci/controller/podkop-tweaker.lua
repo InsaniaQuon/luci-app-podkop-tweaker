@@ -1,7 +1,7 @@
 -- Author: InsaniaQuon
 -- Podkop Tweaker | v4.13.0 | 02.11.2026 | Repeated DNS Checks (rounds on dig), doc-refresh pass 1
 
-local APP_VERSION = "4.13.0"
+local APP_VERSION = "4.13.1"
 -- Bump when UI assets change within the same unpublished release train.
 local ASSET_REVISION = "9"
 

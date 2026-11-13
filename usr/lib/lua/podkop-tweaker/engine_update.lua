@@ -137,10 +137,14 @@ end
 
 -- Rollback candidate: the newest release tag whose full engine version is
 -- strictly lower than the installed one (the revision counter resets with
--- every new base, so the full version decides).
+-- every new base, so the full version decides). Network failures are told
+-- apart from "no older tag exists": the caller caches a short-TTL entry so
+-- the next System Info refresh (with the mixed detour back after an engine
+-- restart) redoes the discovery instead of losing the Downgrade action
+-- silently for the full 24 h TTL (race observed live r21->r24, 12.11.2026).
 local function find_rollback(facts)
     local atom = NET.fetch(M.ATOM_URL, M.ATOM_LIMIT, 20, "PodkopTweaker", true, github_detour())
-    if type(atom) ~= "string" then return nil end
+    if type(atom) ~= "string" then return nil, "atom" end
     local best, seen = nil, {}
     for tag in atom:gmatch("v%d+%.%d+%.%d+%-r%d+") do
         if not seen[tag] then
@@ -150,12 +154,18 @@ local function find_rollback(facts)
             end
         end
     end
-    if not best then return nil end
+    if not best then return nil, nil end
     local raw = NET.fetch(M.API_TAG_PREFIX .. best, 262144, 20, "PodkopTweaker", true)
     local release = type(raw) == "string" and S.json_parse(raw) or nil
-    if type(release) ~= "table" then return nil end
-    return asset_from_release(release, facts)
+    if type(release) ~= "table" then return nil, "tag" end
+    local asset = asset_from_release(release, facts)
+    if not asset then return nil, "tag" end
+    return asset, nil
 end
+
+-- A rollback-discovery failure keeps the cache fresh only briefly: the next
+-- system_info/status read retries the whole check once the detour answers.
+M.ROLLBACK_RETRY_TTL = 120
 
 function M.check(force)
     local facts = M.installed()
@@ -167,9 +177,14 @@ function M.check(force)
     if not force then
         local cached = read_cache()
         if cached and type(cached.checked_at) == "number"
-            and (os.time() - cached.checked_at) < M.CHECK_TTL
             and cached.version == facts.version then
-            return cached
+            local ttl = M.CHECK_TTL
+            -- a failed rollback discovery is transient (usually the mixed
+            -- detour still restarting): retry the whole check within 120 s
+            if cached.rollback_error then ttl = M.ROLLBACK_RETRY_TTL end
+            if (os.time() - cached.checked_at) < ttl then
+                return cached
+            end
         end
     end
     local raw, err = NET.fetch(M.API_LATEST, 262144, 20, "PodkopTweaker", true)
@@ -186,8 +201,8 @@ function M.check(force)
     end
     base.latest = latest
     base.update_available = LIB.engine_version_lt(facts.version, latest.version)
-    local rollback = find_rollback(facts)
-    if rollback then base.rollback = rollback end
+    local rollback, rb_err = find_rollback(facts)
+    if rollback then base.rollback = rollback else base.rollback_error = rb_err end
     base.checked_at = os.time()
     write_cache(base)
     return base

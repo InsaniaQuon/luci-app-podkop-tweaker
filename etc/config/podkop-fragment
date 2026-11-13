@@ -1,6 +1,6 @@
 
 config fragment 'settings'
-	option enabled '1'
+	option enabled '0'
 	option fragment 'false'
 	option record_fragment 'true'
 	option fragment_fallback_delay '500ms'
