@@ -13,6 +13,11 @@ M.CONFIG_MAX_SIZE = SRV.SINGBOX_MAX_SIZE
 -- stay open: they are not Fragment-scoped.
 local function fragment_disabled()
     if VIS.disabled("fragment_tools") then return { error = "Fragment tools are disabled" } end
+    local src,err,errno = SRV.read_file("/usr/bin/podkop",262144)
+    if not src and errno~=2 then return {error=err} end
+    if src and src:find("# Podkop Tweaker synchronous outbound wrapper v1",1,true) then
+        return {error="Legacy Fragment controls superseded; reload Sing-box Config"}
+    end
     return nil
 end
 

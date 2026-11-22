@@ -238,6 +238,10 @@ service_triggers() {
 }
 
 enable() {
+	if grep -Fq '# Podkop Tweaker synchronous outbound wrapper v1' /usr/bin/podkop 2>/dev/null; then
+		echo "Use Outbound Wrapper in Sing-box Config"
+		return 1
+	fi
 	if ! _install_wrapper; then
 		echo "ERROR: wrapper installation failed"
 		return 1

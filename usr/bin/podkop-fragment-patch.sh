@@ -74,6 +74,10 @@ valid_json() {
 if [ "$ENABLED" = "0" ]; then
 	exit 0
 fi
+if grep -Fq '# Podkop Tweaker synchronous outbound wrapper v1' /usr/bin/podkop 2>/dev/null; then
+	echo "Legacy Fragment hook superseded by Outbound Wrapper" >&2
+	exit 1
+fi
 
 trap cleanup 0
 trap 'exit 129' HUP

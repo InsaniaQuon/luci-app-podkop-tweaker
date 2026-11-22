@@ -1,9 +1,9 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.13.2 | 22.11.2026 | Ordered Stubby upstreams and DNS profile reference
+-- Podkop Tweaker | v4.14.0 | 22.11.2026 | Synchronous per-outbound wrapper
 
-local APP_VERSION = "4.13.2"
+local APP_VERSION = "4.14.0"
 -- Bump when UI assets change within the same unpublished release train.
-local ASSET_REVISION = "1"
+local ASSET_REVISION = "6"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")
@@ -130,6 +130,12 @@ function index()
 
     entry({"admin", "services", "podkop-tweaker", "api", "wrapper_status"},
         call("api_wrapper_status")).leaf = true
+    entry({"admin", "services", "podkop-tweaker", "api", "outbound_policy"},
+        call("api_outbound_policy")).leaf = true
+    entry({"admin", "services", "podkop-tweaker", "api", "outbound_policy_apply"},
+        call("api_outbound_policy_apply")).leaf = true
+    entry({"admin", "services", "podkop-tweaker", "api", "outbound_policy_repair"},
+        call("api_outbound_policy_repair")).leaf = true
 
     entry({"admin", "services", "podkop-tweaker", "api", "wrapper_toggle"},
         call("api_wrapper_toggle")).leaf = true
@@ -334,7 +340,7 @@ function action_stubby()
 end
 
 function action_singbox()
-    render_page("singbox")
+    render_page("singbox", {show_fragment=false})
 end
 
 function action_diagnostics()
@@ -557,6 +563,11 @@ function api_singbox_patch_fragment()
 end
 
 function api_wrapper_status() json_api(false, SBX.wrapper_status) end
+function api_outbound_policy() json_api(false, require("podkop-tweaker.outbound_wrapper").status) end
+function api_outbound_policy_apply()
+    json_api(true, require("podkop-tweaker.outbound_wrapper").apply, require("luci.http").formvalue("selection"))
+end
+function api_outbound_policy_repair() json_api(true, require("podkop-tweaker.outbound_wrapper").repair) end
 
 function api_wrapper_toggle()
     local http = require("luci.http")

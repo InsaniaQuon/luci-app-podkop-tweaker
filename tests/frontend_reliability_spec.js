@@ -151,6 +151,31 @@ const formReadFailures = [
     { name: 'HTTP 403', run: r => r.reply('<html>LuCI login</html>', 403) }
 ];
 
+// Exercise the real persistent-wrapper script against a post-migration read.
+// Opening the page or either picker must not adopt Temporary rules.
+{
+    const s = setup('singbox', {...singboxUrls,policy:'/policy'});
+    for (const root of ['ps-outbound-wrapper','ps-outbound-dialog']) {
+        s.get(root).querySelector = selector => s.get(root + selector);
+    }
+    s.context.document.createTextNode = text => ({textContent:text});
+    const create = s.context.document.createElement;
+    s.context.document.createElement = tag => Object.assign(create(tag),{dataset:{}});
+    vm.runInContext(fs.readFileSync(path.join(repo,'www/luci-static/resources/podkop-tweaker/outbound-wrapper.js'),'utf8'),s.context);
+    const el = (root,kind,key) => s.get(root+'[data-'+kind+'="'+key+'"]');
+    const bar='ps-outbound-wrapper', dlg='ps-outbound-dialog';
+    const rows=['YouTube','main'].flatMap(section => ['iga','koga'].map((name,i)=>({
+        id:section+':'+name,section,name,tag:section+'-'+(4-i)+'-out',eligible:true,mask:true,exact:true,fragment:false})));
+    s.last('/policy').reply({count:4,rows,revision:'1',ready:true,tcp:false,record:true,delay:'500ms',
+        mask:{state:'Temporary',temporary:4,applied:0,selected:0},fragment:{state:'OFF',temporary:0,applied:0,selected:0}});
+    assert.equal(el(bar,'role','mask').textContent,'Temporary \u00b7 4');
+    assert.equal(el(bar,'role','fragment').textContent,'OFF');
+    el(bar,'action','mask').onclick();
+    const list=el(dlg,'role','nodes');
+    assert.equal(list.children.filter(n=>n.tagName==='LABEL' && n.children[0].checked).length,4);
+    assert.equal(s.requests.filter(r=>r.method==='POST').length,0);
+}
+
 // A failed first Typography read cannot turn DOM defaults into a mutation or
 // CSS-active evidence, even if a caller bypasses disabled buttons/events.
 for (const failure of [...formReadFailures,

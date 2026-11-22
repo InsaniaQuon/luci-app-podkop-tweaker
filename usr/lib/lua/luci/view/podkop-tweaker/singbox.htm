@@ -26,6 +26,14 @@ Author: InsaniaQuon
         </div>
         <% end %>
 
+        <div id="ps-outbound-wrapper" class="ps-outbound-bar">
+            <span class="ps-outbound-group"><strong>Outbound Wrapper</strong><span data-role="health">Checking...</span>
+                <button type="button" class="btn cbi-button" data-action="repair" hidden>Repair</button></span>
+            <span class="ps-outbound-group"><button type="button" class="btn cbi-button" data-action="fragment" aria-describedby="ps-fragment-state" disabled>Fragment</button> <b id="ps-fragment-state" data-role="fragment">Unknown</b></span>
+            <span class="ps-outbound-group"><button type="button" class="btn cbi-button" data-action="mask" aria-describedby="ps-mask-state" disabled>FinalMask</button> <b id="ps-mask-state" data-role="mask">Unknown</b></span>
+            <button type="button" class="btn cbi-button" data-action="refresh">Refresh</button>
+            <span data-role="message" aria-live="polite"></span>
+        </div>
         <div class="ps-editor-wrap">
             <div class="ps-line-numbers" id="ps-line-numbers">1</div>
             <textarea id="ps-config-editor" class="ps-config-editor" spellcheck="false" autocomplete="off"></textarea>
@@ -182,11 +190,52 @@ Author: InsaniaQuon
 <% end %>
 
 <link rel="stylesheet" href="<%=resource%>/podkop-tweaker/common.css?v=<%=asset_version%>">
+<div class="ps-modal" id="ps-outbound-dialog" style="display:none">
+    <div class="ps-modal-content">
+        <div class="ps-outbound-layout">
+        <div class="ps-outbound-fields">
+        <div class="ps-outbound-heading">
+            <h3 data-role="title"></h3>
+            <p>Select the nodes to manage after every Podkop regeneration.</p>
+        </div>
+        <div data-role="options" hidden>
+            <label><input type="checkbox" data-option="record"> TLS Record Fragment</label>
+            <label><input type="checkbox" data-option="tcp"> TCP Fragment</label>
+            <label class="ps-fallback-row">Fallback delay <input type="text" data-option="delay" maxlength="12" size="7"></label>
+        </div>
+        <div data-role="nodes"></div>
+        </div>
+        <aside class="ps-outbound-guide ps-fragment-guide" aria-label="Fragment guidance">
+            <p>Try <strong>TLS Record Fragment</strong> first, with TCP Fragment turned off. If the connection still fails, turn off TLS Record Fragment and try <strong>TCP Fragment</strong> on the same node.</p>
+            <table aria-label="Fragment mode comparison">
+                <thead><tr><th scope="col">ClientHello</th><th scope="col">TLS Record Fragment</th><th scope="col">TCP Fragment</th></tr></thead>
+                <tbody>
+                    <tr><th scope="row">Split into</th><td>Smaller TLS records</td><td>Separate TCP writes</td></tr>
+                    <tr><th scope="row">Timing</th><td>No deliberate delay</td><td>May slow the handshake</td></tr>
+                    <tr><th scope="row">Fallback delay</th><td>Not used</td><td>Used if automatic timing is unavailable</td></tr>
+                </tbody>
+            </table>
+        </aside>
+        <aside class="ps-outbound-guide ps-mask-guide" aria-label="FinalMask guidance">
+            <p>The mask splits the first TLS ClientHello record into smaller records. Each carries 11&ndash;23 bytes of data; the last may be shorter. No delay is added between records.</p>
+            <p>The engine also splits the first TCP write into at most two pieces. The actual number of network packets can differ.</p>
+        </aside>
+        </div>
+        <p class="ps-warning-box">Apply saves this selection and restarts Podkop once. Temporary edits are discarded by regeneration unless selected for persistence.</p>
+        <div class="ps-modal-footer">
+            <button type="button" class="btn cbi-button cbi-button-apply" data-action="apply">Apply</button>
+            <button type="button" class="btn cbi-button" data-action="close">Cancel</button>
+        </div>
+    </div>
+</div>
 <script>
 window.PT = {
     version: '<%= app_version %>',
     csrf: '<%= csrf_token %>',
     urls: {
+        policy: '<%=url("admin/services/podkop-tweaker/api/outbound_policy")%>',
+        policyApply: '<%=url("admin/services/podkop-tweaker/api/outbound_policy_apply")%>',
+        policyRepair: '<%=url("admin/services/podkop-tweaker/api/outbound_policy_repair")%>',
         appVersion: '<%=url("admin/services/podkop-tweaker/api/app_version")%>',
         read: '<%=url("admin/services/podkop-tweaker/api/read_singbox_config")%>',
         save: '<%=url("admin/services/podkop-tweaker/api/save_singbox_config")%>',
@@ -202,6 +251,7 @@ window.PT = {
 };
 </script>
 <script src="<%=resource%>/podkop-tweaker/common.js?v=<%=asset_version%>"></script>
+<script src="<%=resource%>/podkop-tweaker/outbound-wrapper.js?v=<%=asset_version%>" defer></script>
 
 <script>
 (function() {

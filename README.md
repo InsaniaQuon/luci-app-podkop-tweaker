@@ -6,7 +6,7 @@ LuCI web interface for managing Podkop proxy client on OpenWrt routers.
 
 - **Podkop Config** — editor for `/etc/config/podkop` with diff preview and one-click rollback
 - **Stubby Config** — DNS-over-TLS editor, recommended six-upstream template, init script fix, service controls and autostart
-- **Sing-box Config** — `config.json` editor with validation, rollback and TLS fragment/wrapper controls
+- **Sing-box Config** — edit, validate and roll back `config.json`. Choose Fragment or FinalMask for individual outbounds; the wrapper applies saved rules before sing-box starts.
 - **Diagnostics** — DNS chain, local DNS/proxy/end-to-end tests, manual browser DNS observation, Podkop Diagnostics shortcut and JSON run log
 - **Subscriptions** — vless/vmess/ss/trojan subscriptions per proxy slot, manual/cron/WAN updates, scheduler status and journal
 - **Import/Export** — selected-item JSON bundle backups and raw config imports, review before applying and automatic backups
@@ -22,16 +22,15 @@ Everything is developed and verified against one tested stack:
 | Component | Tested | Role |
 |---|---|---|
 | OpenWrt | **25.12.6** (apk) | classic LuCI/Lua runtime (`luci-lua-runtime`); 24.10/opkg is not tested |
-| Podkop | **0.7.24** | proxy client: owns `/etc/config/podkop`, generates and restarts sing-box |
-| podkop-engine | **1.14.4-r20** (slim) | the supported sing-box build: engine version/label, update, rollback and slim↔full switch target it; with the stock feed `sing-box` package the app still edits configs and runs diagnostics, but engine features stay hidden |
+| Podkop | **0.7.24** | Generates the sing-box configuration. The outbound wrapper supports the generator shipped with `0.7.24-r1` and refuses to modify an unrecognized build. |
+| podkop-engine | **1.14.4-r28** (slim) | Minimum supported engine version. The FinalMask wrapper requires `dialer.finalmask`, introduced in r28. With stock feed `sing-box`, config editing and diagnostics remain available. |
 
 Pulled in automatically by Podkop: `curl`, `jq`, `kmod-nft-tproxy`, `ca-bundle`.
 
 Optional: `stubby` (Stubby editor, DoT diagnostics and the DNS chain view), `ttyd`
 (interactive Podkop update terminal), `cron` (scheduled subscription updates).
 
-Newer or slightly older releases of these components will generally work, but
-only the matrix above is actually tested — no guarantees outside it.
+Only the stack above has been tested. Engine builds older than **1.14.4-r28** are unsupported.
 
 ## Installation
 

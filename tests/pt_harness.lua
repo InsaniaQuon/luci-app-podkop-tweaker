@@ -29,6 +29,7 @@ local ORIGINALS = {}
 local ST = nil
 
 local CLEAR_LOADED_IDS = {
+    "podkop-tweaker.outbound_wrapper", "podkop-tweaker.outbound_hook",
     "podkop-tweaker.http", "podkop-tweaker.services", "podkop-tweaker.lib",
     "podkop-tweaker.diag", "podkop-tweaker.argon", "podkop-tweaker.subsched", "podkop-tweaker.theme", "podkop-tweaker.appearance",
     "podkop-tweaker.net", "podkop-tweaker.archive", "podkop-tweaker.dns_observation", "podkop-tweaker.web_restart",
