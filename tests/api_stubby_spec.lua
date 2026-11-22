@@ -545,12 +545,17 @@ describe("api_stubby.apply_recommended", function()
         assert_restart(STB.apply_recommended())
         assert.is_nil(H.vfs_read(BAK))
         local content = H.vfs_read(CFG)
-        for _, expected in ipairs({ "config stubby 'global'", "option round_robin_upstreams '1'", "option log_level '3'",
-            "option idle_timeout '30000'", "127.0.0.53@53", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112", "185.222.222.222", "45.11.45.11" }) do
+        for _, expected in ipairs({ "config stubby 'global'", "option round_robin_upstreams '0'", "option log_level '3'",
+            "option idle_timeout '30000'", "127.0.0.53@53" }) do
             assert.truthy(content:find(expected, 1, true))
         end
-        local _, count = content:gsub("option tls_auth_name 'dot%.sb'", "")
-        assert.equal(2, count)
+        local addresses = {}
+        for ip, host, port in content:gmatch("config resolver%s+option address '([^']+)'%s+option tls_auth_name '([^']+)'%s+option tls_port '([^']+)'") do
+            addresses[#addresses + 1] = ip .. " " .. host .. ":" .. port
+        end
+        assert.same({ "1.1.1.1 cloudflare-dns.com:853", "1.0.0.1 cloudflare-dns.com:853",
+            "9.9.9.9 dns.quad9.net:853", "149.112.112.112 dns.quad9.net:853",
+            "185.222.222.222 dot.sb:853", "45.11.45.11 dot.sb:853" }, addresses)
         assert.falsy(content:find("option tls_auth_name 'dns.sb'", 1, true))
         assert.is_true(require("podkop-tweaker.lib").validate_uci_config(content))
         assert_restart(STB.apply_recommended())

@@ -102,32 +102,35 @@ Author: InsaniaQuon
                 <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">tls_connection_retries '2'</td><td style="padding:4px 8px;">Upstream retry/health setting</td><td style="padding:4px 8px;">Used for connection failures and getdns health checks; not two retries for every DNS query.</td></tr>
                 <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">tls_backoff_time '3600'</td><td style="padding:4px 8px;">Maximum backoff: 1 hour</td><td style="padding:4px 8px;">Backoff grows progressively up to this limit; a failure does not immediately disable the upstream for one hour.</td></tr>
                 <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">log_level '3'</td><td style="padding:4px 8px;">Error (default)</td><td style="padding:4px 8px;" title="0 Emergency; 1 Alert; 2 Critical; 3 Error; 4 Warning; 5 Notice; 6 Info; 7 Debug">0 Emergency; 1 Alert; 2 Critical; 3 Error; 4 Warning; 5 Notice; 6 Info; 7 Debug. Use 6 for connection statistics or 7 for detailed keepalive logs. Read logs in the terminal with <code>logread -e stubby</code>; storage uses OpenWrt's bounded system log.</td></tr>
-                <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">round_robin_upstreams '1'</td><td style="padding:4px 8px;">Distribute queries</td><td style="padding:4px 8px;">Load across all six upstreams (3 providers &times; 2)</td></tr>
+                <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">round_robin_upstreams '0'</td><td style="padding:4px 8px;">Ordered failover</td><td style="padding:4px 8px;">Use one upstream until it is unavailable, then try the next address in the list.</td></tr>
                 <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">dnssec_return_status '0'</td><td style="padding:4px 8px;">Local DNSSEC off</td><td style="padding:4px 8px;">Local validation in Stubby is disabled. Upstream resolvers may still validate DNSSEC; TLS certificate authentication remains required.</td></tr>
                 <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">listen_address</td><td style="padding:4px 8px;">127.0.0.53@53</td><td style="padding:4px 8px;">Loopback port 53</td></tr>
                 <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">tls_auth_name</td><td style="padding:4px 8px;">Certificate hostname</td><td style="padding:4px 8px;">MITM protection</td></tr>
                 <tr><td style="padding:4px 8px;white-space:nowrap;font-family:monospace;">edns_client_subnet_private '1'</td><td style="padding:4px 8px;">ECS privacy request</td><td style="padding:4px 8px;">Requests that the recursive resolver not disclose the client subnet to authoritative servers.</td></tr>
             </tbody>
         </table>
-        <div style="margin-top:12px;">
-            <table style="width:100%;border-collapse:collapse;font-size:12px;">
-                <thead>
-                    <tr style="border-bottom:2px solid var(--ps-border);">
-                        <th style="text-align:left;padding:6px 8px;white-space:nowrap;">Provider</th>
-                        <th style="text-align:left;padding:6px 8px;white-space:nowrap;">IP addresses</th>
-                        <th style="text-align:left;padding:6px 8px;">Role</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;font-weight:600;">Cloudflare</td><td style="padding:4px 8px;font-family:monospace;">1.1.1.1, 1.0.0.1</td><td style="padding:4px 8px;">Speed; global anycast; anonymized 24h logs</td></tr>
-                    <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;font-weight:600;">Quad9</td><td style="padding:4px 8px;font-family:monospace;">9.9.9.9, 149.112.112.112</td><td style="padding:4px 8px;">Blocks malware domains; Switzerland; no-logs</td></tr>
-                    <tr style="border-bottom:1px solid var(--ps-border);"><td style="padding:4px 8px;font-weight:600;">DNS.SB</td><td style="padding:4px 8px;font-family:monospace;">185.222.222.222, 45.11.45.11</td><td style="padding:4px 8px;">Neutral (no filtering); no-logs; third independent provider. TLS authentication name: <code>dot.sb</code>.</td></tr>
-                </tbody>
-            </table>
-        </div>
         <div style="margin-top:8px;padding:8px;background:var(--ps-bg-alt);border-radius:6px;font-size:12px;">
-            Available upstreams are used round-robin.
+            Template order: Cloudflare Standard &rarr; Quad9 Secure &rarr; DNS.SB (two addresses each, all on port 853).
         </div>
+        <details id="ps-dns-profiles" style="margin-top:12px;">
+            <summary>DNS providers and filtering profiles</summary>
+            <div style="overflow-x:auto;">
+                <table class="ps-sysinfo-table">
+                    <thead><tr><th>Profile</th><th>Filtering</th><th>IPv4 addresses</th><th>TLS authentication name</th><th>DoT port</th></tr></thead>
+                    <tbody>
+                        <tr><td>Cloudflare Standard</td><td>None</td><td>1.1.1.1, 1.0.0.1</td><td>cloudflare-dns.com</td><td>853</td></tr>
+                        <tr><td>Cloudflare Security</td><td>Malware and phishing</td><td>1.1.1.2, 1.0.0.2</td><td>security.cloudflare-dns.com</td><td>853</td></tr>
+                        <tr><td>Cloudflare Family</td><td>Malware, phishing and adult content</td><td>1.1.1.3, 1.0.0.3</td><td>family.cloudflare-dns.com</td><td>853</td></tr>
+                        <tr><td>Quad9 Secure</td><td>Threats</td><td>9.9.9.9, 149.112.112.112</td><td>dns.quad9.net</td><td>853 or 8853</td></tr>
+                        <tr><td>Quad9 Unfiltered</td><td>None</td><td>9.9.9.10, 149.112.112.10</td><td>dns10.quad9.net</td><td>853 or 8853</td></tr>
+                        <tr><td>Quad9 Secure + ECS</td><td>Threats</td><td>9.9.9.11, 149.112.112.11</td><td>dns11.quad9.net</td><td>853 or 8853</td></tr>
+                        <tr><td>Quad9 Unfiltered + ECS</td><td>None</td><td>9.9.9.12, 149.112.112.12</td><td>dns12.quad9.net</td><td>853 or 8853</td></tr>
+                        <tr><td>DNS.SB</td><td>None</td><td>185.222.222.222, 45.11.45.11</td><td>dot.sb</td><td>853</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <p>ECS (EDNS Client Subnet) can share part of the client IP address with authoritative DNS servers. None of these profiles is an ad blocker. Quad9's alternative port 8853 may be unavailable on some networks.</p>
+        </details>
         <div class="ps-modal-footer" style="margin-top:12px;display:flex;align-items:center;gap:8px;">
             <button class="btn cbi-button cbi-button-apply" id="ps-apply-template-btn">Apply This Template</button>
             <span id="ps-apply-template-status" style="font-size:12px;"></span>
@@ -383,6 +386,7 @@ window.PT = {
             clearClose();
             acceptedOperation = false;
             if (cfg.init) document.getElementById('ps-initfix-technical').open = false;
+            else document.getElementById('ps-dns-profiles').open = false;
             apply.disabled = actionPending || actionUnknown || !!cfg.init && (!initFacts || !initFacts.repair.available);
             status.textContent = actionUnknown ? 'Result unknown. Reload the page to verify before another operation.' :
                 actionPending ? 'An earlier Stubby operation is in progress. Close and reopen after it completes; see the page result.' : '';

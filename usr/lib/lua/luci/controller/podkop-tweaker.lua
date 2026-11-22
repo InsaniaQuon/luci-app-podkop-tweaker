@@ -1,9 +1,9 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.13.0 | 02.11.2026 | Repeated DNS Checks (rounds on dig), doc-refresh pass 1
+-- Podkop Tweaker | v4.13.2 | 22.11.2026 | Ordered Stubby upstreams and DNS profile reference
 
-local APP_VERSION = "4.13.1"
+local APP_VERSION = "4.13.2"
 -- Bump when UI assets change within the same unpublished release train.
-local ASSET_REVISION = "9"
+local ASSET_REVISION = "1"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")

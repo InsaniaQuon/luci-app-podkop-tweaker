@@ -2993,8 +2993,11 @@ async function main() {
                     const help = await evaluate('document.getElementById("ps-params-modal").innerText');
                     assert.ok(help.includes("log_level '3'"));
                     for (const level of ['0 Emergency', '1 Alert', '2 Critical', '3 Error', '4 Warning', '5 Notice', '6 Info', '7 Debug']) assert.ok(help.includes(level));
-                    assert.ok(help.includes('Local DNSSEC off') && help.includes('dot.sb'));
-                    assert.ok(help.includes('Available upstreams are used round-robin.'));
+                    assert.ok(help.includes('Local DNSSEC off') && help.includes('Ordered failover'));
+                    assert.equal(await evaluate('document.getElementById("ps-dns-profiles").open'), false);
+                    await evaluate('document.querySelector("#ps-dns-profiles summary").click()');
+                    const profiles = await evaluate('document.getElementById("ps-dns-profiles").innerText');
+                    assert.ok(profiles.includes('dot.sb') && profiles.includes('dns12.quad9.net') && profiles.includes('8853'));
                     assert.ok(!help.includes('Podkop block sections') && !help.includes('getdns handles upstream failures'));
                     await screenshot('stubby-template-guidance', 1440);
                     await evaluate('document.getElementById("ps-initfix-btn").click()');
