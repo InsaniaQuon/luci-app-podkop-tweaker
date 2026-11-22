@@ -92,11 +92,22 @@ local function inventory(cfg, sections, p)
 end
 local function snapshot(path)
     local u=require("luci.model.uci").cursor()
-    local sections=assert(u:get_all("podkop"),"Cannot read Podkop configuration")
+    local sections,err=u:get_all("podkop")
+    assert(not err and type(sections)=="table",err or "Cannot read Podkop configuration")
+    for name,section in pairs(sections) do
+        assert(type(name)=="string" and type(section)=="table" and section[".name"]==name
+            and type(section[".type"])=="string","Invalid Podkop section inventory")
+    end
     local live=assert(sections.settings and sections.settings.config_path,"Missing Podkop config path")
     assert(u:get("sing-box","main","conffile")==live,"Podkop and sing-box paths differ")
     local bytes=assert(S.read_file(path or live,S.SINGBOX_MAX_SIZE))
     local p=settings(u)
+    -- Filter only the freshly decoded working copy. Status and generation never
+    -- commit it. Apply re-reads under its locks and commits both modes together.
+    for id in pairs(p.rules) do
+        local owner=assert(id:match("^([^:]+):.+$"),"Invalid saved outbound identity")
+        if not sections[owner] then p.rules[id]=nil end
+    end
     return inventory(assert(J.parse(bytes),"Invalid sing-box JSON"),sections,p),p
 end
 local function summary(rows,p,mode,ready)

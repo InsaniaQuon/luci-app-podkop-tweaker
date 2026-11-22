@@ -56,7 +56,8 @@
         opt('delay').disabled = !opt('tcp').checked;
         var list = get(dialog,'role','nodes'), section = null;
         list.textContent = '';
-        model.rows.forEach(function (r) {
+        var rows = model.rows.filter(function (r) { return r.eligible || !r.wanted || r.wanted === k; });
+        rows.forEach(function (r) {
             if (section !== r.section) {
                 var h = document.createElement('h4'); h.textContent = section = r.section; list.appendChild(h);
             }
@@ -69,7 +70,7 @@
                 r.mask && !r.exact ? ' (custom mask)' : cb.dataset.conflict === 'true' ? ' (other mode)' : '');
             label.appendChild(cb); label.appendChild(document.createTextNode(r.name)); label.appendChild(detail); list.appendChild(label);
         });
-        if (!model.count) list.textContent = 'No Podkop proxy nodes found.';
+        if (!rows.length) list.textContent = 'No Podkop proxy nodes found.';
         get(dialog,'action','apply').disabled = !model.ready;
         dialog.style.display = 'flex';
     }

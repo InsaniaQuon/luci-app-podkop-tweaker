@@ -173,6 +173,14 @@ const formReadFailures = [
     el(bar,'action','mask').onclick();
     const list=el(dlg,'role','nodes');
     assert.equal(list.children.filter(n=>n.tagName==='LABEL' && n.children[0].checked).length,4);
+    el(bar,'action','refresh').onclick();
+    const missing={id:'main:absent',section:'main',name:'absent',tag:'',wanted:'mask',eligible:false,missing:true};
+    s.last('/policy').reply({count:1,rows:[missing],revision:'2',ready:true,tcp:false,record:true,delay:'500ms',
+        mask:{state:'ERROR',temporary:0,applied:0,selected:1},fragment:{state:'OFF',temporary:0,applied:0,selected:0}});
+    el(bar,'action','fragment').onclick();
+    assert.equal(list.textContent,'No Podkop proxy nodes found.');
+    el(bar,'action','mask').onclick();
+    assert.equal(list.children.filter(n=>n.tagName==='LABEL' && n.children[0].checked).length,1);
     assert.equal(s.requests.filter(r=>r.method==='POST').length,0);
 }
 

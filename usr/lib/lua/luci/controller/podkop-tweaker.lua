@@ -1,9 +1,9 @@
 -- Author: InsaniaQuon
--- Podkop Tweaker | v4.14.0 | 22.11.2026 | Synchronous per-outbound wrapper
+-- Podkop Tweaker | v4.14.1 | 22.11.2026 | Ignore wrapper selections from deleted Podkop sections
 
-local APP_VERSION = "4.14.0"
+local APP_VERSION = "4.14.1"
 -- Bump when UI assets change within the same unpublished release train.
-local ASSET_REVISION = "6"
+local ASSET_REVISION = "1"
 
 local H = require("podkop-tweaker.http")
 local PDK = require("podkop-tweaker.api_podkop")
